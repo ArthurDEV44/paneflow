@@ -18,6 +18,7 @@ use gpui::{
     App, ClipboardItem, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
     KeyContext, MouseButton, Render, Styled, Window, div, prelude::*,
 };
+use paneflow_config::schema::TerminalSurfaceProfile;
 
 use super::element::TerminalElement;
 use super::pty_session::ClipboardOp;
@@ -192,6 +193,16 @@ impl TerminalView {
         Self::with_cwd_and_env(workspace_id, cwd, initial_size, None, cx)
     }
 
+    pub fn with_cwd_and_profile(
+        workspace_id: u64,
+        cwd: Option<std::path::PathBuf>,
+        initial_size: Option<(usize, usize)>,
+        profile: TerminalSurfaceProfile,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_cwd_env_and_profile(workspace_id, cwd, initial_size, None, profile, cx)
+    }
+
     /// Spawn a terminal with an explicit per-surface env map (US-014). The
     /// global `terminal.env` default is merged underneath in
     /// [`TerminalState::new`]; `user_env` here is the per-surface override
@@ -204,6 +215,24 @@ impl TerminalView {
         user_env: Option<std::collections::HashMap<String, String>>,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::with_cwd_env_and_profile(
+            workspace_id,
+            cwd,
+            initial_size,
+            user_env,
+            TerminalSurfaceProfile::Normal,
+            cx,
+        )
+    }
+
+    pub fn with_cwd_env_and_profile(
+        workspace_id: u64,
+        cwd: Option<std::path::PathBuf>,
+        initial_size: Option<(usize, usize)>,
+        user_env: Option<std::collections::HashMap<String, String>>,
+        profile: TerminalSurfaceProfile,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let surface_id = cx.entity_id().as_u64();
 
         // US-012: paint immediately. Phase 1 - resolve the (cheap) spawn params
@@ -211,14 +240,16 @@ impl TerminalView {
         // open the PTY on the background executor and `promote()` the
         // placeholder in place when it resolves, so an N-pane restore never
         // serializes N blocking spawns on the main thread.
-        let params = TerminalState::resolve_spawn_params(
+        let params = TerminalState::resolve_spawn_params_with_profile(
             cwd,
             workspace_id,
             surface_id,
             initial_size,
             user_env,
+            profile,
         );
-        let (mut terminal, events_tx) = TerminalState::new_pending(params.cols, params.rows);
+        let (mut terminal, events_tx) =
+            TerminalState::new_pending_with_profile(params.cols, params.rows, params.profile);
         // Route the Drop-time force-kill timer through GPUI's background
         // executor instead of a detached OS thread (Zed parity, prevents a
         // thread leak per closed pane under heavy use).

@@ -2,6 +2,7 @@
 //! for the Review view (US-004 code-motion). See [`super`] for `DiffView`.
 
 use super::*;
+use paneflow_config::schema::TerminalSurfaceProfile;
 
 impl DiffView {
     /// Append `text` to the column's review CLI input WITHOUT Enter, then focus
@@ -31,7 +32,15 @@ impl DiffView {
         let cwd = col.path.clone();
         let ws_id = col.workspace_id.unwrap_or(0);
         let cli = super::super::review_terminal::ReviewCli::ClaudeCode;
-        let term = cx.new(|cx| crate::terminal::TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
+        let term = cx.new(|cx| {
+            crate::terminal::TerminalView::with_cwd_and_profile(
+                ws_id,
+                Some(cwd),
+                None,
+                TerminalSurfaceProfile::Review,
+                cx,
+            )
+        });
         let config = paneflow_config::loader::load_config();
         let command = cli.launch_command(&config);
         // US-011: configurable prefill delay (default 2000 ms). The clipboard
@@ -214,7 +223,13 @@ impl DiffView {
             let prompt =
                 super::super::review_terminal::build_cli_review_prompt(&branch, &base, rank > 0);
             let term = cx.new(|cx| {
-                crate::terminal::TerminalView::with_cwd(ws_id, Some(cwd.clone()), None, cx)
+                crate::terminal::TerminalView::with_cwd_and_profile(
+                    ws_id,
+                    Some(cwd.clone()),
+                    None,
+                    TerminalSurfaceProfile::Review,
+                    cx,
+                )
             });
             // Launch the CLI in the embedded terminal's shell.
             let command = cli.launch_command(&config);
@@ -292,7 +307,15 @@ impl DiffView {
         };
         let cwd = col.path.clone();
         let ws_id = col.workspace_id.unwrap_or(0);
-        let term = cx.new(|cx| crate::terminal::TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
+        let term = cx.new(|cx| {
+            crate::terminal::TerminalView::with_cwd_and_profile(
+                ws_id,
+                Some(cwd),
+                None,
+                TerminalSurfaceProfile::Review,
+                cx,
+            )
+        });
         term.read(cx).focus_handle(cx).focus(window, cx);
         if let Some(col) = self.columns.get_mut(col_idx) {
             col.review_terminals.push(ReviewTerminal {

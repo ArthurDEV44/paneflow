@@ -87,7 +87,8 @@ pub use app::actions::*;
 // so callers like `crate::TOAST_HOLD_MS` keep resolving without an
 // import-rewrite churn across the workspace.
 pub(crate) use app::constants::{
-    CLAUDE_SPINNER_FRAMES, MAX_CLOSED_PANES, RESIZE_BORDER, SIDEBAR_WIDTH, TOAST_HOLD_MS,
+    CLAUDE_SPINNER_FRAMES, MAX_CLOSED_PANE_SCROLLBACK_BYTES, MAX_CLOSED_PANES, RESIZE_BORDER,
+    SIDEBAR_WIDTH, TOAST_HOLD_MS,
 };
 // `TOAST_ENTER_MS` and `TOAST_EXIT_MS` are used only by the toast
 // renderer inside `app::notifications`; not re-exported at crate root.
@@ -237,6 +238,9 @@ struct AgentSessionsState {
     /// scan that shells out to `opencode session list --format json` (see
     /// `opencode_sessions.rs`).
     opencode_sessions: Vec<agent_sessions::SessionMeta>,
+    /// Per-agent count of older sessions omitted by the EP-003 sidebar memory
+    /// cap, indexed by `agent_index()`.
+    sessions_omitted: [usize; 3],
     /// Working directory the sidebar was opened for. Used both to filter stale
     /// scan results that resolve after the sidebar was closed and as the label
     /// inside the sidebar header.
@@ -467,6 +471,11 @@ struct AgentsViewState {
     /// cleanup) or on app shutdown.
     pub(crate) agents_terminal_view_cache:
         std::collections::HashMap<u64, gpui::Entity<crate::terminal::view::TerminalView>>,
+    /// LRU order for [`Self::agents_terminal_view_cache`], oldest first.
+    pub(crate) agents_terminal_cache_lru: Vec<u64>,
+    /// Last access timestamp for cached agent terminals. Expired entries are
+    /// pruned opportunistically when the cache is touched.
+    pub(crate) agents_terminal_cache_touched_at: std::collections::HashMap<u64, std::time::Instant>,
 }
 
 #[derive(Clone)]

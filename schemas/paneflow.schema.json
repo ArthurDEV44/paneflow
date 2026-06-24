@@ -114,7 +114,7 @@
         },
         "scrollback_lines": {
           "type": ["integer", "null"],
-          "description": "Maximum scrollback history in lines. Applied to newly-created terminals.",
+          "description": "Maximum scrollback history in lines for normal terminals. Applied to newly-created terminals. Agent and Review surfaces cap this value at 4000 and 2000 lines respectively. Live cached/hidden terminals are not rebuilt or killed to shrink history; exited cached terminals may be evicted by the cache policy.",
           "minimum": 100,
           "maximum": 100000,
           "default": 10000

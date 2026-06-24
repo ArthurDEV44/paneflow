@@ -534,6 +534,31 @@ impl<'de> Deserialize<'de> for CursorBlinkConfig {
     }
 }
 
+/// Memory budget profile for a terminal surface.
+///
+/// Normal terminals keep the historical scrollback default. Agent, Review and
+/// Cached is reserved for fresh cold surfaces; live cached PTYs are not
+/// rebuilt just to shrink history because dropping them would kill processes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TerminalSurfaceProfile {
+    #[default]
+    Normal,
+    Agent,
+    Review,
+    Cached,
+}
+
+impl TerminalSurfaceProfile {
+    fn scrollback_cap(self) -> Option<usize> {
+        match self {
+            Self::Normal => None,
+            Self::Agent => Some(TerminalConfig::AGENT_SCROLLBACK_LINES),
+            Self::Review => Some(TerminalConfig::REVIEW_SCROLLBACK_LINES),
+            Self::Cached => Some(TerminalConfig::CACHED_SCROLLBACK_LINES),
+        }
+    }
+}
+
 /// Terminal-scoped configuration block (US-008).
 ///
 /// Lives in its own struct so future renderer settings (cursor shape,
@@ -586,6 +611,12 @@ pub struct TerminalConfig {
 impl TerminalConfig {
     /// Default scrollback length matching Zed's `DEFAULT_SCROLL_HISTORY_LINES`.
     pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
+    /// Agent terminal profile target. Applied as a cap over the user setting.
+    pub const AGENT_SCROLLBACK_LINES: usize = 4_000;
+    /// Review terminal profile target. Applied as a cap over the user setting.
+    pub const REVIEW_SCROLLBACK_LINES: usize = 2_000;
+    /// Cold cached terminal profile target for fresh cached surfaces.
+    pub const CACHED_SCROLLBACK_LINES: usize = 1_000;
     /// Lower bound: below 100 lines the buffer is too small to be useful.
     pub const MIN_SCROLLBACK_LINES: usize = 100;
     /// Upper bound: 100K lines × ~80 cols × cell ≈ 1 GiB ceiling.
@@ -646,6 +677,14 @@ impl TerminalConfig {
             );
         }
         clamped
+    }
+
+    /// Resolve scrollback for a specific terminal surface profile. The user
+    /// setting still provides the base value, then agent/review/cached surfaces
+    /// cap it to their documented memory budget.
+    pub fn resolved_scrollback_lines_for_profile(&self, profile: TerminalSurfaceProfile) -> usize {
+        let base = self.resolved_scrollback_lines();
+        profile.scrollback_cap().map_or(base, |cap| base.min(cap))
     }
 }
 
@@ -1436,6 +1475,53 @@ mod tests {
             object_keys(&serialized["tool_permissions"]["read"]),
             object_keys(&schema["definitions"]["toolPermissionsEntry"]["properties"]),
             "ToolPermissionsEntry and public JSON Schema drifted"
+        );
+    }
+
+    #[test]
+    fn terminal_scrollback_profiles_resolve_defaults_and_caps() {
+        let cfg = TerminalConfig::default();
+        assert_eq!(
+            cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Normal),
+            10_000
+        );
+        assert_eq!(
+            cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Agent),
+            4_000
+        );
+        assert_eq!(
+            cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Review),
+            2_000
+        );
+        assert_eq!(
+            cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Cached),
+            1_000
+        );
+
+        let cfg = TerminalConfig {
+            scrollback_lines: Some(50_000),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Normal),
+            50_000
+        );
+        assert_eq!(
+            cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Agent),
+            4_000
+        );
+        assert_eq!(
+            cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Review),
+            2_000
+        );
+
+        let cfg = TerminalConfig {
+            scrollback_lines: Some(500),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Agent),
+            500
         );
     }
 

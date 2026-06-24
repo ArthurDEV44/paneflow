@@ -113,13 +113,86 @@ enum ViewMode {
     Unified,
 }
 
-/// Async lifecycle of a single column's diff. Loaded carries both row sets so
-/// toggling the view mode is instant (no recompute, US-011 AC).
+impl ViewMode {
+    fn label(self) -> &'static str {
+        match self {
+            ViewMode::Split => "split",
+            ViewMode::Unified => "unified",
+        }
+    }
+
+    fn opposite(self) -> Self {
+        match self {
+            ViewMode::Split => ViewMode::Unified,
+            ViewMode::Unified => ViewMode::Split,
+        }
+    }
+}
+
+enum BuiltModeRows {
+    Unified {
+        rows: Vec<DisplayRow>,
+        anchors: Vec<(String, usize)>,
+    },
+    Split {
+        rows: Vec<SplitRow>,
+        anchors: Vec<(String, usize)>,
+    },
+}
+
+impl BuiltModeRows {
+    fn mode(&self) -> ViewMode {
+        match self {
+            BuiltModeRows::Unified { .. } => ViewMode::Unified,
+            BuiltModeRows::Split { .. } => ViewMode::Split,
+        }
+    }
+}
+
+fn build_rows_for_mode(
+    files: &[super::git::FileDiff],
+    mode: ViewMode,
+    syntax: Option<&super::syntax::DiffSyntax>,
+) -> BuiltModeRows {
+    match mode {
+        ViewMode::Unified => {
+            let (rows, _) = build_display_rows(files, syntax);
+            let anchors = files
+                .iter()
+                .map(|f| f.path.clone())
+                .zip(
+                    rows.iter()
+                        .enumerate()
+                        .filter(|(_, r)| r.kind == RowKind::FileHeader)
+                        .map(|(i, _)| i),
+                )
+                .collect();
+            BuiltModeRows::Unified { rows, anchors }
+        }
+        ViewMode::Split => {
+            let (rows, _) = build_split_rows(files, syntax);
+            let anchors = files
+                .iter()
+                .map(|f| f.path.clone())
+                .zip(
+                    rows.iter()
+                        .enumerate()
+                        .filter(|(_, r)| matches!(r, SplitRow::Header(_)))
+                        .map(|(i, _)| i),
+                )
+                .collect();
+            BuiltModeRows::Split { rows, anchors }
+        }
+    }
+}
+
+/// Async lifecycle of a single column's diff. Loaded keeps the raw per-file
+/// diffs plus only the row model currently needed by the active view mode.
 enum ColumnState {
     Loading,
     Loaded {
-        unified: Rc<Vec<DisplayRow>>,
-        split: Rc<Vec<SplitRow>>,
+        unified: Option<Rc<Vec<DisplayRow>>>,
+        split: Option<Rc<Vec<SplitRow>>>,
         file_count: usize,
         /// US-008: per-file summary for the git panel (shared `Rc` so the
         /// sidebar reads it without cloning the whole list each frame).
@@ -127,8 +200,8 @@ enum ColumnState {
         /// `(file path, header row index)` for the unified / split row sets, so
         /// a sidebar file click can scroll the body to that file
         /// ([`DiffView::jump_to_file`]). Built once per load, off-thread.
-        anchors_unified: Rc<Vec<(String, usize)>>,
-        anchors_split: Rc<Vec<(String, usize)>>,
+        anchors_unified: Option<Rc<Vec<(String, usize)>>>,
+        anchors_split: Option<Rc<Vec<(String, usize)>>>,
         /// US-001/US-002 (prd-ai-in-diff-2026-Q3.md): the raw per-file diffs
         /// retained so "copy hunk/file" (US-003) and the agent review payload
         /// (US-005) serialize an exact unified diff at action time (no stable
@@ -146,12 +219,9 @@ enum ColumnState {
 enum Built {
     Failed(String),
     Loaded {
-        unified: Vec<DisplayRow>,
-        split: Vec<SplitRow>,
+        rows: BuiltModeRows,
         file_count: usize,
         files: Vec<FileEntry>,
-        anchors_unified: Vec<(String, usize)>,
-        anchors_split: Vec<(String, usize)>,
         /// US-001/US-002: raw per-file diffs retained for copy/review, moved out
         /// of the off-thread `diff.files` after the rows are built from it.
         files_full: Vec<super::git::FileDiff>,
@@ -231,9 +301,13 @@ struct Column {
     /// the columns whose fingerprint moved - never discards an in-flight full
     /// reload of the OTHER columns.
     generation: u64,
+    /// The view mode currently being materialized from retained raw diffs. Kept
+    /// separate from `generation`: a mode build can be superseded by another
+    /// mode toggle without forcing a fresh git diff.
+    loading_mode: Option<ViewMode>,
     /// Review CLIs launched on this column's branch, rendered as real terminals
     /// under the diff body (prd-ai-in-diff-2026-Q3.md). Empty until the user runs
-    /// Review; replaced on a re-run; dropped (PTY shutdown) when the column is.
+    /// Review; replaced on a re-run; closed by explicit terminal-close actions.
     review_terminals: Vec<ReviewTerminal>,
     /// User-resizable height (px) of this column's embedded review region.
     review_height: f32,
@@ -277,6 +351,7 @@ impl Column {
             fingerprint: None,
             base_override: None,
             generation: 0,
+            loading_mode: None,
             review_terminals: Vec::new(),
             review_height: REVIEW_DEFAULT_HEIGHT,
             attribution: Vec::new(),
@@ -284,58 +359,210 @@ impl Column {
         }
     }
 
-    /// Rebuild the collapse-filtered views from the loaded rows + `collapsed`.
-    /// No-op until the column is `Loaded`. When nothing is collapsed the full
-    /// rows are shared as-is (no allocation); otherwise collapsed files keep
-    /// only their header (marked `▸`).
-    fn recompute_display(&mut self) {
-        let computed = match &self.state {
-            ColumnState::Loaded {
+    fn reset_display_caches(&mut self) {
+        self.clear_display_mode(ViewMode::Unified);
+        self.clear_display_mode(ViewMode::Split);
+        self.h_offsets.clear();
+    }
+
+    fn clear_display_mode(&mut self, mode: ViewMode) {
+        match mode {
+            ViewMode::Unified => {
+                self.disp_unified = Rc::new(Vec::new());
+                self.disp_anchors_unified = Rc::new(Vec::new());
+                self.disp_unified_offsets = Rc::new(vec![0.0]);
+                self.disp_unified_max_no = 0;
+                self.disp_unified_spans = Rc::new(Vec::new());
+                self.disp_hunk_tops_unified = Rc::new(Vec::new());
+            }
+            ViewMode::Split => {
+                self.disp_split = Rc::new(Vec::new());
+                self.disp_anchors_split = Rc::new(Vec::new());
+                self.disp_split_offsets = Rc::new(vec![0.0]);
+                self.disp_split_max_no = 0;
+                self.disp_split_spans = Rc::new(Vec::new());
+                self.disp_hunk_tops_split = Rc::new(Vec::new());
+            }
+        }
+    }
+
+    fn drop_loaded_data(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loading_mode = None;
+        self.state = ColumnState::Loading;
+        self.collapsed.clear();
+        self.fingerprint = None;
+        self.attribution.clear();
+        self.reset_display_caches();
+    }
+
+    fn has_running_review_terminal(&self, cx: &mut Context<DiffView>) -> bool {
+        self.review_terminals
+            .iter()
+            .any(|term| term.terminal.read(cx).terminal.exited.is_none())
+    }
+
+    fn drop_exited_review_terminals(&mut self, cx: &mut Context<DiffView>) {
+        self.review_terminals
+            .retain(|term| term.terminal.read(cx).terminal.exited.is_none());
+    }
+
+    fn drop_review_terminals(&mut self) {
+        self.review_terminals.clear();
+    }
+
+    fn has_rows_for_mode(&self, mode: ViewMode) -> bool {
+        match &self.state {
+            ColumnState::Loaded { unified, split, .. } => match mode {
+                ViewMode::Unified => unified.is_some(),
+                ViewMode::Split => split.is_some(),
+            },
+            _ => false,
+        }
+    }
+
+    fn has_display_for_mode(&self, mode: ViewMode) -> bool {
+        match mode {
+            ViewMode::Unified => !self.disp_unified.is_empty(),
+            ViewMode::Split => !self.disp_split.is_empty(),
+        }
+    }
+
+    fn insert_mode_rows(&mut self, rows: BuiltModeRows) {
+        let ColumnState::Loaded {
+            unified,
+            split,
+            anchors_unified,
+            anchors_split,
+            ..
+        } = &mut self.state
+        else {
+            return;
+        };
+        match rows {
+            BuiltModeRows::Unified { rows, anchors } => {
+                *unified = Some(Rc::new(rows));
+                *anchors_unified = Some(Rc::new(anchors));
+            }
+            BuiltModeRows::Split { rows, anchors } => {
+                *split = Some(Rc::new(rows));
+                *anchors_split = Some(Rc::new(anchors));
+            }
+        }
+    }
+
+    fn drop_rows_except(&mut self, keep: ViewMode) {
+        {
+            let ColumnState::Loaded {
                 unified,
                 split,
                 anchors_unified,
                 anchors_split,
                 ..
-            } => {
-                if self.collapsed.is_empty() {
-                    Some((
-                        unified.clone(),
-                        split.clone(),
-                        anchors_unified.clone(),
-                        anchors_split.clone(),
-                    ))
-                } else {
-                    let (du, au) =
-                        apply_collapse_unified(unified, anchors_unified, &self.collapsed);
-                    let (ds, as_) = apply_collapse_split(split, anchors_split, &self.collapsed);
-                    Some((Rc::new(du), Rc::new(ds), Rc::new(au), Rc::new(as_)))
+            } = &mut self.state
+            else {
+                return;
+            };
+            match keep {
+                ViewMode::Unified => {
+                    *split = None;
+                    *anchors_split = None;
+                }
+                ViewMode::Split => {
+                    *unified = None;
+                    *anchors_unified = None;
                 }
             }
+        }
+        match keep {
+            ViewMode::Unified => self.clear_display_mode(ViewMode::Split),
+            ViewMode::Split => self.clear_display_mode(ViewMode::Unified),
+        }
+    }
+
+    /// Rebuild the collapse-filtered views from any loaded row sets +
+    /// `collapsed`. Missing modes stay empty; toggling to them schedules a lazy
+    /// rebuild from `files_full`.
+    fn recompute_display(&mut self) {
+        self.recompute_display_for(ViewMode::Unified);
+        self.recompute_display_for(ViewMode::Split);
+    }
+
+    fn recompute_display_for(&mut self, mode: ViewMode) {
+        match mode {
+            ViewMode::Unified => self.recompute_unified_display(),
+            ViewMode::Split => self.recompute_split_display(),
+        }
+    }
+
+    fn recompute_unified_display(&mut self) {
+        let computed = match &self.state {
+            ColumnState::Loaded {
+                unified,
+                anchors_unified,
+                ..
+            } => match (unified, anchors_unified) {
+                (Some(unified), Some(anchors_unified)) => {
+                    if self.collapsed.is_empty() {
+                        Some((unified.clone(), anchors_unified.clone()))
+                    } else {
+                        let (du, au) =
+                            apply_collapse_unified(unified, anchors_unified, &self.collapsed);
+                        Some((Rc::new(du), Rc::new(au)))
+                    }
+                }
+                _ => None,
+            },
             _ => None,
         };
-        if let Some((u, s, au, as_)) = computed {
+        if let Some((u, au)) = computed {
             self.disp_unified = u;
-            self.disp_split = s;
             self.disp_anchors_unified = au;
-            self.disp_anchors_split = as_;
-            // Refresh the cached layout inputs in lockstep with the row sets, so
-            // `DiffElement` reads them per frame instead of re-walking the rows.
             self.disp_unified_offsets = Rc::new(unified_offsets(&self.disp_unified));
-            self.disp_split_offsets = Rc::new(split_offsets(&self.disp_split));
             self.disp_unified_max_no = unified_max_line_no(&self.disp_unified);
-            self.disp_split_max_no = split_max_line_no(&self.disp_split);
             self.disp_unified_spans = Rc::new(unified_file_spans(&self.disp_unified));
-            self.disp_split_spans = Rc::new(split_file_spans(&self.disp_split));
-            // Resize per-file horizontal offsets to the file count (stable across
-            // collapse/split, so this is a no-op except on a fresh diff load).
             let file_count = self.disp_unified_spans.len();
             if self.h_offsets.len() != file_count {
                 self.h_offsets.resize(file_count, 0.0);
             }
-            // US-046: hunk-start offsets cached alongside the row offsets so the
-            // toolbar counter and hunk-nav never re-walk the rows per frame.
             self.disp_hunk_tops_unified = Rc::new(unified_hunk_tops(&self.disp_unified));
+        } else {
+            self.clear_display_mode(ViewMode::Unified);
+        }
+    }
+
+    fn recompute_split_display(&mut self) {
+        let computed = match &self.state {
+            ColumnState::Loaded {
+                split,
+                anchors_split,
+                ..
+            } => match (split, anchors_split) {
+                (Some(split), Some(anchors_split)) => {
+                    if self.collapsed.is_empty() {
+                        Some((split.clone(), anchors_split.clone()))
+                    } else {
+                        let (ds, as_) = apply_collapse_split(split, anchors_split, &self.collapsed);
+                        Some((Rc::new(ds), Rc::new(as_)))
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((s, as_)) = computed {
+            self.disp_split = s;
+            self.disp_anchors_split = as_;
+            self.disp_split_offsets = Rc::new(split_offsets(&self.disp_split));
+            self.disp_split_max_no = split_max_line_no(&self.disp_split);
+            self.disp_split_spans = Rc::new(split_file_spans(&self.disp_split));
+            let file_count = self.disp_split_spans.len();
+            if self.h_offsets.len() != file_count {
+                self.h_offsets.resize(file_count, 0.0);
+            }
             self.disp_hunk_tops_split = Rc::new(split_hunk_tops(&self.disp_split));
+        } else {
+            self.clear_display_mode(ViewMode::Split);
         }
     }
 
@@ -377,6 +604,10 @@ pub struct DiffView {
     /// or a double watcher after `resume`.
     watch_epoch: u64,
     mode: ViewMode,
+    /// Last mode that actually painted after responsive fallbacks. Reloads build
+    /// this mode first, so a narrow viewport that forces unified never spends the
+    /// initial off-thread pass on hidden split rows.
+    last_effective_mode: ViewMode,
     /// When true (default), all visible columns scroll in lockstep: the
     /// vertical offset of `scroll_driver` is broadcast to the rest each render,
     /// turning N parked viewers into one comparison surface (the whole point of
@@ -541,6 +772,7 @@ impl DiffView {
             element_id,
             watch_epoch: 0,
             mode: ViewMode::Unified,
+            last_effective_mode: ViewMode::Unified,
             sync_scroll: true,
             scroll_driver: 0,
             selected_column: 0,
@@ -686,11 +918,52 @@ impl DiffView {
 
     /// US-014: hide a column (drop its data, skip future refreshes).
     fn hide_column(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let Some(col) = self.columns.get_mut(idx) else {
-            return;
+        let blocked_by_running_review = {
+            let Some(col) = self.columns.get_mut(idx) else {
+                return;
+            };
+            if col.has_running_review_terminal(cx) {
+                col.drop_exited_review_terminals(cx);
+                true
+            } else {
+                col.visible = false;
+                col.drop_review_terminals();
+                col.drop_loaded_data(); // dropped data; reloads on re-show
+                false
+            }
         };
-        col.visible = false;
-        col.state = ColumnState::Loading; // dropped data; reloads on re-show
+        if blocked_by_running_review {
+            self.set_flash(
+                "Close Review terminals before hiding this column".into(),
+                cx,
+            );
+            return;
+        }
+        if self
+            .body_menu
+            .as_ref()
+            .is_some_and(|menu| menu.col_idx == idx)
+        {
+            self.body_menu = None;
+        }
+        if self.review_menu_open == Some(idx) {
+            self.review_menu_open = None;
+        }
+        if self
+            .review_resizing
+            .is_some_and(|(col_idx, _, _)| col_idx == idx)
+        {
+            self.review_resizing = None;
+        }
+        if self.hover_line.is_some_and(|(col_idx, _)| col_idx == idx) {
+            self.hover_line = None;
+        }
+        if self
+            .last_body_pos
+            .is_some_and(|(col_idx, _)| col_idx == idx)
+        {
+            self.last_body_pos = None;
+        }
         // The hidden column must not remain the sync source or the selection: the
         // scroll broadcast would otherwise re-run its first-visible fallback every
         // frame, and the header selection marker would point at nothing. Re-anchor
@@ -779,14 +1052,11 @@ impl DiffView {
             if !col.visible {
                 continue;
             }
-            if let ColumnState::Loaded {
-                anchors_unified, ..
-            } = &col.state
-            {
+            if let ColumnState::Loaded { files_full, .. } = &col.state {
                 any_loaded = true;
-                if !anchors_unified
+                if !files_full
                     .iter()
-                    .all(|(p, _)| col.collapsed.contains(p))
+                    .all(|file| col.collapsed.contains(&file.path))
                 {
                     return false;
                 }
@@ -807,9 +1077,9 @@ impl DiffView {
             col.collapsed.clear();
             if collapse {
                 let paths: Vec<String> = match &col.state {
-                    ColumnState::Loaded {
-                        anchors_unified, ..
-                    } => anchors_unified.iter().map(|(p, _)| p.clone()).collect(),
+                    ColumnState::Loaded { files_full, .. } => {
+                        files_full.iter().map(|file| file.path.clone()).collect()
+                    }
                     _ => Vec::new(),
                 };
                 col.collapsed.extend(paths);
@@ -985,6 +1255,115 @@ impl DiffView {
             .child(search)
             .child(list)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_file() -> super::super::git::FileDiff {
+        let base = "alpha\nold\nomega\n".to_string();
+        let new = "alpha\nnew\nomega\n".to_string();
+        super::super::git::FileDiff {
+            path: "src/lib.rs".into(),
+            change: super::super::git::FileChange::Modified,
+            old_path: None,
+            hunks: super::super::engine::compute_hunks(&base, &new),
+            base_text: base,
+            new_text: new,
+            is_binary: false,
+        }
+    }
+
+    fn file_entry(file: &super::super::git::FileDiff) -> FileEntry {
+        let (added, removed) = file.line_counts();
+        FileEntry {
+            path: file.path.clone(),
+            change: file.change,
+            old_path: file.old_path.clone(),
+            added,
+            removed,
+            is_binary: file.is_binary,
+        }
+    }
+
+    fn loaded_column_with_both_modes() -> Column {
+        let file = sample_file();
+        let files = vec![file.clone()];
+        let (unified, anchors_unified) = match build_rows_for_mode(&files, ViewMode::Unified, None)
+        {
+            BuiltModeRows::Unified { rows, anchors } => (rows, anchors),
+            BuiltModeRows::Split { .. } => unreachable!("requested unified rows"),
+        };
+        let (split, anchors_split) = match build_rows_for_mode(&files, ViewMode::Split, None) {
+            BuiltModeRows::Split { rows, anchors } => (rows, anchors),
+            BuiltModeRows::Unified { .. } => unreachable!("requested split rows"),
+        };
+        let mut col = Column::new_loading("feature".into(), PathBuf::from("."), None);
+        col.state = ColumnState::Loaded {
+            unified: Some(Rc::new(unified)),
+            split: Some(Rc::new(split)),
+            file_count: 1,
+            files: Rc::new(vec![file_entry(&file)]),
+            anchors_unified: Some(Rc::new(anchors_unified)),
+            anchors_split: Some(Rc::new(anchors_split)),
+            files_full: Rc::new(files),
+        };
+        col.collapsed.insert("src/lib.rs".into());
+        col.h_offsets = vec![12.0];
+        col.recompute_display();
+        col
+    }
+
+    #[test]
+    fn hidden_column_cleanup_drops_loaded_data_and_display_caches() {
+        let mut col = loaded_column_with_both_modes();
+        assert!(col.has_rows_for_mode(ViewMode::Unified));
+        assert!(col.has_rows_for_mode(ViewMode::Split));
+        assert!(!col.disp_unified.is_empty());
+        assert!(!col.disp_split.is_empty());
+
+        let generation = col.generation;
+        col.drop_loaded_data();
+
+        assert!(matches!(col.state, ColumnState::Loading));
+        assert_eq!(col.generation, generation.wrapping_add(1));
+        assert!(col.collapsed.is_empty());
+        assert!(col.review_terminals.is_empty());
+        assert!(col.attribution.is_empty());
+        assert!(col.h_offsets.is_empty());
+        assert!(col.disp_unified.is_empty());
+        assert!(col.disp_split.is_empty());
+        assert!(col.disp_anchors_unified.is_empty());
+        assert!(col.disp_anchors_split.is_empty());
+        assert_eq!(col.disp_unified_offsets.as_ref(), &[0.0]);
+        assert_eq!(col.disp_split_offsets.as_ref(), &[0.0]);
+        assert!(col.disp_unified_spans.is_empty());
+        assert!(col.disp_split_spans.is_empty());
+        assert!(col.disp_hunk_tops_unified.is_empty());
+        assert!(col.disp_hunk_tops_split.is_empty());
+    }
+
+    #[test]
+    fn inactive_diff_mode_rows_are_not_retained() {
+        let mut col = loaded_column_with_both_modes();
+
+        col.drop_rows_except(ViewMode::Unified);
+        col.recompute_display_for(ViewMode::Unified);
+        assert!(col.has_rows_for_mode(ViewMode::Unified));
+        assert!(!col.has_rows_for_mode(ViewMode::Split));
+        assert!(!col.disp_unified.is_empty());
+        assert!(col.disp_split.is_empty());
+
+        let files = vec![sample_file()];
+        col.insert_mode_rows(build_rows_for_mode(&files, ViewMode::Split, None));
+        col.drop_rows_except(ViewMode::Split);
+        col.recompute_display_for(ViewMode::Split);
+        assert!(!col.has_rows_for_mode(ViewMode::Unified));
+        assert!(col.has_rows_for_mode(ViewMode::Split));
+        assert!(col.disp_unified.is_empty());
+        assert!(!col.disp_split.is_empty());
     }
 }
 

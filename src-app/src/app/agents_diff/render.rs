@@ -160,8 +160,7 @@ pub(super) fn render_diff_panel_header(
             "icons/close.svg",
             ui,
             cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.agents_view.agents_diff_open = false;
-                cx.notify();
+                this.close_agents_diff_panel(cx);
             }),
             ui.muted,
         ));

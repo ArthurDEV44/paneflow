@@ -131,6 +131,7 @@ pub mod cache {
     struct Entry {
         mtime: SystemTime,
         sessions: Vec<SessionMeta>,
+        omitted: usize,
         /// US-025: monotonic stamp of the last access (lookup hit
         /// or store_result write). Used by `store_result` to pick
         /// the LRU victim when the cache hits its cap.
@@ -162,11 +163,15 @@ pub mod cache {
         }
     }
 
-    /// Try to read a fresh `Vec<SessionMeta>` from the cache. Returns
-    /// `Some` only when the dir's mtime is within `MTIME_FUZZ` of the
-    /// cached snapshot's mtime -- catches real writes (seconds apart)
-    /// without spurious invalidation on filesystem-internal jitter.
-    pub fn lookup(agent: SessionAgent, cwd: &str, project_dir: &Path) -> Option<Vec<SessionMeta>> {
+    /// Try to read a fresh session snapshot from the cache. Returns `Some`
+    /// only when the dir's mtime is within `MTIME_FUZZ` of the cached
+    /// snapshot's mtime -- catches real writes (seconds apart) without
+    /// spurious invalidation on filesystem-internal jitter.
+    pub fn lookup(
+        agent: SessionAgent,
+        cwd: &str,
+        project_dir: &Path,
+    ) -> Option<(Vec<SessionMeta>, usize)> {
         let observed = dir_mtime(project_dir)?;
         let mut guard = match store().lock() {
             Ok(g) => g,
@@ -192,7 +197,7 @@ pub mod cache {
         let entry = guard.get_mut(&(agent, cwd.to_string()))?;
         if within_fuzz(entry.mtime, observed) {
             entry.access_seq = next_access_seq();
-            Some(entry.sessions.clone())
+            Some((entry.sessions.clone(), entry.omitted))
         } else {
             None
         }
@@ -208,6 +213,7 @@ pub mod cache {
         cwd: &str,
         project_dir: &Path,
         sessions: &[SessionMeta],
+        omitted: usize,
     ) {
         let Some(mtime) = dir_mtime(project_dir) else {
             return;
@@ -253,6 +259,7 @@ pub mod cache {
             Entry {
                 mtime,
                 sessions: sessions.to_vec(),
+                omitted,
                 access_seq: next_access_seq(),
             },
         );
@@ -377,6 +384,7 @@ pub mod cache {
                         Entry {
                             mtime: SystemTime::UNIX_EPOCH,
                             sessions: Vec::new(),
+                            omitted: 0,
                             access_seq: super::next_access_seq(),
                         },
                     );
@@ -389,7 +397,7 @@ pub mod cache {
             // path: `store_result` enforces the cap, picks the LRU
             // victim, evicts it, then inserts. This catches any
             // future drift in the eviction branch (line 179-192).
-            super::store_result(SessionAgent::Claude, "/proj-N", dir.path(), &[]);
+            super::store_result(SessionAgent::Claude, "/proj-N", dir.path(), &[], 0);
             {
                 let guard = super::store().lock().expect("lock");
                 assert_eq!(
@@ -429,7 +437,7 @@ pub mod cache {
             .join();
 
             let dir = tempfile::tempdir().expect("tempdir");
-            super::store_result(SessionAgent::Claude, "/poisoned", dir.path(), &[]);
+            super::store_result(SessionAgent::Claude, "/poisoned", dir.path(), &[], 0);
 
             assert!(
                 logs_contain("session cache mutex poisoned on store_result"),
@@ -460,6 +468,15 @@ pub fn enabled_session_agents() -> Vec<SessionAgent> {
     }
     agents
 }
+
+/// EP-003: maximum session rows retained in the docked sessions sidebar for
+/// one `(agent, cwd)` source. Readers already sort newest-first, so capping is
+/// a stable "keep the latest" operation.
+pub(crate) const SIDEBAR_SESSION_RETAINED_PER_SOURCE: usize = 100;
+
+/// EP-003: maximum matched sessions retained on one Review attribution column.
+/// Ranking happens first, then this cap keeps the most relevant matches.
+pub(crate) const DIFF_ATTRIBUTION_MATCH_CAP: usize = 50;
 
 /// Strict allow-list guard for a session id before it is interpolated into a
 /// resume command (`claude --resume <id>`, `codex resume <id>`,
@@ -552,6 +569,123 @@ pub struct SessionMeta {
     pub usage: Option<AssistantUsage>,
 }
 
+/// Collect only the newest `cap` sessions by ISO timestamp while counting the
+/// older rows omitted. This avoids building long-lived UI/cache vectors just to
+/// truncate them afterwards.
+pub(crate) fn collect_recent_sessions<I>(sessions: I, cap: usize) -> (Vec<SessionMeta>, usize)
+where
+    I: IntoIterator<Item = SessionMeta>,
+{
+    let mut collector = RecentSessionCollector::new(cap);
+    for session in sessions {
+        collector.push(session);
+    }
+    collector.finish()
+}
+
+/// Incremental newest-N collector for readers that discover sessions through a
+/// callback walk instead of an iterator chain.
+pub(crate) struct RecentSessionCollector {
+    retained: Vec<SessionMeta>,
+    omitted: usize,
+    cap: usize,
+    sorted: bool,
+}
+
+impl RecentSessionCollector {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self {
+            retained: Vec::with_capacity(cap),
+            omitted: 0,
+            cap,
+            sorted: false,
+        }
+    }
+
+    pub(crate) fn push(&mut self, session: SessionMeta) {
+        let cap = self.cap;
+        let retained = &mut self.retained;
+        let omitted = &mut self.omitted;
+        if cap == 0 {
+            *omitted = omitted.saturating_add(1);
+            return;
+        }
+
+        if retained.len() < cap {
+            retained.push(session);
+            if retained.len() == cap {
+                retained.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                self.sorted = true;
+            }
+            return;
+        }
+
+        if !self.sorted {
+            retained.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            self.sorted = true;
+        }
+
+        if retained
+            .last()
+            .is_some_and(|oldest| session.timestamp > oldest.timestamp)
+        {
+            let insert_at =
+                retained.partition_point(|existing| existing.timestamp >= session.timestamp);
+            retained.insert(insert_at, session);
+            retained.pop();
+        }
+        *omitted = omitted.saturating_add(1);
+    }
+
+    pub(crate) fn finish(mut self) -> (Vec<SessionMeta>, usize) {
+        if !self.sorted {
+            self.retained.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        }
+        self.retained.shrink_to_fit();
+        (self.retained, self.omitted)
+    }
+}
+
+fn attribution_branch_rank(session: &SessionMeta, col_branch: &str) -> u8 {
+    u8::from(!col_branch.is_empty() && session.git_branch == col_branch)
+}
+
+fn attribution_ordering(a: &SessionMeta, b: &SessionMeta, col_branch: &str) -> std::cmp::Ordering {
+    attribution_branch_rank(b, col_branch)
+        .cmp(&attribution_branch_rank(a, col_branch))
+        .then_with(|| b.timestamp.cmp(&a.timestamp))
+}
+
+/// EP-003 review: keep the attribution candidate set bounded while preserving
+/// the final `branch > recency` ranking. Claude/Codex use this before usage
+/// enrichment so only the retained candidates pay the deep JSONL scan cost.
+pub(crate) fn push_ranked_attribution<T>(
+    retained: &mut Vec<(SessionMeta, T)>,
+    session: SessionMeta,
+    payload: T,
+    col_branch: &str,
+    cap: usize,
+) {
+    if cap == 0 {
+        return;
+    }
+
+    let insert_at = retained.partition_point(|(existing, _)| {
+        !matches!(
+            attribution_ordering(existing, &session, col_branch),
+            std::cmp::Ordering::Greater
+        )
+    });
+    if insert_at >= cap {
+        return;
+    }
+
+    retained.insert(insert_at, (session, payload));
+    if retained.len() > cap {
+        retained.pop();
+    }
+}
+
 /// EP-004 US-014: rank already-cwd-filtered sessions for one diff column by
 /// `exact-cwd > branch > recency`. A pure function (no I/O, no clock) so it is
 /// unit-testable; the readers have already filtered to `col_path`'s cwd, so the
@@ -563,23 +697,20 @@ pub fn match_sessions_to_column(
     col_path: &str,
     col_branch: &str,
 ) -> Vec<SessionMeta> {
-    let mut matched: Vec<SessionMeta> = sessions
+    let mut matched = Vec::new();
+    for session in sessions
         .into_iter()
         .filter(|s| cwd_matches(&s.cwd, col_path))
-        .collect();
-    // Branch match is a bonus tier: a session whose recorded branch equals the
-    // column's branch outranks one that doesn't (Codex records no branch, so it
-    // never wins this tier - cwd-only by design). Within a tier, most recent
-    // first. `sort_by` is stable, so equal keys keep reader order.
-    matched.sort_by(|a, b| {
-        let branch_rank = |s: &SessionMeta| -> u8 {
-            u8::from(!col_branch.is_empty() && s.git_branch == col_branch)
-        };
-        branch_rank(b)
-            .cmp(&branch_rank(a))
-            .then_with(|| b.timestamp.cmp(&a.timestamp))
-    });
-    matched
+    {
+        push_ranked_attribution(
+            &mut matched,
+            session,
+            (),
+            col_branch,
+            DIFF_ATTRIBUTION_MATCH_CAP,
+        );
+    }
+    matched.into_iter().map(|(session, _)| session).collect()
 }
 
 /// EP-004 US-014: gather every enabled agent's sessions for a worktree `cwd`
@@ -592,19 +723,20 @@ pub fn attribution_for_column(cwd: &str, branch: &str) -> Vec<SessionMeta> {
     for agent in enabled_session_agents() {
         match agent {
             SessionAgent::Claude => all.extend(
-                crate::claude_sessions::read_sessions_with_usage_for_cwd(cwd),
+                crate::claude_sessions::read_sessions_with_usage_for_attribution(cwd, branch),
             ),
-            SessionAgent::Codex => {
-                all.extend(crate::codex_sessions::read_sessions_with_usage_for_cwd(cwd))
-            }
+            SessionAgent::Codex => all.extend(
+                crate::codex_sessions::read_sessions_with_usage_for_attribution(cwd, branch),
+            ),
             // OpenCode's CLI contract carries no token usage; agent + recency
             // only (graceful degradation), so the title-only scan is enough.
             SessionAgent::OpenCode => {
                 all.extend(crate::opencode_sessions::read_sessions_for_cwd(cwd))
             }
         }
+        all = match_sessions_to_column(all, cwd, branch);
     }
-    match_sessions_to_column(all, cwd, branch)
+    all
 }
 
 /// Format an ISO 8601 timestamp into a short relative label. Pure string
@@ -888,6 +1020,10 @@ mod tests {
         }
     }
 
+    fn sortable_test_ts(i: usize) -> String {
+        format!("2026-06-01T{:02}:{:02}:00Z", i / 60, i % 60)
+    }
+
     #[test]
     fn match_ranks_branch_then_recency() {
         // EP-004 US-014: among cwd-matched sessions, a branch match outranks a
@@ -918,6 +1054,72 @@ mod tests {
         let ranked = match_sessions_to_column(sessions, "/repo", "");
         let order: Vec<&str> = ranked.iter().map(|s| s.session_id.as_str()).collect();
         assert_eq!(order, vec!["newer", "older"]);
+    }
+
+    #[test]
+    fn sidebar_cap_keeps_newest_rows_and_reports_omitted() {
+        let sessions: Vec<SessionMeta> = (0..(SIDEBAR_SESSION_RETAINED_PER_SOURCE + 3))
+            .map(|i| meta(&format!("s-{i:03}"), "", &sortable_test_ts(i)))
+            .collect();
+
+        let (capped, omitted) =
+            collect_recent_sessions(sessions, SIDEBAR_SESSION_RETAINED_PER_SOURCE);
+
+        assert_eq!(capped.len(), SIDEBAR_SESSION_RETAINED_PER_SOURCE);
+        assert_eq!(omitted, 3);
+        assert_eq!(capped[0].session_id, "s-102");
+        assert_eq!(capped.last().map(|s| s.session_id.as_str()), Some("s-003"));
+    }
+
+    #[test]
+    fn match_caps_attribution_after_relevance_ranking() {
+        let sessions: Vec<SessionMeta> = (0..(DIFF_ATTRIBUTION_MATCH_CAP + 5))
+            .map(|i| meta(&format!("s-{i:02}"), "feature", &sortable_test_ts(i)))
+            .collect();
+
+        let ranked = match_sessions_to_column(sessions, "/repo", "feature");
+
+        assert_eq!(ranked.len(), DIFF_ATTRIBUTION_MATCH_CAP);
+        assert_eq!(ranked[0].session_id, "s-54");
+        assert_eq!(
+            ranked.last().map(|s| s.session_id.as_str()),
+            Some("s-05"),
+            "the five oldest ranked matches should be omitted"
+        );
+    }
+
+    #[test]
+    fn ranked_attribution_push_caps_before_usage_enrichment() {
+        let mut retained = Vec::new();
+        push_ranked_attribution(
+            &mut retained,
+            meta("new-other", "main", "2026-06-01T00:00:00Z"),
+            "new-other",
+            "feature",
+            2,
+        );
+        push_ranked_attribution(
+            &mut retained,
+            meta("old-branch", "feature", "2026-01-01T00:00:00Z"),
+            "old-branch",
+            "feature",
+            2,
+        );
+        push_ranked_attribution(
+            &mut retained,
+            meta("newer-other", "main", "2026-07-01T00:00:00Z"),
+            "newer-other",
+            "feature",
+            2,
+        );
+
+        let order: Vec<&str> = retained
+            .iter()
+            .map(|(s, _)| s.session_id.as_str())
+            .collect();
+        assert_eq!(order, vec!["old-branch", "newer-other"]);
+        let payloads: Vec<&str> = retained.iter().map(|(_, payload)| *payload).collect();
+        assert_eq!(payloads, vec!["old-branch", "newer-other"]);
     }
 
     #[test]

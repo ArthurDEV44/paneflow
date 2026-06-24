@@ -788,6 +788,7 @@ impl PaneFlowApp {
                 claude_sessions: Vec::new(),
                 codex_sessions: Vec::new(),
                 opencode_sessions: Vec::new(),
+                sessions_omitted: [0; 3],
                 claude_sessions_cwd: None,
                 claude_sessions_pane: None,
                 claude_sessions_scroll: gpui::ScrollHandle::new(),
@@ -924,6 +925,8 @@ impl PaneFlowApp {
                 bottom_terminal_seq: 0,
                 bottom_panel_drag: None,
                 agents_terminal_view_cache: std::collections::HashMap::new(),
+                agents_terminal_cache_lru: Vec::new(),
+                agents_terminal_cache_touched_at: std::collections::HashMap::new(),
             },
             // US-012: sidebar search/filter. Empty filter == show
             // everything; the focus handle is held here so the input
@@ -977,6 +980,40 @@ impl PaneFlowApp {
         if let Some(info) = session_corruption {
             app.emit_session_corrupted(&info);
         }
+
+        // EP-002 (memory): opportunistically release exited cached agent
+        // terminals after their idle TTL even if the user never selects another
+        // thread. Running PTYs stay protected by the eviction guard.
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_secs(60)).await;
+                    let result = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                            let agents_terminal_visible =
+                                matches!(app.mode, paneflow_config::schema::AppMode::Agents)
+                                    && !app.agents_view.agents_skills_visible;
+                            let active_thread_id = agents_terminal_visible
+                                .then(|| {
+                                    app.current_thread_view_target().and_then(|target| {
+                                        app.thread_for_target(target).map(|thread| thread.id)
+                                    })
+                                })
+                                .flatten();
+                            app.enforce_agents_terminal_cache_budget(active_thread_id, cx);
+                            let bottom_panel_visible =
+                                matches!(app.mode, paneflow_config::schema::AppMode::Agents)
+                                    && app.agents_view.bottom_panel_open;
+                            app.enforce_bottom_terminal_cache_budget(bottom_panel_visible, cx);
+                        })
+                    });
+                    if result.is_err() {
+                        break;
+                    }
+                }
+            },
+        )
+        .detach();
 
         // Custom-button propagation runs once on the active workspace so
         // user-defined tab-bar buttons surface immediately after restore.

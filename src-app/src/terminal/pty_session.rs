@@ -29,23 +29,26 @@ use super::service_detector::{ServiceInfo, detect_framework, parse_service_line}
 use super::shell::{resolve_default_shell, setup_shell_integration};
 use super::types::SharedTerm;
 use crate::limits::{MAX_CHARS, MAX_OSC52_BYTES};
+use paneflow_config::schema::{TerminalConfig, TerminalSurfaceProfile};
 
 /// Default scrollback history length, in lines. Matches Zed's
 /// `DEFAULT_SCROLL_HISTORY_LINES`. `TermConfig::default()` is `0`, which
 /// disables scrollback entirely. Overridable via
 /// `terminal.scrollback_lines` in `paneflow.json` - see
 /// [`paneflow_config::TerminalConfig::resolved_scrollback_lines`].
-const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
+const DEFAULT_SCROLLBACK_LINES: usize = TerminalConfig::DEFAULT_SCROLLBACK_LINES;
 
 /// Read the user's configured scrollback length, clamped to the
 /// [`paneflow_config::TerminalConfig`] allowed range. Falls back to
 /// [`DEFAULT_SCROLLBACK_LINES`] when no `terminal` block exists.
-fn resolved_scrollback_lines() -> usize {
+fn resolved_scrollback_lines(profile: TerminalSurfaceProfile) -> usize {
     paneflow_config::loader::load_config()
         .terminal
-        .as_ref()
-        .map(|t| t.resolved_scrollback_lines())
-        .unwrap_or(DEFAULT_SCROLLBACK_LINES)
+        .unwrap_or(TerminalConfig {
+            scrollback_lines: Some(DEFAULT_SCROLLBACK_LINES),
+            ..Default::default()
+        })
+        .resolved_scrollback_lines_for_profile(profile)
 }
 
 /// US-007: map the pure config cursor shape to the renderer's (vte) shape.
@@ -367,6 +370,7 @@ pub(super) struct SpawnParams {
     cwd: std::path::PathBuf,
     pub(super) cols: usize,
     pub(super) rows: usize,
+    pub(super) profile: TerminalSurfaceProfile,
     surface_id: u64,
 }
 
@@ -474,14 +478,37 @@ impl TerminalState {
         user_env: Option<std::collections::HashMap<String, String>>,
         signal_mask: Option<ForegroundSignalMask>,
     ) -> anyhow::Result<Self> {
-        let params = Self::resolve_spawn_params(
+        Self::new_with_profile(
             working_directory,
             workspace_id,
             surface_id,
             initial_size,
             user_env,
+            TerminalSurfaceProfile::Normal,
+            signal_mask,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn new_with_profile(
+        working_directory: Option<std::path::PathBuf>,
+        workspace_id: u64,
+        surface_id: u64,
+        initial_size: Option<(usize, usize)>,
+        user_env: Option<std::collections::HashMap<String, String>>,
+        profile: TerminalSurfaceProfile,
+        signal_mask: Option<ForegroundSignalMask>,
+    ) -> anyhow::Result<Self> {
+        let params = Self::resolve_spawn_params_with_profile(
+            working_directory,
+            workspace_id,
+            surface_id,
+            initial_size,
+            user_env,
+            profile,
         );
-        let (mut state, events_tx) = Self::new_pending(params.cols, params.rows);
+        let (mut state, events_tx) =
+            Self::new_pending_with_profile(params.cols, params.rows, params.profile);
         let term = state.term.clone();
         let spawned = Self::open_pty_and_eventloop(params, term, events_tx, signal_mask)?;
         state.promote(spawned);
@@ -492,12 +519,31 @@ impl TerminalState {
     /// grid size - the cheap, render-thread-safe half of a spawn. Factored out
     /// of `new` so the off-thread path (US-012) runs the *blocking* half
     /// ([`open_pty_and_eventloop`]) on the background executor.
+    #[allow(dead_code)]
     pub(super) fn resolve_spawn_params(
         working_directory: Option<std::path::PathBuf>,
         workspace_id: u64,
         surface_id: u64,
         initial_size: Option<(usize, usize)>,
         user_env: Option<std::collections::HashMap<String, String>>,
+    ) -> SpawnParams {
+        Self::resolve_spawn_params_with_profile(
+            working_directory,
+            workspace_id,
+            surface_id,
+            initial_size,
+            user_env,
+            TerminalSurfaceProfile::Normal,
+        )
+    }
+
+    pub(super) fn resolve_spawn_params_with_profile(
+        working_directory: Option<std::path::PathBuf>,
+        workspace_id: u64,
+        surface_id: u64,
+        initial_size: Option<(usize, usize)>,
+        user_env: Option<std::collections::HashMap<String, String>>,
+        profile: TerminalSurfaceProfile,
     ) -> SpawnParams {
         // Fallback chain handled by `resolve_default_shell` (US-006):
         // Unix:    config → $SHELL → /bin/sh
@@ -551,6 +597,7 @@ impl TerminalState {
             cwd,
             cols,
             rows,
+            profile,
             surface_id,
         }
     }
@@ -559,8 +606,17 @@ impl TerminalState {
     /// a background spawn can later attach a real `EventLoop` to the same
     /// channel and [`promote`](Self::promote) it (US-012). The returned
     /// `UnboundedSender` is the clone handed to [`open_pty_and_eventloop`].
+    #[allow(dead_code)]
     pub(super) fn new_pending(cols: usize, rows: usize) -> (Self, UnboundedSender<AlacEvent>) {
-        Self::build_display_only(cols, rows)
+        Self::new_pending_with_profile(cols, rows, TerminalSurfaceProfile::Normal)
+    }
+
+    pub(super) fn new_pending_with_profile(
+        cols: usize,
+        rows: usize,
+        profile: TerminalSurfaceProfile,
+    ) -> (Self, UnboundedSender<AlacEvent>) {
+        Self::build_display_only(cols, rows, profile)
     }
 
     /// Open the PTY and start its `EventLoop` on the given (shared) `term` and
@@ -724,7 +780,16 @@ impl TerminalState {
     /// already-built pending placeholder and writes the error into it).
     #[allow(dead_code)]
     pub fn new_display_only(rows: usize, cols: usize) -> Self {
-        Self::build_display_only(cols, rows).0
+        Self::new_display_only_with_profile(rows, cols, TerminalSurfaceProfile::Normal)
+    }
+
+    #[allow(dead_code)]
+    pub fn new_display_only_with_profile(
+        rows: usize,
+        cols: usize,
+        profile: TerminalSurfaceProfile,
+    ) -> Self {
+        Self::build_display_only(cols, rows, profile).0
     }
 
     /// Shared constructor for the display-only / pending state. Returns the
@@ -732,14 +797,18 @@ impl TerminalState {
     /// spawn path ([`new_pending`]) can wire a real `EventLoop` to the same
     /// channel and [`promote`](Self::promote) it (US-012). `new_display_only`
     /// discards the sender (its `Term` only emits Wakeups on its own VTE writes).
-    fn build_display_only(cols: usize, rows: usize) -> (Self, UnboundedSender<AlacEvent>) {
+    fn build_display_only(
+        cols: usize,
+        rows: usize,
+        profile: TerminalSurfaceProfile,
+    ) -> (Self, UnboundedSender<AlacEvent>) {
         let (events_tx, events_rx) = unbounded();
         // The Term keeps one clone (emits Wakeup after VTE mutations); the
         // returned clone is for a later `EventLoop` on promotion.
         let listener = ZedListener(events_tx.clone());
 
         let config = TermConfig {
-            scrolling_history: resolved_scrollback_lines(),
+            scrolling_history: resolved_scrollback_lines(profile),
             default_cursor_style: resolved_cursor_style(),
             ..TermConfig::default()
         };

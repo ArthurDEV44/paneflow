@@ -21,7 +21,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, deferred, div, prelude::FluentBuilder, px, rgb,
     svg,
 };
-use paneflow_config::schema::AppMode;
+use paneflow_config::schema::{AppMode, TerminalSurfaceProfile};
 use serde_json::Value;
 
 /// Sidebar width when in [`AppMode::Agents`]. Slightly wider than the
@@ -41,6 +41,29 @@ const AGENTS_ENVIRONMENT_PANEL_WIDTH: f32 = 300.0;
 const AGENTS_TOOLBAR_BAND_HEIGHT: f32 = 56.0;
 const AGENTS_BRANCH_GIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 const AGENTS_BRANCH_GIT_OUTPUT_CAP: u64 = 512 * 1024;
+const AGENTS_TERMINAL_HOT_CACHE_LIMIT: usize = 8;
+const AGENTS_TERMINAL_CACHE_IDLE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn touch_lru(order: &mut Vec<u64>, id: u64) {
+    order.retain(|existing| *existing != id);
+    order.push(id);
+}
+
+fn oldest_evictable_terminal_id(
+    order: &[u64],
+    active: Option<u64>,
+    cache_len: usize,
+    limit: usize,
+    mut is_evictable: impl FnMut(u64) -> bool,
+) -> Option<u64> {
+    if cache_len <= limit {
+        return None;
+    }
+    order
+        .iter()
+        .copied()
+        .find(|id| Some(*id) != active && is_evictable(*id))
+}
 
 impl PaneFlowApp {
     /// Toggle between [`AppMode::Cli`] and [`AppMode::Agents`].
@@ -729,6 +752,94 @@ impl PaneFlowApp {
         }
     }
 
+    fn touch_agents_terminal_cache(&mut self, thread_id: u64) {
+        touch_lru(&mut self.agents_view.agents_terminal_cache_lru, thread_id);
+        self.agents_view
+            .agents_terminal_cache_touched_at
+            .insert(thread_id, std::time::Instant::now());
+    }
+
+    pub(crate) fn remove_agents_terminal_cache_entry(&mut self, thread_id: u64) {
+        self.agents_view
+            .agents_terminal_view_cache
+            .remove(&thread_id);
+        self.agents_view
+            .agents_terminal_cache_lru
+            .retain(|id| *id != thread_id);
+        self.agents_view
+            .agents_terminal_cache_touched_at
+            .remove(&thread_id);
+    }
+
+    pub(crate) fn enforce_agents_terminal_cache_budget(
+        &mut self,
+        active_thread_id: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        let cache_keys: std::collections::HashSet<u64> = self
+            .agents_view
+            .agents_terminal_view_cache
+            .keys()
+            .copied()
+            .collect();
+        self.agents_view
+            .agents_terminal_cache_lru
+            .retain(|id| cache_keys.contains(id));
+        self.agents_view
+            .agents_terminal_cache_touched_at
+            .retain(|id, _| cache_keys.contains(id));
+
+        // V1 fallback for live scrollback trim: dropping a live TerminalView
+        // terminates its PTY, so the TTL path only releases exited terminals.
+        let now = std::time::Instant::now();
+        let expired: Vec<u64> = self
+            .agents_view
+            .agents_terminal_cache_lru
+            .iter()
+            .copied()
+            .filter(|id| Some(*id) != active_thread_id)
+            .filter(|id| {
+                self.agents_view
+                    .agents_terminal_cache_touched_at
+                    .get(id)
+                    .is_some_and(|last| now.duration_since(*last) >= AGENTS_TERMINAL_CACHE_IDLE_TTL)
+            })
+            .filter(|id| {
+                self.agents_view
+                    .agents_terminal_view_cache
+                    .get(id)
+                    .is_some_and(|view| view.read(cx).terminal.exited.is_some())
+            })
+            .collect();
+        for thread_id in expired {
+            self.remove_agents_terminal_cache_entry(thread_id);
+        }
+
+        while self.agents_view.agents_terminal_view_cache.len() > AGENTS_TERMINAL_HOT_CACHE_LIMIT {
+            let lru = self.agents_view.agents_terminal_cache_lru.clone();
+            let cache_len = self.agents_view.agents_terminal_view_cache.len();
+            let evict = oldest_evictable_terminal_id(
+                &lru,
+                active_thread_id,
+                cache_len,
+                AGENTS_TERMINAL_HOT_CACHE_LIMIT,
+                |id| {
+                    self.agents_view
+                        .agents_terminal_view_cache
+                        .get(&id)
+                        .is_some_and(|view| view.read(cx).terminal.exited.is_some())
+                },
+            );
+            let Some(thread_id) = evict else {
+                log::debug!(
+                    "agents terminal cache remains over budget; active/running terminals are protected"
+                );
+                break;
+            };
+            self.remove_agents_terminal_cache_entry(thread_id);
+        }
+    }
+
     /// Keyboard handling for the focused branch-picker search field: printable
     /// keys extend the query (live filter), Backspace trims it, Enter switches to
     /// an exact match, Escape dismisses.
@@ -851,7 +962,14 @@ impl PaneFlowApp {
         // never collide and warm-resume survives navigation between them.
         let thread = self.thread_for_target(target)?;
         let thread_id = thread.id;
-        if let Some(cached) = self.agents_view.agents_terminal_view_cache.get(&thread_id) {
+        if let Some(cached) = self
+            .agents_view
+            .agents_terminal_view_cache
+            .get(&thread_id)
+            .cloned()
+        {
+            self.touch_agents_terminal_cache(thread_id);
+            self.enforce_agents_terminal_cache_budget(Some(thread_id), cx);
             return Some(cached.clone());
         }
         let cwd = std::path::PathBuf::from(&thread.cwd);
@@ -870,10 +988,11 @@ impl PaneFlowApp {
             crate::project::ThreadKind::Terminal => None,
         });
         let view = cx.new(|cx| {
-            crate::terminal::view::TerminalView::with_cwd(
+            crate::terminal::view::TerminalView::with_cwd_and_profile(
                 crate::project::thread_env_id(thread_id),
                 Some(cwd),
                 None,
+                TerminalSurfaceProfile::Agent,
                 cx,
             )
         });
@@ -918,6 +1037,8 @@ impl PaneFlowApp {
         self.agents_view
             .agents_terminal_view_cache
             .insert(thread_id, view.clone());
+        self.touch_agents_terminal_cache(thread_id);
+        self.enforce_agents_terminal_cache_budget(Some(thread_id), cx);
         Some(view)
     }
 
@@ -2102,4 +2223,39 @@ fn render_agents_no_project() -> gpui::AnyElement {
                 ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn touch_lru_moves_existing_id_to_back() {
+        let mut order = vec![1, 2, 3];
+        touch_lru(&mut order, 2);
+        assert_eq!(order, vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn oldest_evictable_terminal_id_protects_active_and_running() {
+        let order = vec![1, 2, 3, 4];
+        let exited = std::collections::HashSet::from([1, 2, 4]);
+
+        let evict = oldest_evictable_terminal_id(&order, Some(1), 9, 8, |id| exited.contains(&id));
+        assert_eq!(
+            evict,
+            Some(2),
+            "oldest active entry is protected, next exited entry is evicted"
+        );
+
+        let evict = oldest_evictable_terminal_id(&order, Some(2), 9, 8, |id| id == 3);
+        assert_eq!(
+            evict,
+            Some(3),
+            "a running active entry is skipped but an evictable inactive entry can drop"
+        );
+
+        let evict = oldest_evictable_terminal_id(&order, None, 8, 8, |_| true);
+        assert_eq!(evict, None, "cache at budget does not evict");
+    }
 }
