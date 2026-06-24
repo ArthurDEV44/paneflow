@@ -5,6 +5,55 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-24
+
+Patch release focused on keeping long-running multi-agent work leaner and less
+surprising after the Paneflow Conductor release. It also closes two macOS/UI
+paper cuts from the issue #11 feedback loop and polishes toast feedback across
+the app.
+
+### Added
+
+- Memory-oriented terminal surface profiles. Normal terminals keep the existing
+  10,000-line scrollback default, while agent, Review, and cold cached terminal
+  surfaces are capped at 4,000, 2,000, and 1,000 lines respectively.
+- A memory smoke-test runbook covering the 6-8 agent workload, Review and
+  Agents diff navigation, IPC bursts, and the OS verification gaps that must be
+  called out explicitly.
+
+### Changed
+
+- Multi-agent retention is now structurally bounded instead of relying on
+  process memory staying friendly. Agent terminal hot cache, bottom terminal
+  retention, session sidebar rows, attribution matches, closed-pane scrollback,
+  diff rows, raw diff file reads, and GPUI-bound IPC requests now have explicit
+  caps.
+- Hidden Review columns and closed Agents diff panels release their loaded row
+  models, display caches, offsets, attribution data, and exited review-terminal
+  references. Running review terminals are protected: Paneflow asks you to close
+  them before hiding the column instead of silently killing work.
+- IPC requests headed for the GPUI thread now use a bounded queue with
+  backpressure, and each UI tick drains a bounded number of live and cancelled
+  requests. Busy clients get a clear retryable overload error instead of
+  letting request memory grow without a cap.
+- Notification toasts use icon assets, tighter sizing, clearer action buttons,
+  and error-style detection for failure messages.
+
+### Fixed
+
+- The sidebar's CLI / Review / Agents switch now stays visible as persistent
+  primary navigation, with Settings moved to a compact utility button. Switching
+  modes also closes the Settings popover so the footer state stays predictable.
+- macOS GUI launches that inherit the filesystem root no longer create a fresh
+  implicit workspace at `/` with a generic `Terminal 1` label. New implicit
+  launches fall back to the home directory, and legacy restored `Terminal N`
+  root workspaces are repaired without affecting explicitly requested root
+  terminals.
+- macOS native menu items stay enabled across CLI, Review, and Agents modes by
+  registering app-global fallback handlers for the menu actions.
+- Linux shim size budgets were rebaselined after the release-min helper binary
+  grew from the conductor work, keeping CI focused on real size regressions.
+
 ## [0.6.0] - 2026-06-21
 
 Paneflow Conductor. Paneflow becomes a control plane for a fleet of CLI coding
@@ -714,7 +763,9 @@ app shell.
 - Opened the 0.3.x release line. See the GitHub compare link for the full commit
   list.
 
-[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/ArthurDEV44/paneflow/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/ArthurDEV44/paneflow/compare/v0.5.9...v0.6.0
 [0.5.0]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.2...v0.4.3
