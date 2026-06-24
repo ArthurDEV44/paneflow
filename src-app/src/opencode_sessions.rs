@@ -51,14 +51,20 @@ const OPENCODE_STDOUT_CAP: u64 = 8 * 1024 * 1024;
 /// - the spawned process exits non-zero,
 /// - the CLI emits an empty stdout (zero sessions for this project).
 pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
+    read_sessions_for_cwd_with_omitted(cwd).0
+}
+
+/// Like [`read_sessions_for_cwd`], but also reports how many older matching
+/// sessions were omitted by the sidebar retention cap.
+pub fn read_sessions_for_cwd_with_omitted(cwd: &str) -> (Vec<SessionMeta>, usize) {
     read_sessions_with_program("opencode", cwd)
 }
 
 /// Test-only seam: lets the ENOENT test point at a deliberately missing
 /// program name without mutating the process environment.
-fn read_sessions_with_program(program: &str, cwd: &str) -> Vec<SessionMeta> {
+fn read_sessions_with_program(program: &str, cwd: &str) -> (Vec<SessionMeta>, usize) {
     let Some(stdout) = run_opencode_list(program) else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
     parse_sessions(&stdout, cwd)
 }
@@ -134,24 +140,24 @@ fn run_opencode_list(program: &str) -> Option<Vec<u8>> {
 ///   8601 string for parity with the other readers and so the popover's
 ///   relative-time formatter parses it). Falls back to `created` when
 ///   `updated` is absent.
-fn parse_sessions(stdout: &[u8], cwd: &str) -> Vec<SessionMeta> {
+fn parse_sessions(stdout: &[u8], cwd: &str) -> (Vec<SessionMeta>, usize) {
     if stdout.is_empty() {
         // Spike confirmed: zero sessions for the project yields 0 stdout
         // bytes (not "[]"). Short-circuit before serde_json complains.
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let array: Vec<Value> = match serde_json::from_slice(stdout) {
         Ok(Value::Array(arr)) => arr,
-        Ok(_) | Err(_) => return Vec::new(),
+        Ok(_) | Err(_) => return (Vec::new(), 0),
     };
 
-    let mut sessions: Vec<SessionMeta> = array
+    let sessions = array
         .into_iter()
-        .filter_map(|record| record_to_session(&record, cwd))
-        .collect();
-
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    sessions
+        .filter_map(|record| record_to_session(&record, cwd));
+    crate::agent_sessions::collect_recent_sessions(
+        sessions,
+        crate::agent_sessions::SIDEBAR_SESSION_RETAINED_PER_SOURCE,
+    )
 }
 
 /// Convert one CLI record into a [`SessionMeta`] iff its `directory`
@@ -257,7 +263,8 @@ mod tests {
 
     #[test]
     fn parse_sessions_happy_path_extracts_real_cli_record() {
-        let sessions = parse_sessions(FIXTURE.as_bytes(), "/home/arthur");
+        let (sessions, omitted) = parse_sessions(FIXTURE.as_bytes(), "/home/arthur");
+        assert_eq!(omitted, 0);
         assert_eq!(sessions.len(), 1, "fixture has one record at /home/arthur");
         let meta = &sessions[0];
         assert_eq!(meta.agent, SessionAgent::OpenCode);
@@ -280,7 +287,8 @@ mod tests {
             {"id":"b","directory":"/p","title":"newer","updated":2000},
             {"id":"c","directory":"/elsewhere","title":"other","updated":9000}
         ]"#;
-        let sessions = parse_sessions(multi, "/p");
+        let (sessions, omitted) = parse_sessions(multi, "/p");
+        assert_eq!(omitted, 0);
         assert_eq!(sessions.len(), 2, "the /elsewhere record must be filtered");
         assert_eq!(sessions[0].session_id, "b", "newer first");
         assert_eq!(sessions[1].session_id, "a", "older second");
@@ -296,7 +304,8 @@ mod tests {
             {"id":"ses_abc\rrm -rf /","directory":"/p","title":"evil","updated":1000},
             {"id":"ses_clean","directory":"/p","title":"ok","updated":2000}
         ]"#;
-        let sessions = parse_sessions(payload, "/p");
+        let (sessions, omitted) = parse_sessions(payload, "/p");
+        assert_eq!(omitted, 0);
         assert_eq!(sessions.len(), 1, "the \\r-tainted record must be dropped");
         assert_eq!(sessions[0].session_id, "ses_clean");
     }
@@ -307,7 +316,8 @@ mod tests {
             {"directory":"/p","title":"no id here","updated":1000},
             {"id":"keepme","directory":"/p","title":"valid","updated":2000}
         ]"#;
-        let sessions = parse_sessions(mixed, "/p");
+        let (sessions, omitted) = parse_sessions(mixed, "/p");
+        assert_eq!(omitted, 0);
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "keepme");
     }
@@ -316,13 +326,15 @@ mod tests {
     fn parse_sessions_handles_empty_stdout() {
         // The spike confirmed: zero sessions yields 0 bytes, not "[]".
         // Don't let serde_json's EOF error become a Vec full of nothing.
-        let sessions = parse_sessions(b"", "/anywhere");
+        let (sessions, omitted) = parse_sessions(b"", "/anywhere");
+        assert_eq!(omitted, 0);
         assert!(sessions.is_empty());
     }
 
     #[test]
     fn parse_sessions_handles_malformed_json() {
-        let sessions = parse_sessions(b"{not valid json", "/anywhere");
+        let (sessions, omitted) = parse_sessions(b"{not valid json", "/anywhere");
+        assert_eq!(omitted, 0);
         assert!(sessions.is_empty());
     }
 
@@ -330,8 +342,9 @@ mod tests {
     fn read_sessions_returns_empty_when_binary_missing() {
         // Deterministic ENOENT - pick a name no shell will resolve. This
         // covers AC3 without depending on the test runner's PATH.
-        let sessions =
+        let (sessions, omitted) =
             read_sessions_with_program("opencode-does-not-exist-zzz-9d2c1a", "/home/arthur");
+        assert_eq!(omitted, 0);
         assert!(sessions.is_empty());
     }
 

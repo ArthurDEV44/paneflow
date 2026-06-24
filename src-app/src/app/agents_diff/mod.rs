@@ -45,8 +45,8 @@ use crate::diff::{DiffBody, DiffElement, file_at_row, palette, row_at_offset, se
 
 impl PaneFlowApp {
     /// Toggle the Codex-style diff dock. Opening (re)computes the diff for the
-    /// current thread's cwd off-thread; closing just hides it (the cached data
-    /// is dropped on the next open so it never goes stale silently).
+    /// current thread's cwd off-thread; closing drops the cached row model and
+    /// side state so a large hidden diff is not retained.
     pub(crate) fn toggle_agents_diff_panel(
         &mut self,
         _: &ClickEvent,
@@ -54,8 +54,7 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         if self.agents_view.agents_diff_open {
-            self.agents_view.agents_diff_open = false;
-            cx.notify();
+            self.close_agents_diff_panel(cx);
             return;
         }
         self.agents_view.agents_diff_open = true;
@@ -65,6 +64,16 @@ impl PaneFlowApp {
             .map(|thread| thread.cwd.clone())
             .unwrap_or_default();
         self.refresh_agents_diff(cwd, cx);
+    }
+
+    pub(crate) fn close_agents_diff_panel(&mut self, cx: &mut Context<Self>) {
+        self.agents_view.agents_diff_open = false;
+        self.agents_view.agents_diff = None;
+        self.agents_view.agents_diff_collapsed.clear();
+        self.agents_view.agents_diff_h_offsets.clear();
+        self.agents_view.agents_diff_resize = None;
+        self.agents_view.agents_diff_scroll = gpui::ScrollHandle::new();
+        cx.notify();
     }
 
     /// Recompute the diff for `cwd`, parking a loading state first. Shared by the
@@ -96,11 +105,12 @@ impl PaneFlowApp {
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
                         // Apply only if the panel is still bound to this cwd.
-                        let still_current = app
-                            .agents_view
-                            .agents_diff
-                            .as_ref()
-                            .is_some_and(|data| data.cwd == cwd);
+                        let still_current = app.agents_view.agents_diff_open
+                            && app
+                                .agents_view
+                                .agents_diff
+                                .as_ref()
+                                .is_some_and(|data| data.cwd == cwd);
                         if !still_current {
                             return;
                         }

@@ -219,5 +219,8 @@ pub(crate) const TOAST_EXIT_MS: u64 = 180;
 /// Maximum number of closed-pane records kept for undo-close-pane (US-014).
 pub(crate) const MAX_CLOSED_PANES: usize = 5;
 
+/// EP-003: cumulative text budget for undo-close captured scrollback.
+pub(crate) const MAX_CLOSED_PANE_SCROLLBACK_BYTES: usize = 2 * 1024 * 1024;
+
 /// Width of the invisible border zone used for CSD edge/corner resize handles.
 pub(crate) const RESIZE_BORDER: Pixels = px(10.0);

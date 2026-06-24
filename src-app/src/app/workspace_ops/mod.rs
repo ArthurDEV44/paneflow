@@ -25,13 +25,47 @@ use crate::layout::{LayoutTree, MAX_PANES, SplitDirection};
 use crate::terminal::TerminalView;
 use crate::workspace::{MAX_WORKSPACES, Workspace, next_workspace_id};
 use crate::{
-    ClosePane, CloseWorkspace, ClosedPaneRecord, CopyWorkspacePath, MAX_CLOSED_PANES, NewWorkspace,
-    NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf,
-    OpenWorkspaceInZed, PaneFlowApp, RevealWorkspaceInFileManager, SelectWorkspace1,
-    SelectWorkspace2, SelectWorkspace3, SelectWorkspace4, SelectWorkspace5, SelectWorkspace6,
-    SelectWorkspace7, SelectWorkspace8, SelectWorkspace9, SplitHorizontally, SplitVertically,
-    UndoClosePane,
+    ClosePane, CloseWorkspace, ClosedPaneRecord, CopyWorkspacePath,
+    MAX_CLOSED_PANE_SCROLLBACK_BYTES, MAX_CLOSED_PANES, NewWorkspace, NextWorkspace,
+    OpenWorkspaceInCursor, OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf, OpenWorkspaceInZed,
+    PaneFlowApp, RevealWorkspaceInFileManager, SelectWorkspace1, SelectWorkspace2,
+    SelectWorkspace3, SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7,
+    SelectWorkspace8, SelectWorkspace9, SplitHorizontally, SplitVertically, UndoClosePane,
 };
+
+fn push_closed_pane_record(records: &mut Vec<ClosedPaneRecord>, mut record: ClosedPaneRecord) {
+    if let Some(scrollback) = record.scrollback.as_mut() {
+        scrollback.shrink_to_fit();
+    }
+    if records.len() >= MAX_CLOSED_PANES {
+        records.remove(0);
+    }
+    records.push(record);
+    enforce_closed_pane_scrollback_budget(records, MAX_CLOSED_PANE_SCROLLBACK_BYTES);
+}
+
+fn enforce_closed_pane_scrollback_budget(records: &mut [ClosedPaneRecord], budget: usize) {
+    let mut total = closed_pane_scrollback_bytes(records);
+    if total <= budget {
+        return;
+    }
+    for record in records.iter_mut() {
+        if total <= budget {
+            break;
+        }
+        if let Some(scrollback) = record.scrollback.take() {
+            total = total.saturating_sub(scrollback.len());
+        }
+    }
+}
+
+fn closed_pane_scrollback_bytes(records: &[ClosedPaneRecord]) -> usize {
+    records
+        .iter()
+        .filter_map(|record| record.scrollback.as_ref())
+        .map(String::len)
+        .sum()
+}
 
 impl PaneFlowApp {
     pub(crate) fn active_workspace(&self) -> Option<&Workspace> {
@@ -307,10 +341,7 @@ impl PaneFlowApp {
                     scrollback: tv_ref.terminal.extract_scrollback(),
                     workspace_idx,
                 };
-                if self.closed_panes.len() >= MAX_CLOSED_PANES {
-                    self.closed_panes.remove(0);
-                }
-                self.closed_panes.push(record);
+                push_closed_pane_record(&mut self.closed_panes, record);
             }
         }
 
@@ -993,6 +1024,54 @@ mod tests {
         let bare = "paneflow_no_such_editor_zzz_77";
         let resolved = resolve_editor_binary_in(bare, &[dir.path().to_path_buf()]);
         assert_eq!(resolved, std::path::PathBuf::from(bare));
+    }
+
+    fn closed_pane_record_with_scrollback(len: usize) -> ClosedPaneRecord {
+        ClosedPaneRecord {
+            cwd: None,
+            scrollback: Some("x".repeat(len)),
+            workspace_idx: 0,
+        }
+    }
+
+    #[test]
+    fn closed_pane_budget_drops_oldest_scrollback_not_record() {
+        let one_mib = 1024 * 1024;
+        let mut records = vec![
+            closed_pane_record_with_scrollback(one_mib),
+            closed_pane_record_with_scrollback(one_mib),
+        ];
+
+        push_closed_pane_record(&mut records, closed_pane_record_with_scrollback(one_mib));
+
+        assert_eq!(records.len(), 3, "budget must preserve undo records");
+        assert!(
+            records[0].scrollback.is_none(),
+            "oldest scrollback should be released first"
+        );
+        assert!(records[1].scrollback.is_some());
+        assert!(records[2].scrollback.is_some());
+        assert_eq!(
+            closed_pane_scrollback_bytes(&records),
+            MAX_CLOSED_PANE_SCROLLBACK_BYTES
+        );
+    }
+
+    #[test]
+    fn closed_pane_budget_preserves_absent_scrollback_for_undo() {
+        let mut records = Vec::new();
+        push_closed_pane_record(
+            &mut records,
+            ClosedPaneRecord {
+                cwd: None,
+                scrollback: None,
+                workspace_idx: 0,
+            },
+        );
+
+        assert_eq!(records.len(), 1);
+        assert!(records[0].scrollback.is_none());
+        assert_eq!(closed_pane_scrollback_bytes(&records), 0);
     }
 
     // ─── Per-OS path-list shape ────────────────────────────────────────

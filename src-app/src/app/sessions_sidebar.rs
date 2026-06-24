@@ -72,6 +72,7 @@ impl PaneFlowApp {
         self.agent_sessions.opencode_sessions.clear();
         // Fresh per-group state for this open: all expanded, capped at 5,
         // not-yet-scanning (each spawned scan flips its own flag below).
+        self.agent_sessions.sessions_omitted = [0; 3];
         self.agent_sessions.sessions_group_collapsed = [false; 3];
         self.agent_sessions.sessions_group_show_all = [false; 3];
         self.agent_sessions.sessions_scanning = [false; 3];
@@ -104,8 +105,8 @@ impl PaneFlowApp {
                 let claude_cwd_scan = cwd.clone();
                 let claude_cwd_match = cwd.clone();
                 cx.spawn(async move |this, cx| {
-                    let sessions = smol::unblock(move || {
-                        crate::claude_sessions::read_sessions_for_cwd(&claude_cwd_scan)
+                    let (sessions, omitted) = smol::unblock(move || {
+                        crate::claude_sessions::read_sessions_for_cwd_with_omitted(&claude_cwd_scan)
                     })
                     .await;
                     let _ = this.update(cx, |app, cx| {
@@ -114,6 +115,7 @@ impl PaneFlowApp {
                                 == Some(claude_cwd_match.as_str())
                         {
                             app.agent_sessions.claude_sessions = sessions;
+                            app.agent_sessions.sessions_omitted[idx] = omitted;
                             app.agent_sessions.sessions_scanning[idx] = false;
                             cx.notify();
                         }
@@ -128,8 +130,8 @@ impl PaneFlowApp {
                 let codex_cwd_scan = cwd.clone();
                 let codex_cwd_match = cwd.clone();
                 cx.spawn(async move |this, cx| {
-                    let sessions = smol::unblock(move || {
-                        crate::codex_sessions::read_sessions_for_cwd(&codex_cwd_scan)
+                    let (sessions, omitted) = smol::unblock(move || {
+                        crate::codex_sessions::read_sessions_for_cwd_with_omitted(&codex_cwd_scan)
                     })
                     .await;
                     let _ = this.update(cx, |app, cx| {
@@ -138,6 +140,7 @@ impl PaneFlowApp {
                                 == Some(codex_cwd_match.as_str())
                         {
                             app.agent_sessions.codex_sessions = sessions;
+                            app.agent_sessions.sessions_omitted[idx] = omitted;
                             app.agent_sessions.sessions_scanning[idx] = false;
                             cx.notify();
                         }
@@ -152,8 +155,10 @@ impl PaneFlowApp {
                 let opencode_cwd_scan = cwd.clone();
                 let opencode_cwd_match = cwd;
                 cx.spawn(async move |this, cx| {
-                    let sessions = smol::unblock(move || {
-                        crate::opencode_sessions::read_sessions_for_cwd(&opencode_cwd_scan)
+                    let (sessions, omitted) = smol::unblock(move || {
+                        crate::opencode_sessions::read_sessions_for_cwd_with_omitted(
+                            &opencode_cwd_scan,
+                        )
                     })
                     .await;
                     let _ = this.update(cx, |app, cx| {
@@ -162,6 +167,7 @@ impl PaneFlowApp {
                                 == Some(opencode_cwd_match.as_str())
                         {
                             app.agent_sessions.opencode_sessions = sessions;
+                            app.agent_sessions.sessions_omitted[idx] = omitted;
                             app.agent_sessions.sessions_scanning[idx] = false;
                             cx.notify();
                         }
@@ -322,6 +328,7 @@ impl PaneFlowApp {
         let show_all = self.agent_sessions.sessions_group_show_all[idx];
         let scanning = self.agent_sessions.sessions_scanning[idx];
         let sessions = self.sessions_for(agent);
+        let omitted = self.sessions_omitted_for(agent);
         // Distinct chevron per state (US-006): right = collapsed, down =
         // expanded - a static swap, not a tween, so it reads under reduced
         // motion.
@@ -437,6 +444,17 @@ impl PaneFlowApp {
                         .child(label),
                 );
             }
+            if omitted > 0 {
+                group = group.child(
+                    div()
+                        .mx(px(14.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .text_size(px(10.))
+                        .text_color(ui.muted.opacity(0.8))
+                        .child(older_sessions_hidden_label(omitted)),
+                );
+            }
         }
 
         group.into_any_element()
@@ -448,6 +466,10 @@ impl PaneFlowApp {
             SessionAgent::Codex => &self.agent_sessions.codex_sessions,
             SessionAgent::OpenCode => &self.agent_sessions.opencode_sessions,
         }
+    }
+
+    fn sessions_omitted_for(&self, agent: SessionAgent) -> usize {
+        self.agent_sessions.sessions_omitted[agent_index(agent)]
     }
 
     fn sessions_row(
@@ -561,6 +583,7 @@ impl PaneFlowApp {
         self.agent_sessions.claude_sessions.clear();
         self.agent_sessions.codex_sessions.clear();
         self.agent_sessions.opencode_sessions.clear();
+        self.agent_sessions.sessions_omitted = [0; 3];
         self.agent_sessions.claude_sessions_cwd = None;
         self.agent_sessions.claude_sessions_pane = None;
         // US-006: per-group state is in-memory only - reset so a reopen starts
@@ -594,6 +617,14 @@ fn visible_window(len: usize, show_all: bool, cap: usize) -> (usize, usize) {
         (len, 0)
     } else {
         (cap, len - cap)
+    }
+}
+
+fn older_sessions_hidden_label(omitted: usize) -> SharedString {
+    if omitted == 1 {
+        SharedString::from("1 older session hidden")
+    } else {
+        format!("{omitted} older sessions hidden").into()
     }
 }
 
@@ -746,5 +777,11 @@ mod tests {
     fn visible_window_show_all_reveals_everything() {
         assert_eq!(visible_window(6, true, CAP), (6, 0));
         assert_eq!(visible_window(100, true, CAP), (100, 0));
+    }
+
+    #[test]
+    fn older_sessions_hidden_label_pluralizes() {
+        assert_eq!(older_sessions_hidden_label(1), "1 older session hidden");
+        assert_eq!(older_sessions_hidden_label(2), "2 older sessions hidden");
     }
 }

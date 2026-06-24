@@ -27,6 +27,7 @@ impl DiffView {
     /// superseded by a newer load (US-007 last-write-wins).
     pub(super) fn start_loading_columns(&mut self, indices: &[usize], cx: &mut Context<Self>) {
         let shared_base = self.base_ref.clone();
+        let active_mode = self.last_effective_mode;
         // Snapshot the active theme on the main thread; `TerminalTheme` is `Copy`
         // so each column's background task gets its own copy to derive syntax
         // colors from, without touching the theme cache off-thread.
@@ -45,6 +46,7 @@ impl DiffView {
             let (generation, base, path, branch) = match self.columns.get_mut(i) {
                 Some(col) if col.visible => {
                     col.generation = col.generation.wrapping_add(1);
+                    col.loading_mode = None;
                     let base = col
                         .base_override
                         .clone()
@@ -62,6 +64,7 @@ impl DiffView {
                 continue;
             }
             log::debug!("diff: col {i} ({branch}) task SPAWNED (gen={generation})");
+            let mode = active_mode;
             cx.spawn(async move |this, cx| {
                 // The whole pipeline - git diff, row building, AND the syntect
                 // pass - runs off the GPUI main thread; only the `Rc` wrap +
@@ -89,37 +92,7 @@ impl DiffView {
                     let t1 = Instant::now();
                     let syntax = SYNTAX_HIGHLIGHT_ENABLED
                         .then(|| super::super::syntax::DiffSyntax::from_theme(&theme));
-                    let (unified, _) = build_display_rows(&diff.files, syntax.as_ref());
-                    let (split, _) = build_split_rows(&diff.files, syntax.as_ref());
-                    // File path -> header row index, in file order, so a sidebar
-                    // click can scroll the body to that file. Header rows are
-                    // emitted one per file in `diff.files` order, so zipping
-                    // realigns them (the zip naturally truncates if the row cap
-                    // dropped trailing headers).
-                    let anchors_unified: Vec<(String, usize)> = diff
-                        .files
-                        .iter()
-                        .map(|f| f.path.clone())
-                        .zip(
-                            unified
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, r)| r.kind == RowKind::FileHeader)
-                                .map(|(i, _)| i),
-                        )
-                        .collect();
-                    let anchors_split: Vec<(String, usize)> = diff
-                        .files
-                        .iter()
-                        .map(|f| f.path.clone())
-                        .zip(
-                            split
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, r)| matches!(r, SplitRow::Header(_)))
-                                .map(|(i, _)| i),
-                        )
-                        .collect();
+                    let rows = build_rows_for_mode(&diff.files, mode, syntax.as_ref());
                     // US-008: lightweight per-file summary for the git panel,
                     // built here (off-thread) from the same FileDiffs.
                     let files = diff
@@ -138,9 +111,12 @@ impl DiffView {
                         })
                         .collect();
                     log::debug!(
-                        "diff: col {i} ({bc}) built {} unified / {} split rows in {:?}",
-                        unified.len(),
-                        split.len(),
+                        "diff: col {i} ({bc}) built {} rows for {} mode in {:?}",
+                        match &rows {
+                            BuiltModeRows::Unified { rows, .. } => rows.len(),
+                            BuiltModeRows::Split { rows, .. } => rows.len(),
+                        },
+                        rows.mode().label(),
                         t1.elapsed()
                     );
                     // EP-004 US-014: match local agent sessions to this worktree
@@ -151,12 +127,9 @@ impl DiffView {
                     let attribution =
                         crate::agent_sessions::attribution_for_column(&cwd, &bc);
                     Built::Loaded {
-                        unified,
-                        split,
+                        rows,
                         file_count: diff.files.len(),
                         files,
-                        anchors_unified,
-                        anchors_split,
                         // Move the raw FileDiffs out for copy/review (US-001..005);
                         // every `&diff.files` consumer above has finished borrowing.
                         files_full: diff.files,
@@ -171,7 +144,7 @@ impl DiffView {
                         let Some(col) = view.columns.get_mut(i) else {
                             return;
                         };
-                        if col.generation != generation {
+                        if col.generation != generation || !col.visible {
                             // Not an error: a newer load (bootstrap + watcher
                             // overlap, base-branch switch, resize) bumped this
                             // column's generation while we were off-thread, so
@@ -184,18 +157,17 @@ impl DiffView {
                             );
                             return; // superseded by a newer load of this column
                         }
+                        let mut loaded_mode = None;
                         let new_state = match built {
                             Built::Failed(e) => {
                                 log::warn!("diff: col {i} ({branch}) FAILED: {e}");
+                                col.loading_mode = None;
                                 ColumnState::Failed(e)
                             }
                             Built::Loaded {
-                                unified,
-                                split,
+                                rows,
                                 file_count,
                                 files,
-                                anchors_unified,
-                                anchors_split,
                                 files_full,
                                 fingerprint,
                                 attribution,
@@ -207,13 +179,30 @@ impl DiffView {
                                 // EP-004 US-014: cache the matched sessions on the
                                 // column (re-fetched only on re-diff).
                                 col.attribution = attribution;
+                                col.loading_mode = None;
+                                let mode = rows.mode();
+                                loaded_mode = Some(mode);
+                                let (unified, split, anchors_unified, anchors_split) = match rows {
+                                    BuiltModeRows::Unified { rows, anchors } => (
+                                        Some(Rc::new(rows)),
+                                        None,
+                                        Some(Rc::new(anchors)),
+                                        None,
+                                    ),
+                                    BuiltModeRows::Split { rows, anchors } => (
+                                        None,
+                                        Some(Rc::new(rows)),
+                                        None,
+                                        Some(Rc::new(anchors)),
+                                    ),
+                                };
                                 ColumnState::Loaded {
-                                    unified: Rc::new(unified),
-                                    split: Rc::new(split),
+                                    unified,
+                                    split,
                                     file_count,
                                     files: Rc::new(files),
-                                    anchors_unified: Rc::new(anchors_unified),
-                                    anchors_split: Rc::new(anchors_split),
+                                    anchors_unified,
+                                    anchors_split,
                                     files_full: Rc::new(files_full),
                                 }
                             }
@@ -221,7 +210,12 @@ impl DiffView {
                         col.state = new_state;
                         // Rebuild the collapse-filtered views from the fresh rows
                         // (carries any per-file collapse across the reload).
-                        col.recompute_display();
+                        if let Some(mode) = loaded_mode {
+                            col.drop_rows_except(mode);
+                            col.recompute_display_for(mode);
+                        } else {
+                            col.reset_display_caches();
+                        }
                         // A reload can reorder or drop entries in this column's
                         // `files_full`, which an open body context menu indexes by
                         // position. Drop a menu targeting this column so a menu
@@ -239,6 +233,74 @@ impl DiffView {
         // Repaint now so any column set to `Failed` (empty base) above shows its
         // prompt immediately; loaded columns also repaint when their task applies.
         cx.notify();
+    }
+
+    pub(super) fn ensure_visible_mode_loaded(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+        let theme = crate::theme::active_theme();
+        for i in 0..self.columns.len() {
+            let Some(col) = self.columns.get_mut(i) else {
+                continue;
+            };
+            if !col.visible {
+                continue;
+            }
+            if col.has_rows_for_mode(mode) {
+                if col.loading_mode != Some(mode) {
+                    col.loading_mode = None;
+                }
+                if col.has_rows_for_mode(mode.opposite()) {
+                    col.drop_rows_except(mode);
+                }
+                if !col.has_display_for_mode(mode) {
+                    col.recompute_display_for(mode);
+                }
+                continue;
+            }
+            if col.loading_mode == Some(mode) {
+                continue;
+            }
+            let files = match &col.state {
+                ColumnState::Loaded { files_full, .. } => files_full.as_ref().clone(),
+                _ => continue,
+            };
+            let generation = col.generation;
+            col.loading_mode = Some(mode);
+            log::debug!(
+                "diff: col {i} scheduling lazy {} row build (gen={generation})",
+                mode.label()
+            );
+            cx.spawn(async move |this, cx| {
+                let rows = smol::unblock(move || {
+                    let syntax = SYNTAX_HIGHLIGHT_ENABLED
+                        .then(|| super::super::syntax::DiffSyntax::from_theme(&theme));
+                    build_rows_for_mode(&files, mode, syntax.as_ref())
+                })
+                .await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |view: &mut Self, cx| {
+                        let Some(col) = view.columns.get_mut(i) else {
+                            return;
+                        };
+                        if col.generation != generation
+                            || !col.visible
+                            || col.loading_mode != Some(mode)
+                        {
+                            return;
+                        }
+                        if !matches!(col.state, ColumnState::Loaded { .. }) {
+                            col.loading_mode = None;
+                            return;
+                        }
+                        col.loading_mode = None;
+                        col.insert_mode_rows(rows);
+                        col.drop_rows_except(mode);
+                        col.recompute_display_for(mode);
+                        cx.notify();
+                    })
+                });
+            })
+            .detach();
+        }
     }
 
     /// Per-branch changed-file lists for the multi-branch diff sidebar: one entry

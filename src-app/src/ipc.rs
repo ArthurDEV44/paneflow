@@ -151,6 +151,19 @@ use crate::limits::MAX_REQUEST_LEN;
 /// new connections are refused with backpressure (`-32000`) and closed.
 const MAX_CONCURRENT_CONNECTIONS: usize = 16;
 
+/// EP-004 US-010: bounded queue from the socket handler threads to the GPUI
+/// thread. Once 256 requests are pending, new GPUI-bound requests fail fast
+/// with an overload error instead of growing memory without a cap.
+pub(crate) const IPC_REQUEST_QUEUE_CAPACITY: usize = 256;
+
+/// EP-004 US-011: maximum live IPC handlers the GPUI thread runs in one tick.
+/// Remaining queued requests stay pending for the next scheduled tick.
+pub(crate) const IPC_DRAIN_MAX_PER_TICK: usize = 64;
+
+/// Cancelled requests do not spend live handler budget, but draining them is
+/// still bounded so a backlog of timed-out requests cannot monopolize a tick.
+pub(crate) const IPC_DRAIN_MAX_DEQUEUES_PER_TICK: usize = IPC_DRAIN_MAX_PER_TICK * 2;
+
 /// US-022: idle read deadline per connection. A peer that opens a connection
 /// and then sends nothing (or stops mid-stream) otherwise pins its handler
 /// thread forever. Enforced at the OS level via `set_recv_timeout`. Generous
@@ -218,7 +231,7 @@ pub fn start_server() -> (
         );
     }
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(IPC_REQUEST_QUEUE_CAPACITY);
     let status = IpcStatus::online();
     let thread_status = status.clone();
 
@@ -443,10 +456,9 @@ pub fn start_server() -> (
         // so on error the closure (and its captured `tx`) is dropped
         // here. The receiver `rx` then sees `Err(Disconnected)` on
         // every subsequent `try_recv`. The consumer at
-        // `app/ipc_handler.rs:109` uses
-        // `while let Ok(req) = self.ipc_rx.try_recv()` so both `Empty`
-        // and `Disconnected` resolve to "no IPC work this tick" -- the
-        // app runs normally, only external IPC clients can't reach it.
+        // `app/ipc_handler.rs` uses a non-blocking bounded drain, so both
+        // `Empty` and `Disconnected` resolve to "no IPC work this tick" --
+        // the app runs normally, only external IPC clients can't reach it.
     }
 
     (rx, status, event_bus)
@@ -730,7 +742,7 @@ fn peer_pid(_stream: &Stream) -> Option<i64> {
 
 fn handle_connection(
     stream: Stream,
-    request_tx: mpsc::Sender<IpcRequest>,
+    request_tx: mpsc::SyncSender<IpcRequest>,
     event_bus: Arc<crate::ipc_events::EventBus>,
 ) {
     // EP-006 US-013: `event_bus` now feeds `serve_subscription` on BOTH
@@ -797,11 +809,10 @@ fn handle_connection(
     // below). Threaded into each IpcRequest for the free-access write trace.
     let caller_pid = peer_pid(&stream);
 
-    // US-022: drop a peer that opens a connection and then goes mute, so it
-    // can't pin this handler thread forever. Enforced at the OS level; a
-    // best-effort failure leaves the previous (blocking) behavior. NOTE: on
-    // Windows named pipes this returns ErrorKind::Unsupported (no idle bound),
-    // which is acceptable - clients send a frame immediately on connect.
+    // US-022 / EP-004: drop a peer that opens a connection and then goes mute,
+    // so it can't pin this handler thread forever. Unix sockets use the OS
+    // receive timeout here; Windows named pipes are bounded inside
+    // `pipe_read_some` because `set_recv_timeout` is unsupported there.
     let _ = stream.set_recv_timeout(Some(IPC_IDLE_TIMEOUT));
 
     #[cfg(windows)]
@@ -1164,11 +1175,22 @@ fn pipe_write_all(writer: &Stream, buf: &[u8]) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn pipe_read_some(reader: &Stream, buf: &mut [u8]) -> std::io::Result<usize> {
+    pipe_read_some_with_timeout(reader, buf, IPC_IDLE_TIMEOUT)
+}
+
+#[cfg(windows)]
+fn pipe_read_some_with_timeout(
+    reader: &Stream,
+    buf: &mut [u8],
+    timeout: Duration,
+) -> std::io::Result<usize> {
     use std::os::windows::io::{AsHandle, AsRawHandle};
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_IO_PENDING, HANDLE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_IO_PENDING, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
     use windows_sys::Win32::Storage::FileSystem::ReadFile;
-    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
-    use windows_sys::Win32::System::Threading::CreateEventW;
+    use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
     let Stream::NamedPipe(np) = reader;
     let handle: HANDLE = np.as_handle().as_raw_handle() as _;
@@ -1197,10 +1219,47 @@ fn pipe_read_some(reader: &Stream, buf: &mut [u8]) -> std::io::Result<usize> {
             &mut ov,
         )
     };
-    if started == 0 {
+    let pending = if started == 0 {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
             return Err(err);
+        }
+        true
+    } else {
+        false
+    };
+
+    if pending {
+        let timeout_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+        let reap_pending_read = |ov: &OVERLAPPED| {
+            let _ = unsafe { CancelIoEx(handle, ov) };
+            let mut cancelled_transferred: u32 = 0;
+            let _ = unsafe { GetOverlappedResult(handle, ov, &mut cancelled_transferred, 1) };
+        };
+        match unsafe { WaitForSingleObject(event, timeout_ms) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_TIMEOUT => {
+                // The OVERLAPPED lives on this stack frame, so after marking
+                // the read for cancellation we still reap completion before
+                // returning. Named-pipe cancellation completes as an ordinary
+                // overlapped result (often ERROR_OPERATION_ABORTED).
+                reap_pending_read(&ov);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "named-pipe read timed out",
+                ));
+            }
+            WAIT_FAILED => {
+                let err = std::io::Error::last_os_error();
+                reap_pending_read(&ov);
+                return Err(err);
+            }
+            other => {
+                reap_pending_read(&ov);
+                return Err(std::io::Error::other(format!(
+                    "unexpected WaitForSingleObject result {other}"
+                )));
+            }
         }
     }
 
@@ -1274,7 +1333,7 @@ fn subscriber_connected(writer: &Stream) -> bool {
 }
 
 fn dispatch_to_gpui(
-    request_tx: &mpsc::Sender<IpcRequest>,
+    request_tx: &mpsc::SyncSender<IpcRequest>,
     method: String,
     params: Value,
     id: Value,
@@ -1293,8 +1352,14 @@ fn dispatch_to_gpui(
         caller_pid,
     };
 
-    if request_tx.send(ipc_req).is_err() {
-        return json!({"jsonrpc": "2.0", "error": {"code": -32000, "message": "App shutting down"}, "id": id});
+    match request_tx.try_send(ipc_req) {
+        Ok(()) => {}
+        Err(mpsc::TrySendError::Full(_)) => {
+            return json!({"jsonrpc": "2.0", "error": {"code": -32000, "message": "Paneflow is busy; retry shortly"}, "id": id});
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            return json!({"jsonrpc": "2.0", "error": {"code": -32000, "message": "App shutting down"}, "id": id});
+        }
     }
 
     // Wait for GPUI thread to process (timeout 5s).
@@ -1542,11 +1607,59 @@ mod framing_tests {
 
 #[cfg(test)]
 mod dispatch_tests {
-    use super::await_or_cancel;
+    use super::{IpcRequest, await_or_cancel, dispatch_to_gpui};
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
+
+    fn test_ipc_request() -> IpcRequest {
+        let (response_tx, _response_rx) = mpsc::channel();
+        IpcRequest {
+            method: "surface.read".to_string(),
+            params: json!({}),
+            _id: json!(1),
+            response_tx,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            caller_pid: None,
+        }
+    }
+
+    #[test]
+    fn dispatch_to_gpui_returns_overload_when_request_queue_full() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        tx.try_send(test_ipc_request()).unwrap();
+
+        let resp = dispatch_to_gpui(
+            &tx,
+            "surface.read".to_string(),
+            json!({ "surface_id": 1 }),
+            json!("req-overload"),
+            None,
+        );
+
+        assert_eq!(resp["error"]["code"], -32000);
+        assert_eq!(resp["error"]["message"], "Paneflow is busy; retry shortly");
+        assert_eq!(resp["id"], "req-overload");
+    }
+
+    #[test]
+    fn dispatch_to_gpui_returns_shutdown_when_receiver_dropped() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        drop(rx);
+
+        let resp = dispatch_to_gpui(
+            &tx,
+            "surface.read".to_string(),
+            json!({ "surface_id": 1 }),
+            json!("req-closed"),
+            None,
+        );
+
+        assert_eq!(resp["error"]["code"], -32000);
+        assert_eq!(resp["error"]["message"], "App shutting down");
+        assert_eq!(resp["id"], "req-closed");
+    }
 
     #[test]
     fn await_or_cancel_sets_flag_and_errors_on_timeout() {
@@ -1603,7 +1716,8 @@ mod dispatch_tests {
 #[cfg(all(test, windows))]
 mod windows_pipe_tests {
     use super::{
-        LineRead, pipe_write_all, push_frame, push_line, read_request_line, subscriber_connected,
+        LineRead, pipe_read_some_with_timeout, pipe_write_all, push_frame, push_line,
+        read_request_line, subscriber_connected,
     };
     use interprocess::local_socket::{
         GenericFilePath, Listener, ListenerOptions, Stream, prelude::*,
@@ -1778,5 +1892,21 @@ mod windows_pipe_tests {
             LineRead::Eof
         );
         assert!(line.is_empty());
+    }
+
+    #[test]
+    fn muted_named_pipe_read_times_out_without_pinning_handler() {
+        let (server, _client, _listener) = connected_pair();
+        let mut buf = [0u8; 16];
+        let started = Instant::now();
+
+        let err = pipe_read_some_with_timeout(&server, &mut buf, Duration::from_millis(50))
+            .expect_err("mute peer should hit the explicit read timeout");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout path must release promptly instead of pinning the handler slot"
+        );
     }
 }

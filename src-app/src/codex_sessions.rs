@@ -55,32 +55,90 @@ pub fn sessions_root() -> Option<PathBuf> {
 /// per-file fast bail-out (we stop after the session_meta line if cwd
 /// doesn't match).
 pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
-    read_sessions_for_cwd_inner(cwd, false)
+    read_sessions_for_cwd_with_omitted(cwd).0
 }
 
-/// EP-004 US-014/US-016: like [`read_sessions_for_cwd`] but each rollout is
-/// scanned deeper to populate `model` (`turn_context`) + cumulative `usage`
-/// (last `token_count` event). **Blocking I/O** - call from inside
-/// `smol::unblock`.
-pub fn read_sessions_with_usage_for_cwd(cwd: &str) -> Vec<SessionMeta> {
-    read_sessions_for_cwd_inner(cwd, true)
+/// Like [`read_sessions_for_cwd`], but also reports how many older matching
+/// sessions were omitted by the sidebar retention cap.
+pub fn read_sessions_for_cwd_with_omitted(cwd: &str) -> (Vec<SessionMeta>, usize) {
+    read_sessions_for_cwd_inner(
+        cwd,
+        false,
+        Some(crate::agent_sessions::SIDEBAR_SESSION_RETAINED_PER_SOURCE),
+    )
 }
 
-fn read_sessions_for_cwd_inner(cwd: &str, scan_usage: bool) -> Vec<SessionMeta> {
+/// EP-004 US-014/US-016: like [`read_sessions_for_cwd`] but the retained
+/// attribution candidates are scanned deeper to populate `model`
+/// (`turn_context`) + cumulative `usage` (last `token_count` event).
+/// **Blocking I/O** - call from inside `smol::unblock`.
+pub fn read_sessions_with_usage_for_attribution(cwd: &str, branch: &str) -> Vec<SessionMeta> {
     let Some(root) = sessions_root() else {
         return Vec::new();
     };
 
-    let mut sessions = Vec::new();
+    let mut candidates: Vec<(SessionMeta, PathBuf)> = Vec::new();
     walk_jsonl_files(&root, &mut |path| {
-        if let Some(meta) = read_session_meta_inner(path, scan_usage)
+        if let Some(meta) = read_session_meta_inner(path, false)
             && crate::agent_sessions::cwd_matches(&meta.cwd, cwd)
         {
-            sessions.push(meta);
+            crate::agent_sessions::push_ranked_attribution(
+                &mut candidates,
+                meta,
+                path.to_path_buf(),
+                branch,
+                crate::agent_sessions::DIFF_ATTRIBUTION_MATCH_CAP,
+            );
         }
     });
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    sessions
+
+    let enriched: Vec<SessionMeta> = candidates
+        .into_iter()
+        .filter_map(
+            |(fallback, path)| match read_session_meta_inner(&path, true) {
+                Some(meta) if crate::agent_sessions::cwd_matches(&meta.cwd, cwd) => Some(meta),
+                Some(_) => None,
+                None => Some(fallback),
+            },
+        )
+        .collect();
+    crate::agent_sessions::match_sessions_to_column(enriched, cwd, branch)
+}
+
+fn read_sessions_for_cwd_inner(
+    cwd: &str,
+    scan_usage: bool,
+    cap: Option<usize>,
+) -> (Vec<SessionMeta>, usize) {
+    let Some(root) = sessions_root() else {
+        return (Vec::new(), 0);
+    };
+
+    match cap {
+        Some(cap) => {
+            let mut collector = crate::agent_sessions::RecentSessionCollector::new(cap);
+            walk_jsonl_files(&root, &mut |path| {
+                if let Some(meta) = read_session_meta_inner(path, scan_usage)
+                    && crate::agent_sessions::cwd_matches(&meta.cwd, cwd)
+                {
+                    collector.push(meta);
+                }
+            });
+            collector.finish()
+        }
+        None => {
+            let mut all = Vec::new();
+            walk_jsonl_files(&root, &mut |path| {
+                if let Some(meta) = read_session_meta_inner(path, scan_usage)
+                    && crate::agent_sessions::cwd_matches(&meta.cwd, cwd)
+                {
+                    all.push(meta);
+                }
+            });
+            all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            (all, 0)
+        }
+    }
 }
 
 /// Codex's layout is `YYYY/MM/DD/*.jsonl` - three levels below the root - so

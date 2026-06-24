@@ -8,15 +8,16 @@
 //!
 //! Each terminal is a real [`crate::terminal::view::TerminalView`] entity, so
 //! its PTY, scrollback, and I/O threads survive tab switches and panel
-//! close/reopen (the entities are retained in [`crate::AgentsViewState`] until
-//! the tab is closed). PTY env ids come from a namespace disjoint from CLI
-//! workspaces and Agents threads so they can never collide.
+//! close/reopen. Hidden exited tabs are released opportunistically; running tabs
+//! stay alive until the user closes them. PTY env ids come from a namespace
+//! disjoint from CLI workspaces and Agents threads so they can never collide.
 
 use gpui::{
     AnyElement, AppContext, ClickEvent, Context, CursorStyle, Focusable, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px, svg,
 };
+use paneflow_config::schema::TerminalSurfaceProfile;
 
 use crate::PaneFlowApp;
 use crate::settings::components::with_alpha;
@@ -30,12 +31,53 @@ const BOTTOM_PANEL_MIN_HEIGHT: f32 = 140.0;
 
 /// Ceiling for the resize drag: never let the dock fully eat the surface above.
 const BOTTOM_PANEL_MAX_HEIGHT: f32 = 760.0;
+const BOTTOM_TERMINAL_HOT_CACHE_LIMIT: usize = 8;
 
 /// Env-id namespace for bottom-panel PTYs. CLI workspaces live in `0..2^32` and
 /// Agents threads in `(1<<32)..` (via [`crate::project::thread_env_id`]); `2<<32`
 /// gives every bottom terminal an id that can collide with neither, since the
 /// per-session terminal counter never approaches `2^32`.
 const BOTTOM_TERMINAL_ENV_ID_BASE: u64 = 2u64 << 32;
+
+#[derive(Clone, Copy)]
+struct BottomTerminalCacheEntry {
+    id: u64,
+    exited: bool,
+}
+
+fn bottom_terminal_prune_positions(
+    entries: &[BottomTerminalCacheEntry],
+    protected_active: Option<u64>,
+    release_all_exited: bool,
+    limit: usize,
+) -> Vec<usize> {
+    let mut retained: Vec<(usize, BottomTerminalCacheEntry)> =
+        entries.iter().copied().enumerate().collect();
+    let mut removals = Vec::new();
+    let is_evictable =
+        |entry: &BottomTerminalCacheEntry| protected_active != Some(entry.id) && entry.exited;
+
+    if release_all_exited {
+        retained.retain(|(idx, entry)| {
+            let keep = !is_evictable(entry);
+            if !keep {
+                removals.push(*idx);
+            }
+            keep
+        });
+    }
+
+    while retained.len() > limit {
+        let Some(pos) = retained.iter().position(|(_, entry)| is_evictable(entry)) else {
+            break;
+        };
+        let (idx, _) = retained.remove(pos);
+        removals.push(idx);
+    }
+
+    removals.sort_unstable_by(|a, b| b.cmp(a));
+    removals
+}
 
 impl PaneFlowApp {
     /// The cwd a new bottom terminal should target: the currently selected
@@ -50,7 +92,8 @@ impl PaneFlowApp {
     /// Toggle the bottom dock. Opening with no terminals yet spawns the first
     /// one in the active thread's cwd and focuses it; opening with terminals
     /// already present just re-reveals them and refocuses the active tab.
-    /// Closing only hides the panel - terminals stay alive for a warm reopen.
+    /// Closing hides the panel and releases any exited tabs; running terminals
+    /// stay alive for a warm reopen.
     pub(crate) fn toggle_agents_bottom_panel(
         &mut self,
         _: &ClickEvent,
@@ -60,6 +103,7 @@ impl PaneFlowApp {
         if self.agents_view.bottom_panel_open {
             self.agents_view.bottom_panel_open = false;
             self.agents_view.bottom_panel_drag = None;
+            self.prune_bottom_terminal_cache(None, true, cx);
             cx.notify();
             return;
         }
@@ -72,7 +116,8 @@ impl PaneFlowApp {
         cx.notify();
     }
 
-    /// Close the whole dock (panel × button). Terminals are retained.
+    /// Close the whole dock (panel × button). Running terminals are retained;
+    /// exited terminals are released because the dock is hidden.
     pub(crate) fn close_agents_bottom_panel(
         &mut self,
         _: &ClickEvent,
@@ -81,6 +126,7 @@ impl PaneFlowApp {
     ) {
         self.agents_view.bottom_panel_open = false;
         self.agents_view.bottom_panel_drag = None;
+        self.prune_bottom_terminal_cache(None, true, cx);
         cx.notify();
     }
 
@@ -100,8 +146,15 @@ impl PaneFlowApp {
             Some(std::path::PathBuf::from(&cwd))
         };
 
-        let view =
-            cx.new(|cx| crate::terminal::view::TerminalView::with_cwd(env_id, cwd_path, None, cx));
+        let view = cx.new(|cx| {
+            crate::terminal::view::TerminalView::with_cwd_and_profile(
+                env_id,
+                cwd_path,
+                None,
+                TerminalSurfaceProfile::Agent,
+                cx,
+            )
+        });
 
         // OSC 0/2 title → tab label, so a tab reads "zsh" / "claude" / a cwd
         // rather than a frozen "Terminal N". Detached: the entity owns its
@@ -125,6 +178,7 @@ impl PaneFlowApp {
                 view: view.clone(),
             });
         self.agents_view.bottom_panel_active = Some(id);
+        self.prune_bottom_terminal_cache(Some(id), false, cx);
         view.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
@@ -217,6 +271,66 @@ impl PaneFlowApp {
                 .find(|t| t.id == id)
         {
             term.view.read(cx).focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    pub(crate) fn enforce_bottom_terminal_cache_budget(
+        &mut self,
+        panel_visible: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let protected_active = panel_visible
+            .then_some(self.agents_view.bottom_panel_active)
+            .flatten();
+        self.prune_bottom_terminal_cache(protected_active, !panel_visible, cx);
+    }
+
+    fn bottom_terminal_cache_entries(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Vec<BottomTerminalCacheEntry> {
+        self.agents_view
+            .bottom_terminals
+            .iter()
+            .map(|term| BottomTerminalCacheEntry {
+                id: term.id,
+                exited: term.view.read(cx).terminal.exited.is_some(),
+            })
+            .collect()
+    }
+
+    fn prune_bottom_terminal_cache(
+        &mut self,
+        protected_active: Option<u64>,
+        release_all_exited: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let entries = self.bottom_terminal_cache_entries(cx);
+        let positions = bottom_terminal_prune_positions(
+            &entries,
+            protected_active,
+            release_all_exited,
+            BOTTOM_TERMINAL_HOT_CACHE_LIMIT,
+        );
+        for pos in positions {
+            self.agents_view.bottom_terminals.remove(pos);
+        }
+
+        if self.agents_view.bottom_terminals.len() > BOTTOM_TERMINAL_HOT_CACHE_LIMIT {
+            log::debug!(
+                "agents bottom terminal cache remains over budget; running terminals are protected"
+            );
+        }
+
+        if self.agents_view.bottom_panel_active.is_some_and(|active| {
+            !self
+                .agents_view
+                .bottom_terminals
+                .iter()
+                .any(|term| term.id == active)
+        }) {
+            self.agents_view.bottom_panel_active =
+                self.agents_view.bottom_terminals.last().map(|term| term.id);
         }
     }
 
@@ -557,5 +671,49 @@ fn tab_colors(active: bool, ui: crate::theme::UiColors) -> (gpui::Hsla, gpui::Hs
         (with_alpha(ui.text, 0.09), ui.text)
     } else {
         (with_alpha(ui.text, 0.0), ui.muted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: u64, exited: bool) -> BottomTerminalCacheEntry {
+        BottomTerminalCacheEntry { id, exited }
+    }
+
+    #[test]
+    fn hidden_bottom_terminal_policy_releases_all_exited_tabs() {
+        let entries = [
+            entry(1, true),
+            entry(2, false),
+            entry(3, true),
+            entry(4, false),
+        ];
+
+        assert_eq!(
+            bottom_terminal_prune_positions(&entries, None, true, BOTTOM_TERMINAL_HOT_CACHE_LIMIT),
+            vec![2, 0]
+        );
+    }
+
+    #[test]
+    fn bottom_terminal_budget_protects_running_and_active_tabs() {
+        let entries = [
+            entry(1, true),
+            entry(2, false),
+            entry(3, true),
+            entry(4, true),
+            entry(5, false),
+            entry(6, false),
+            entry(7, false),
+            entry(8, false),
+            entry(9, false),
+        ];
+
+        assert_eq!(
+            bottom_terminal_prune_positions(&entries, Some(3), false, 8),
+            vec![0]
+        );
     }
 }

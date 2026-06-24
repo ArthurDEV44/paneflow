@@ -97,8 +97,14 @@ pub fn project_dir_for_cwd(cwd: &str) -> Option<PathBuf> {
 /// **Blocking I/O** - call from inside `smol::unblock` or
 /// `cx.background_executor`. Never invoke on the GPUI main thread.
 pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
+    read_sessions_for_cwd_with_omitted(cwd).0
+}
+
+/// Like [`read_sessions_for_cwd`], but also reports how many older matching
+/// sessions were omitted by the sidebar retention cap.
+pub fn read_sessions_for_cwd_with_omitted(cwd: &str) -> (Vec<SessionMeta>, usize) {
     let Some(project_dir) = project_dir_for_cwd(cwd) else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
     // US-017: mtime-keyed cache. The directory layout
     // `~/.claude/projects/<slug>/*.jsonl` is flat, so adding or
@@ -110,52 +116,76 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
         return cached;
     }
     let Ok(entries) = fs::read_dir(&project_dir) else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
 
-    let mut sessions: Vec<SessionMeta> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !is_jsonl_file(&path) {
-                return None;
-            }
-            read_session_meta(&path)
-                .filter(|meta| crate::agent_sessions::cwd_matches(&meta.cwd, cwd))
-        })
-        .collect();
+    let sessions = entries.flatten().filter_map(|entry| {
+        let path = entry.path();
+        if !is_jsonl_file(&path) {
+            return None;
+        }
+        read_session_meta(&path).filter(|meta| crate::agent_sessions::cwd_matches(&meta.cwd, cwd))
+    });
 
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    crate::agent_sessions::cache::store_result(SessionAgent::Claude, cwd, &project_dir, &sessions);
-    sessions
+    let (sessions, omitted) = crate::agent_sessions::collect_recent_sessions(
+        sessions,
+        crate::agent_sessions::SIDEBAR_SESSION_RETAINED_PER_SOURCE,
+    );
+    crate::agent_sessions::cache::store_result(
+        SessionAgent::Claude,
+        cwd,
+        &project_dir,
+        &sessions,
+        omitted,
+    );
+    (sessions, omitted)
 }
 
-/// EP-004 US-014/US-016: like [`read_sessions_for_cwd`] but each session is
-/// scanned deeper to populate `model` + aggregated `usage` (the attribution
-/// path). Deliberately bypasses the title-scan mtime cache - that cache stores
-/// usage-less rows for the popover, and the attribution result is instead cached
-/// on the diff `Column` keyed to its diff fingerprint (re-fetched only on
-/// re-diff). **Blocking I/O** - call from inside `smol::unblock`.
-pub fn read_sessions_with_usage_for_cwd(cwd: &str) -> Vec<SessionMeta> {
+/// EP-004 US-014/US-016: like [`read_sessions_for_cwd`] but the retained
+/// attribution candidates are scanned deeper to populate `model` + aggregated
+/// `usage`. Deliberately bypasses the title-scan mtime cache - that cache
+/// stores usage-less rows for the popover, and the attribution result is
+/// instead cached on the diff `Column` keyed to its diff fingerprint
+/// (re-fetched only on re-diff). **Blocking I/O** - call from inside
+/// `smol::unblock`.
+pub fn read_sessions_with_usage_for_attribution(cwd: &str, branch: &str) -> Vec<SessionMeta> {
     let Some(project_dir) = project_dir_for_cwd(cwd) else {
         return Vec::new();
     };
     let Ok(entries) = fs::read_dir(&project_dir) else {
         return Vec::new();
     };
-    let mut sessions: Vec<SessionMeta> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !is_jsonl_file(&path) {
-                return None;
-            }
-            read_session_meta_inner(&path, true)
-                .filter(|meta| crate::agent_sessions::cwd_matches(&meta.cwd, cwd))
-        })
+
+    let mut candidates: Vec<(SessionMeta, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !is_jsonl_file(&path) {
+            continue;
+        }
+        if let Some(meta) = read_session_meta(&path)
+            && crate::agent_sessions::cwd_matches(&meta.cwd, cwd)
+        {
+            crate::agent_sessions::push_ranked_attribution(
+                &mut candidates,
+                meta,
+                path,
+                branch,
+                crate::agent_sessions::DIFF_ATTRIBUTION_MATCH_CAP,
+            );
+        }
+    }
+
+    let enriched: Vec<SessionMeta> = candidates
+        .into_iter()
+        .filter_map(
+            |(fallback, path)| match read_session_meta_inner(&path, true) {
+                Some(meta) if crate::agent_sessions::cwd_matches(&meta.cwd, cwd) => Some(meta),
+                Some(_) => None,
+                None => Some(fallback),
+            },
+        )
         .collect();
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    sessions
+    crate::agent_sessions::match_sessions_to_column(enriched, cwd, branch)
 }
 
 fn is_jsonl_file(path: &Path) -> bool {
@@ -741,12 +771,13 @@ mod tests {
             model: None,
             usage: None,
         }];
-        cache::store_result(SessionAgent::Claude, cwd, project_dir, &fixture);
+        cache::store_result(SessionAgent::Claude, cwd, project_dir, &fixture, 7);
 
-        let hit = cache::lookup(SessionAgent::Claude, cwd, project_dir)
+        let (hit, omitted) = cache::lookup(SessionAgent::Claude, cwd, project_dir)
             .expect("post-store lookup must hit");
         assert_eq!(hit.len(), 1);
         assert_eq!(hit[0].session_id, "abc");
+        assert_eq!(omitted, 7);
 
         // Touch the directory to bump its mtime; sleep long enough to
         // cross every mtime-granularity floor we care about: ext4/

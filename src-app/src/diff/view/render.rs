@@ -204,6 +204,8 @@ impl Render for DiffView {
             .text_color(ui.text);
 
         let mode = self.effective_mode(window);
+        self.last_effective_mode = mode;
+        self.ensure_visible_mode_loaded(mode, cx);
         // Consume the host-pushed scope breadcrumb (push-only contract: the
         // host re-pushes it every frame before this render runs). Rendered
         // even on the empty state - it carries the scope/project/branches
@@ -249,10 +251,15 @@ impl DiffView {
     /// EP-003 US-009: flip Unified ⇄ Split (the `u` binding). Mirrors the
     /// segmented control's inline writes.
     fn toggle_view_mode(&mut self, cx: &mut Context<Self>) {
-        self.mode = match self.mode {
+        let next = match self.mode {
             ViewMode::Unified => ViewMode::Split,
             ViewMode::Split => ViewMode::Unified,
         };
+        self.set_view_mode(next, cx);
+    }
+
+    fn set_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+        self.mode = mode;
         cx.notify();
     }
 
@@ -615,6 +622,14 @@ impl DiffView {
                 )
                 .into_any_element()
             }
+            ColumnState::Loaded { .. } if !col.has_rows_for_mode(mode) => panel_empty_state(
+                ui,
+                Some("icons/loader-circle.svg"),
+                None,
+                format!("Preparing {} diff…", mode.label()),
+                true,
+            )
+            .into_any_element(),
             ColumnState::Loaded { .. } => {
                 // Custom direct-paint element hosted in an overflow-scroll div:
                 // the element reports full content height; the div clips/scrolls
@@ -1063,8 +1078,7 @@ impl DiffView {
                         )
                         .when(effective != ViewMode::Unified, |d| {
                             d.on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                                this.mode = ViewMode::Unified;
-                                cx.notify();
+                                this.set_view_mode(ViewMode::Unified, cx);
                             }))
                         }),
                     )
@@ -1077,8 +1091,7 @@ impl DiffView {
                         )
                         .when(effective != ViewMode::Split, |d| {
                             d.on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                                this.mode = ViewMode::Split;
-                                cx.notify();
+                                this.set_view_mode(ViewMode::Split, cx);
                             }))
                         }),
                     ),

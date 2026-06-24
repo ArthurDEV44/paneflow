@@ -1085,17 +1085,36 @@ fn session_event_value(
     })
 }
 
+fn drain_ipc_requests_for_tick(
+    rx: &std::sync::mpsc::Receiver<crate::ipc::IpcRequest>,
+) -> Vec<crate::ipc::IpcRequest> {
+    let mut ready = Vec::with_capacity(crate::ipc::IPC_DRAIN_MAX_PER_TICK);
+    let mut dequeued = 0usize;
+
+    while ready.len() < crate::ipc::IPC_DRAIN_MAX_PER_TICK
+        && dequeued < crate::ipc::IPC_DRAIN_MAX_DEQUEUES_PER_TICK
+    {
+        let Ok(req) = rx.try_recv() else {
+            break;
+        };
+        dequeued += 1;
+
+        // U-053: timed-out requests were already answered by the socket
+        // thread. Dropping them avoids duplicate side effects without spending
+        // the live-work budget for this tick.
+        if req.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            continue;
+        }
+
+        ready.push(req);
+    }
+
+    ready
+}
+
 impl PaneFlowApp {
     pub(crate) fn process_ipc_requests(&mut self, cx: &mut Context<Self>) {
-        while let Ok(req) = self.ipc_rx.try_recv() {
-            // U-053: the socket thread bounds each request at 5 s. If it
-            // already timed out it set `cancelled` and returned an error to
-            // the client; skip the request entirely so a slow non-idempotent
-            // mutation (workspace.create, surface.split) doesn't run after the
-            // client gave up - a retry would otherwise create duplicate
-            // workspaces/panes. The dropped response channel makes a late
-            // result a no-op regardless, so skipping only avoids wasted work
-            // and the duplicate side effect.
+        for req in drain_ipc_requests_for_tick(&self.ipc_rx) {
             if req.cancelled.load(std::sync::atomic::Ordering::Acquire) {
                 continue;
             }
@@ -3618,6 +3637,73 @@ pub(crate) fn reconcile_telemetry(old: Option<bool>, new: Option<bool>) -> Telem
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, mpsc};
+
+    fn test_ipc_request(method: &str, cancelled: bool) -> crate::ipc::IpcRequest {
+        let (response_tx, _response_rx) = mpsc::channel();
+        crate::ipc::IpcRequest {
+            method: method.to_string(),
+            params: serde_json::json!({}),
+            _id: serde_json::json!(null),
+            response_tx,
+            cancelled: Arc::new(AtomicBool::new(cancelled)),
+            caller_pid: None,
+        }
+    }
+
+    #[test]
+    fn ipc_drain_caps_live_requests_per_tick() {
+        let (tx, rx) = mpsc::channel();
+        for _ in 0..=crate::ipc::IPC_DRAIN_MAX_PER_TICK {
+            tx.send(test_ipc_request("surface.read", false))
+                .expect("queue test request");
+        }
+
+        let ready = drain_ipc_requests_for_tick(&rx);
+
+        assert_eq!(ready.len(), crate::ipc::IPC_DRAIN_MAX_PER_TICK);
+        assert!(
+            rx.try_recv().is_ok(),
+            "requests beyond the per-tick budget stay pending"
+        );
+    }
+
+    #[test]
+    fn ipc_drain_skips_cancelled_without_spending_live_budget() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(test_ipc_request("surface.split", true))
+            .expect("queue cancelled request");
+        for _ in 0..crate::ipc::IPC_DRAIN_MAX_PER_TICK {
+            tx.send(test_ipc_request("surface.read", false))
+                .expect("queue live request");
+        }
+
+        let ready = drain_ipc_requests_for_tick(&rx);
+
+        assert_eq!(ready.len(), crate::ipc::IPC_DRAIN_MAX_PER_TICK);
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelled request did not consume live handler budget"
+        );
+    }
+
+    #[test]
+    fn ipc_drain_caps_cancelled_dequeues_per_tick() {
+        let (tx, rx) = mpsc::channel();
+        for _ in 0..=crate::ipc::IPC_DRAIN_MAX_DEQUEUES_PER_TICK {
+            tx.send(test_ipc_request("surface.split", true))
+                .expect("queue cancelled request");
+        }
+
+        let ready = drain_ipc_requests_for_tick(&rx);
+
+        assert!(ready.is_empty());
+        assert!(
+            rx.try_recv().is_ok(),
+            "cancelled backlog drain is also bounded per tick"
+        );
+    }
 
     // US-020 / CWE-78: a control char (newline) cannot survive into the macOS
     // AppleScript literal - it is stripped at the source - while quotes are
