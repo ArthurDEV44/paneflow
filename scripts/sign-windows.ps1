@@ -1,13 +1,12 @@
 <#
 .SYNOPSIS
-    Sign a PaneFlow MSI with Azure Artifact Signing (formerly Trusted Signing).
+    Sign a PaneFlow Windows artifact with Azure Artifact Signing (formerly Trusted Signing).
 
 .DESCRIPTION
     US-015. Wraps `signtool.exe sign` with the Azure dlib + a generated
     metadata.json so CI can invoke it uniformly per artifact. Run on a
-    windows-2022 GitHub-hosted runner AFTER `cargo wix build` has produced
-    the MSI (US-016). The signed MSI is then picked up by the Stage Windows
-    assets step and uploaded as a release asset.
+    windows-2022 GitHub-hosted runner for both the release executable before
+    WiX packaging and the final MSI after `cargo wix` has produced it.
 
     The Azure dlib and signtool authenticate silently via DefaultAzureCredential
     narrowed to EnvironmentCredential (other credential types are excluded via
@@ -15,7 +14,7 @@
     managed-identity probes on runners that don't have one.
 
 .PARAMETER InputFile
-    Path to the .msi to sign. Required.
+    Path to the .exe or .msi artifact to sign. Required.
 
 .PARAMETER DlibPath
     Optional override for the path to Azure.CodeSigning.Dlib.dll. When omitted
@@ -28,6 +27,9 @@
 
 .EXAMPLE
     scripts\sign-windows.ps1 -InputFile .\target\wix\paneflow-0.1.0-x86_64.msi
+
+.EXAMPLE
+    scripts\sign-windows.ps1 -InputFile .\target\x86_64-pc-windows-msvc\release\paneflow.exe
 
 .NOTES
     Required env vars (provisioned via GitHub Secrets per US-014):
@@ -65,9 +67,10 @@ if (-not (Test-Path -LiteralPath $InputFile -PathType Leaf)) {
 }
 
 $resolvedInput = (Resolve-Path -LiteralPath $InputFile).Path
+$inputExtension = [System.IO.Path]::GetExtension($resolvedInput).ToLowerInvariant()
 
-if ([System.IO.Path]::GetExtension($resolvedInput).ToLowerInvariant() -ne '.msi') {
-    Write-Error "InputFile must be an .msi artifact: $resolvedInput"
+if ($inputExtension -notin @('.exe', '.msi')) {
+    Write-Error "InputFile must be a .exe or .msi artifact: $resolvedInput"
     exit 1
 }
 
