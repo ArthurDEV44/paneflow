@@ -576,7 +576,7 @@ impl TerminalState {
         // EP-003 US-007: clean opt-out - with `shell_integration: false` no
         // rc snippet is written or wired and the shell starts untouched.
         let extra_args = if config.shell_integration.unwrap_or(true) {
-            setup_shell_integration(&shell, &mut env)
+            setup_shell_integration(&shell, &mut env, profile)
         } else {
             vec![]
         };

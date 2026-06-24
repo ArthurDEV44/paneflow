@@ -5,6 +5,20 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-24
+
+Patch release focused on Windows trust and cleaner agent terminal startup.
+
+### Changed
+
+- Windows release builds now Authenticode-sign `paneflow.exe` before packaging
+  the MSI, then sign the MSI as well. This makes the installed executable
+  verifiable by Smart App Control instead of relying only on installer trust.
+- Agent panes spawned through `paneflow up`, `paneflow flow`, and IPC now carry
+  an explicit terminal surface profile into the app.
+- PowerShell agent panes now start with `-NoProfile`, avoiding user profile
+  startup noise while preserving normal PowerShell behavior for regular panes.
+
 ## [0.6.1] - 2026-06-24
 
 Patch release focused on keeping long-running multi-agent work leaner and less
@@ -763,7 +777,8 @@ app shell.
 - Opened the 0.3.x release line. See the GitHub compare link for the full commit
   list.
 
-[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/ArthurDEV44/paneflow/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/ArthurDEV44/paneflow/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ArthurDEV44/paneflow/compare/v0.5.9...v0.6.0
 [0.5.0]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.4...v0.5.0

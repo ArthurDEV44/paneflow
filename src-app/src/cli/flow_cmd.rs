@@ -351,6 +351,7 @@ impl<T: IpcTransport> Engine<'_, T> {
                     |w| Some(w.path.to_string_lossy().into_owned()),
                 ),
                 "command": r.command,
+                "profile": if s.pane.agent.is_some() { "agent" } else { "normal" },
                 // A submitting prompt is fed by the engine after its own
                 // settle wait - never double-prefilled by the server.
                 "prompt": if r.unit.submit { None } else { s.pane.prompt.clone() },
@@ -646,6 +647,7 @@ impl<T: IpcTransport> Engine<'_, T> {
                         |w| Some(w.path.to_string_lossy().into_owned()),
                     ),
                     "command": r.command,
+                    "profile": if s.pane.agent.is_some() { "agent" } else { "normal" },
                     "prompt": if r.unit.submit { None } else { s.pane.prompt.clone() },
                     "env": s.pane.env,
                     "name": s.name,

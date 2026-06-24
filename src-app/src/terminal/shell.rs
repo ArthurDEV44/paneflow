@@ -10,6 +10,8 @@
 
 use std::collections::HashMap;
 
+use paneflow_config::schema::TerminalSurfaceProfile;
+
 /// zsh: ZDOTDIR-based injection. Our `.zshenv` restores the original ZDOTDIR
 /// so all other dotfiles (`.zshrc`, `.zprofile`) load from `$HOME` as usual.
 ///
@@ -390,6 +392,7 @@ fn to_shell_path(p: &std::path::Path) -> String {
 pub(super) fn setup_shell_integration(
     shell: &str,
     env: &mut HashMap<String, String>,
+    profile: TerminalSurfaceProfile,
 ) -> Vec<String> {
     let Some(base) =
         dirs::data_dir().map(|d| d.join(crate::runtime_paths::APP_SUBDIR).join("shell"))
@@ -481,11 +484,7 @@ pub(super) fn setup_shell_integration(
             // quoted PowerShell string). Guards against pathological
             // usernames without breaking the common case.
             let escaped = initfile.display().to_string().replace('\'', "''");
-            vec![
-                "-NoExit".into(),
-                "-Command".into(),
-                format!(". '{escaped}'"),
-            ]
+            powershell_startup_args(profile, format!(". '{escaped}'"))
         }
         // US-012 AC-5 - cmd.exe has no scripting hook for per-prompt
         // actions (its `$PROMPT` env var controls only the displayed
@@ -503,9 +502,19 @@ pub(super) fn setup_shell_integration(
     }
 }
 
+fn powershell_startup_args(profile: TerminalSurfaceProfile, init_command: String) -> Vec<String> {
+    let mut args = Vec::new();
+    if matches!(profile, TerminalSurfaceProfile::Agent) {
+        args.push("-NoProfile".into());
+    }
+    args.extend(["-NoExit".into(), "-Command".into(), init_command]);
+    args
+}
+
 #[cfg(test)]
 mod tests {
-    use super::clear_then_for_shell;
+    use super::{clear_then_for_shell, powershell_startup_args};
+    use paneflow_config::schema::TerminalSurfaceProfile;
 
     // (B) Unix well-known-dir shell lookup: a bare name not on PATH still
     // resolves from a standard install dir (the macOS pwsh-under-Homebrew gap),
@@ -594,6 +603,18 @@ mod tests {
         assert!(
             s.contains("__paneflow_prompt_wrapped"),
             "must guard against double-wrapping on re-source"
+        );
+    }
+
+    #[test]
+    fn powershell_agent_profile_skips_user_profile_noise() {
+        assert_eq!(
+            powershell_startup_args(TerminalSurfaceProfile::Agent, "init".into()),
+            vec!["-NoProfile", "-NoExit", "-Command", "init"]
+        );
+        assert_eq!(
+            powershell_startup_args(TerminalSurfaceProfile::Normal, "init".into()),
+            vec!["-NoExit", "-Command", "init"]
         );
     }
 }

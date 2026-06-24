@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{App, AppContext, Context, Entity, Focusable};
-use paneflow_config::schema::LayoutNode;
+use paneflow_config::schema::{LayoutNode, TerminalSurfaceProfile};
 
 use crate::agent_launcher::TerminalAgent;
 use crate::ai_types::AgentSession;
@@ -72,6 +72,7 @@ struct PlannedPane {
     command: Option<String>,
     prompt: Option<String>,
     env: Option<HashMap<String, String>>,
+    profile: TerminalSurfaceProfile,
     focus: bool,
     /// EP-004 US-012: stable label posed atomically as `custom_name` at spawn
     /// (sanitized; de-duplicated within the batch). `None` keeps the
@@ -92,6 +93,15 @@ fn parse_env_object(value: Option<&serde_json::Value>) -> Option<HashMap<String,
         .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
         .collect();
     (!map.is_empty()).then_some(map)
+}
+
+fn parse_terminal_profile(value: Option<&serde_json::Value>) -> TerminalSurfaceProfile {
+    match value.and_then(|v| v.as_str()) {
+        Some("agent") => TerminalSurfaceProfile::Agent,
+        Some("review") => TerminalSurfaceProfile::Review,
+        Some("cached") => TerminalSurfaceProfile::Cached,
+        _ => TerminalSurfaceProfile::Normal,
+    }
 }
 
 /// Build the layout tree for `workspace.up` from a preset name. Mirrors the
@@ -1536,6 +1546,7 @@ impl PaneFlowApp {
                     .and_then(|c| c.as_str())
                     .map(str::to_string),
                 env: parse_env_object(spec.get("env")),
+                profile: parse_terminal_profile(spec.get("profile")),
                 focus: spec.get("focus").and_then(|f| f.as_bool()).unwrap_or(false),
                 // EP-004 US-012: per-pane label (accept `label`, fall back to
                 // `name`), sanitized like a `surface.rename`.
@@ -1593,8 +1604,16 @@ impl PaneFlowApp {
             // EP-004 US-015: stage any per-pane context blob to a file and pass
             // its path via PANEFLOW_CONTEXT_FILE (merged into the pane's env).
             let env = stage_context_file(pp.context.as_deref(), pp.env.clone(), cx);
-            let terminal =
-                cx.new(|cx| TerminalView::with_cwd_and_env(ws_id, pp.cwd.clone(), None, env, cx));
+            let terminal = cx.new(|cx| {
+                TerminalView::with_cwd_env_and_profile(
+                    ws_id,
+                    pp.cwd.clone(),
+                    None,
+                    env,
+                    pp.profile,
+                    cx,
+                )
+            });
             // EP-004 US-012: pose the label as `custom_name` on the same GPUI
             // tick, before the PTY (spawned off-thread) can emit an OSC title -
             // no race with the auto-name. Mirrors `surface.split`.
@@ -2672,6 +2691,7 @@ impl PaneFlowApp {
                     .and_then(|p| p.as_str())
                     .filter(|p| !p.is_empty())
                     .map(str::to_string);
+                let spawn_profile = parse_terminal_profile(params.get("profile"));
 
                 // US-002 (orchestration-v2): an optional `surface_id` targets
                 // the leaf hosting that surface - in whatever workspace it
@@ -2697,11 +2717,12 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Maximum pane count reached"});
                 }
                 let new_terminal = cx.new(|cx| {
-                    TerminalView::with_cwd_and_env(
+                    TerminalView::with_cwd_env_and_profile(
                         ws_id,
                         spawn_cwd.clone(),
                         None,
                         spawn_env.clone(),
+                        spawn_profile,
                         cx,
                     )
                 });

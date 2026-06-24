@@ -75,6 +75,7 @@ pub fn up(client: &impl IpcTransport, file: &str, dry_run: bool) -> Result<i32, 
             "focus": pane.focus,
             "env": env,
             "name": pane.name,
+            "profile": if pane.agent.is_some() { "agent" } else { "normal" },
             "managed_worktree": plan.as_ref().map(|p| p.managed_json()),
         }));
     }
