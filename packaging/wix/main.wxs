@@ -89,7 +89,7 @@
                          user-writable AppData executables do not prevent
                          `claude`, `codex`, etc. from launching in PaneFlow. -->
                     <Directory Id='HelperBinFolder' Name='bin'>
-                        <Component Id='HelperBinaries' Guid='*'>
+                        <Component Id='HelperBinaries' Guid='4DCEBD33-BD8D-4875-BA94-EFF72C6C8717'>
                             <File Id='HelperClaude' Name='claude.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\paneflow-helpers\claude.exe' KeyPath='yes'/>
                             <File Id='HelperCodex' Name='codex.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\paneflow-helpers\codex.exe'/>
                             <File Id='HelperOpencode' Name='opencode.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\paneflow-helpers\opencode.exe'/>
