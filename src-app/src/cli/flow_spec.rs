@@ -40,7 +40,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 
-use super::up_cmd::extract_tokens;
+use super::up_cmd::{DEFAULT_PORT_BASE, extract_tokens};
 use super::workspace_spec::{LayoutPreset, PaneSpec, validate_pane};
 use crate::layout::MAX_PANES;
 
@@ -55,6 +55,8 @@ pub struct FlowSpec {
     pub name: Option<String>,
     #[serde(default)]
     pub layout: LayoutPreset,
+    #[serde(default)]
+    pub port_base: Option<u16>,
     #[serde(default)]
     pub defaults: FlowDefaults,
     #[serde(default, rename = "step")]
@@ -176,6 +178,7 @@ pub struct SpawnUnit {
 pub struct FlowPlan {
     pub name: String,
     pub layout: LayoutPreset,
+    pub port_base: u16,
     pub on_failure: OnFailure,
     pub units: Vec<Unit>,
 }
@@ -425,10 +428,18 @@ fn validate_tokens(step: &StepSpec, vars: &HashMap<&str, &StepSpec>) -> Result<(
                     return Err(err_in(step, label, "`${item}` outside a `foreach` step"));
                 }
             } else {
+                if *label == "pane.env" && token == "port_offset" {
+                    continue;
+                }
+                let supported = if *label == "pane.env" {
+                    "`${item}` or `${port_offset}`"
+                } else {
+                    "`${item}`"
+                };
                 return Err(err_in(
                     step,
                     label,
-                    &format!("only `${{item}}` is allowed here, got '${{{token}}}'"),
+                    &format!("only {supported} is allowed here, got '${{{token}}}'"),
                 ));
             }
         }
@@ -588,6 +599,7 @@ fn expand(spec: &FlowSpec) -> Result<FlowPlan, String> {
     Ok(FlowPlan {
         name: spec.name.clone().unwrap_or_else(|| "flow".to_string()),
         layout: spec.layout,
+        port_base: spec.port_base.unwrap_or(DEFAULT_PORT_BASE),
         on_failure: match spec.defaults.on_failure.as_deref() {
             Some("continue") => OnFailure::Continue,
             _ => OnFailure::FailFast,
@@ -740,7 +752,7 @@ mod tests {
 
     #[test]
     fn foreach_expands_with_item_substitution_and_fan_in_groups() {
-        let src = "[defaults]\ntimeout_secs = 60\n\n[[step]]\nid = \"shard\"\nforeach = [\"api\", \"ui\"]\npane = { command = \"true\", prompt = \"fix ${item}\" }\nready = { pattern = \"done ${item}\" }\ncapture = { var = \"out\", lines = 5 }\n";
+        let src = "[defaults]\ntimeout_secs = 60\n\n[[step]]\nid = \"shard\"\nforeach = [\"api\", \"ui\"]\npane = { command = \"true\", prompt = \"fix ${item}\", env = { NAME = \"${item}\", PORT = \"${port_offset}\" } }\nready = { pattern = \"done ${item}\" }\ncapture = { var = \"out\", lines = 5 }\n";
         let plan = load(src).expect("valid");
         assert_eq!(plan.units.len(), 2);
         assert_eq!(plan.units[0].id, "shard[api]");
@@ -749,6 +761,12 @@ mod tests {
             panic!("spawn");
         };
         assert_eq!(s.pane.prompt.as_deref(), Some("fix api"));
+        let env = s.pane.env.as_ref().expect("env");
+        assert_eq!(env["NAME"], "api");
+        assert_eq!(
+            env["PORT"], "${port_offset}",
+            "port substitution happens in flow_cmd with the same allocator as `up`"
+        );
         assert_eq!(s.name, "shard-api");
         assert_eq!(plan.units[0].ready.as_ref().unwrap().0, "done api");
         assert_eq!(plan.units[0].capture.as_ref().unwrap().0, "out.api");
@@ -781,6 +799,12 @@ mod tests {
         ))
         .unwrap_err();
         assert!(err.contains("unknown variable"), "got: {err}");
+
+        let err = load(
+            "[[step]]\nid = \"root\"\npane = { command = \"true\", env = { X = \"${typo}\" } }\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("port_offset"), "got: {err}");
     }
 
     #[test]

@@ -27,7 +27,7 @@ use crate::agent_launcher::TerminalAgent;
 use crate::workspace::worktree;
 
 /// Default base port for `${port_offset}` (US-008).
-const DEFAULT_PORT_BASE: u16 = 3000;
+pub(super) const DEFAULT_PORT_BASE: u16 = 3000;
 /// Ports reserved per pane referencing `${port_offset}`.
 const PORT_STRIDE: u16 = 10;
 /// Default wall-clock bound for a pane's `setup` command (US-007).
@@ -320,29 +320,33 @@ fn expand_tilde(raw: &str) -> String {
 /// pane, whether it references `${port_offset}`. The only supported variable
 /// is `port_offset` - anything else (or an unclosed `${`) is an atomic
 /// validation error naming the supported set.
-fn validate_env_tokens(panes: &[PaneSpec]) -> Result<Vec<bool>, CliError> {
+pub(super) fn validate_env_tokens(panes: &[PaneSpec]) -> Result<Vec<bool>, CliError> {
     let mut refs = Vec::with_capacity(panes.len());
     for (idx, pane) in panes.iter().enumerate() {
-        let mut references = false;
-        if let Some(env) = pane.env.as_ref() {
-            for (key, value) in env {
-                for token in extract_tokens(value)
-                    .map_err(|e| CliError::runtime(format!("pane {idx}: env `{key}`: {e}")))?
-                {
-                    if token == "port_offset" {
-                        references = true;
-                    } else {
-                        return Err(CliError::runtime(format!(
-                            "pane {idx}: env `{key}` references unknown variable \
-                             '${{{token}}}' (supported: ${{port_offset}})"
-                        )));
-                    }
+        refs.push(validate_pane_env_tokens(idx, pane)?);
+    }
+    Ok(refs)
+}
+
+pub(super) fn validate_pane_env_tokens(idx: usize, pane: &PaneSpec) -> Result<bool, CliError> {
+    let mut references = false;
+    if let Some(env) = pane.env.as_ref() {
+        for (key, value) in env {
+            for token in extract_tokens(value)
+                .map_err(|e| CliError::runtime(format!("pane {idx}: env `{key}`: {e}")))?
+            {
+                if token == "port_offset" {
+                    references = true;
+                } else {
+                    return Err(CliError::runtime(format!(
+                        "pane {idx}: env `{key}` references unknown variable \
+                         '${{{token}}}' (supported: ${{port_offset}})"
+                    )));
                 }
             }
         }
-        refs.push(references);
     }
-    Ok(refs)
+    Ok(references)
 }
 
 /// All `${…}` token names in a string. Unclosed `${` is an error.
@@ -364,7 +368,7 @@ pub(super) fn extract_tokens(value: &str) -> Result<Vec<&str>, String> {
 /// pane gets the k-th stride of `PORT_STRIDE` above `port_base` whose base
 /// port probes free. `is_free` is injected so the policy is unit-testable
 /// without binding sockets.
-fn allocate_port_offsets(
+pub(super) fn allocate_port_offsets(
     refs: &[bool],
     port_base: u16,
     is_free: impl Fn(u16) -> bool,
@@ -388,13 +392,13 @@ fn allocate_port_offsets(
 
 /// Bind-probe: can we listen on this port right now? Cross-platform (real
 /// check on Windows too, unlike the /proc-based scan in `workspace::ports`).
-fn port_is_free(port: u16) -> bool {
+pub(super) fn port_is_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
 /// Substitute `${port_offset}` in env values. Values without the token pass
 /// through untouched; `offset == None` (pane doesn't reference it) is a no-op.
-fn substitute_env(
+pub(super) fn substitute_env(
     env: Option<&HashMap<String, String>>,
     offset: Option<u16>,
 ) -> Option<HashMap<String, String>> {

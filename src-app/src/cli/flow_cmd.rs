@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use paneflow_config::schema::PaneFlowConfig;
 use paneflow_ipc_client::IpcTransport;
 use regex::Regex;
 use serde_json::{Value, json};
@@ -65,31 +66,8 @@ pub fn run(
         .map_err(|e| CliError::runtime(format!("cannot read '{file}': {e}")))?;
     let plan = flow_spec::load(&src).map_err(CliError::runtime)?;
 
-    // Resolve agent launch commands (PATH-checked) and worktree plans for
-    // every spawn unit - atomic: any failure aborts before side effects.
     let config = paneflow_config::loader::load_config();
-    let mut commands: Vec<Option<String>> = Vec::with_capacity(plan.units.len());
-    let mut worktree_plans: Vec<Option<WorktreePlan>> = Vec::with_capacity(plan.units.len());
-    for (i, unit) in plan.units.iter().enumerate() {
-        let (command, worktree) = match &unit.action {
-            UnitAction::Spawn(s) => (
-                up_cmd::resolve_command(i, &s.pane, &config)?,
-                up_cmd::plan_worktree(i, &s.pane)?,
-            ),
-            UnitAction::Send { .. } => (None, None),
-        };
-        commands.push(command);
-        worktree_plans.push(worktree);
-    }
-    // Same static dedup as `up`: two units on one worktree path would fail
-    // at the second `git worktree add` MID-FLOW otherwise (non-atomic).
-    up_cmd::check_worktree_conflicts(&worktree_plans)?;
-    let runs: Vec<UnitRun> = plan
-        .units
-        .iter()
-        .zip(commands.into_iter().zip(worktree_plans))
-        .map(|(unit, (command, worktree))| UnitRun::new(unit.clone(), command, worktree))
-        .collect();
+    let runs = prepare_runs(&plan, &config, up_cmd::port_is_free)?;
 
     // US-012: a submitting flow is refused up-front - run AND dry-run - when
     // the instance gate is off. Never a silent downgrade to non-submitted.
@@ -156,6 +134,7 @@ fn dry_run_plan(plan: &FlowPlan, runs: &[UnitRun]) -> Value {
                         ),
                         "command": r.command,
                         "prompt": s.pane.prompt,
+                        "env": s.pane.env,
                         "worktree": r.worktree.as_ref().map(|w| w.managed_json()),
                     }),
                 ),
@@ -187,6 +166,53 @@ fn dry_run_plan(plan: &FlowPlan, runs: &[UnitRun]) -> Value {
         },
         "units": units,
     })
+}
+
+fn prepare_runs(
+    plan: &FlowPlan,
+    config: &PaneFlowConfig,
+    port_is_free: impl Fn(u16) -> bool,
+) -> Result<Vec<UnitRun>, CliError> {
+    // Resolve agent launch commands (PATH-checked), worktree plans, and
+    // `${port_offset}` env values for every spawn unit - atomic: any failure
+    // aborts before side effects.
+    let mut commands: Vec<Option<String>> = Vec::with_capacity(plan.units.len());
+    let mut worktree_plans: Vec<Option<WorktreePlan>> = Vec::with_capacity(plan.units.len());
+    let mut port_refs: Vec<bool> = Vec::with_capacity(plan.units.len());
+    for (i, unit) in plan.units.iter().enumerate() {
+        let (command, worktree, port_ref) = match &unit.action {
+            UnitAction::Spawn(s) => (
+                up_cmd::resolve_command(i, &s.pane, config)?,
+                up_cmd::plan_worktree(i, &s.pane)?,
+                up_cmd::validate_pane_env_tokens(i, &s.pane)?,
+            ),
+            UnitAction::Send { .. } => (None, None, false),
+        };
+        commands.push(command);
+        worktree_plans.push(worktree);
+        port_refs.push(port_ref);
+    }
+    // Same static dedup as `up`: two units on one worktree path would fail
+    // at the second `git worktree add` MID-FLOW otherwise (non-atomic).
+    up_cmd::check_worktree_conflicts(&worktree_plans)?;
+    let port_offsets = up_cmd::allocate_port_offsets(&port_refs, plan.port_base, port_is_free);
+
+    Ok(plan
+        .units
+        .iter()
+        .cloned()
+        .zip(commands.into_iter().zip(worktree_plans).zip(port_offsets))
+        .map(|(unit, ((command, worktree), port_offset))| {
+            UnitRun::new(substitute_unit_env(unit, port_offset), command, worktree)
+        })
+        .collect())
+}
+
+fn substitute_unit_env(mut unit: Unit, port_offset: Option<u16>) -> Unit {
+    if let UnitAction::Spawn(s) = &mut unit.action {
+        s.pane.env = up_cmd::substitute_env(s.pane.env.as_ref(), port_offset);
+    }
+    unit
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,6 +1041,28 @@ mod tests {
         let code = run(&fake, file.to_str().unwrap(), true, false).expect("ok");
         assert_eq!(code, EXIT_OK);
         assert!(fake.calls.borrow().is_empty(), "no IPC at all (no submit)");
+    }
+
+    #[test]
+    fn prepare_runs_substitutes_port_offsets_before_ipc() {
+        let plan = flow_spec::load(
+            "port_base = 4100\n\n[defaults]\ntimeout_secs = 1\n\n[[step]]\nid = \"api\"\npane = { command = \"true\", env = { PORT = \"${port_offset}\", PLAIN = \"x\" } }\n\n[[step]]\nid = \"ui\"\npane = { command = \"true\", env = { PORT = \"${port_offset}\" } }\n",
+        )
+        .expect("valid");
+        let cfg = PaneFlowConfig::default();
+        let runs = prepare_runs(&plan, &cfg, |port| port != 4100).expect("runs");
+
+        let UnitAction::Spawn(api) = &runs[0].unit.action else {
+            panic!("spawn");
+        };
+        let UnitAction::Spawn(ui) = &runs[1].unit.action else {
+            panic!("spawn");
+        };
+        let api_env = api.pane.env.as_ref().expect("api env");
+        let ui_env = ui.pane.env.as_ref().expect("ui env");
+        assert_eq!(api_env["PORT"], "4110", "busy base stride is skipped");
+        assert_eq!(api_env["PLAIN"], "x");
+        assert_eq!(ui_env["PORT"], "4120");
     }
 
     /// Full happy path: root spawns (workspace.up), barrier matches,
