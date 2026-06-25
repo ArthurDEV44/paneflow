@@ -1191,11 +1191,12 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
               throw "TAG '$env:TAG' does not strip to a valid semver (got '$version'). Refusing to glob for MSI."
           }
-          $msi = Get-ChildItem -Path 'target/wix' -Filter "paneflow-$version-*.msi" |
-              Select-Object -First 1 -ExpandProperty FullName
-          if (-not $msi) {
-              throw "No MSI found under target/wix/ matching paneflow-$version-*.msi - cargo wix build may have failed or emitted an unexpected filename."
+          $candidates = @(Get-ChildItem -Path 'target/wix' -Filter 'paneflow-*.msi' -File)
+          if ($candidates.Count -ne 1) {
+              $names = if ($candidates.Count -gt 0) { ($candidates | ForEach-Object { $_.Name }) -join ', ' } else { '<none>' }
+              throw "Expected exactly one MSI under target/wix/ after cargo wix, found $($candidates.Count): $names"
           }
+          $msi = $candidates[0].FullName
           Write-Output "Signing: $msi"
           # Quoted "$msi" so a path with spaces (unlikely with cargo-wix
           # defaults but defensive) is passed as one argv element.
@@ -1224,11 +1225,12 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
               throw "TAG '$env:TAG' does not strip to a valid semver (got '$version')."
           }
-          $msi = Get-ChildItem -Path 'target/wix' -Filter "paneflow-$version-*.msi" |
-              Select-Object -First 1 -ExpandProperty FullName
-          if (-not $msi) {
-              throw "No MSI found under target/wix/ matching paneflow-$version-*.msi."
+          $candidates = @(Get-ChildItem -Path 'target/wix' -Filter 'paneflow-*.msi' -File)
+          if ($candidates.Count -ne 1) {
+              $names = if ($candidates.Count -gt 0) { ($candidates | ForEach-Object { $_.Name }) -join ', ' } else { '<none>' }
+              throw "Expected exactly one MSI under target/wix/ after cargo wix, found $($candidates.Count): $names"
           }
+          $msi = $candidates[0].FullName
 
           # Resolve signtool the same way sign-windows.ps1 does - keep
           # the two paths in sync so a runner-image SDK change cannot
@@ -1321,15 +1323,15 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           version="${TAG#v}"
-          # Resolve the MSI via shell glob (shellcheck SC2012: `ls | head`
-          # mishandles non-alphanumeric filenames; a bash array from glob
-          # does not). `nullglob` + array-length check distinguishes
-          # "no match" from a literal unexpanded glob string.
+          # cargo-wix normalizes prerelease versions in the emitted MSI
+          # filename (for example 0.6.4-rc.1 -> 0.6.4.1), so resolve the
+          # single produced MSI independently from the canonical release
+          # asset name below.
           shopt -s nullglob
-          matches=( target/wix/paneflow-"${version}"-*.msi )
+          matches=( target/wix/paneflow-*.msi )
           shopt -u nullglob
-          if [ "${#matches[@]}" -eq 0 ]; then
-              echo "::error::No MSI found at target/wix/paneflow-${version}-*.msi" >&2
+          if [ "${#matches[@]}" -ne 1 ]; then
+              printf '::error::Expected exactly one MSI under target/wix/, found %s: %s\n' "${#matches[@]}" "${matches[*]:-<none>}" >&2
               exit 1
           fi
           src="${matches[0]}"
