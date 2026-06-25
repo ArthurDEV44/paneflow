@@ -238,7 +238,9 @@ The "Name of signer" should display `Strivex`.
 Operator check after installing the MSI:
 
 ```powershell
-Get-AuthenticodeSignature 'C:\Program Files\PaneFlow\paneflow.exe' |
+Get-AuthenticodeSignature 'C:\Program Files\PaneFlow\paneflow.exe',
+    'C:\Program Files\PaneFlow\bin\claude.exe',
+    'C:\Program Files\PaneFlow\bin\paneflow-ai-hook.exe' |
     Format-List Status,StatusMessage,SignerCertificate
 ```
 

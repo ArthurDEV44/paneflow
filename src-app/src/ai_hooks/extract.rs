@@ -55,6 +55,7 @@ const TARGET_TRIPLE: &str = env!("PANEFLOW_TARGET_TRIPLE");
 /// Crate version - pins the cache-dir sub-folder so a `0.2.6 → 0.2.7`
 /// upgrade re-extracts rather than reusing stale bytes. Matches
 /// `CARGO_PKG_VERSION` from the outer build.
+#[cfg(any(not(windows), debug_assertions))]
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Filenames the extractor materializes in the cache dir: one shim copy per
@@ -119,32 +120,64 @@ pub(crate) struct Entry<'a> {
 /// Errors surface via `anyhow::Result` for log-and-skip handling in
 /// `src-app/src/terminal/pty_session.rs::inject_ai_hook_env` (US-009).
 pub fn ensure_binaries_extracted() -> Result<PathBuf> {
-    let cache_root = dirs::cache_dir()
-        .ok_or_else(|| anyhow!("US-008: dirs::cache_dir() returned None; cannot extract"))?;
-    let target_dir = cache_root
-        .join(crate::runtime_paths::APP_SUBDIR)
-        .join("bin")
-        .join(VERSION);
-
-    let suffix = exe_suffix();
-    let plan = extract_plan();
-    let mut buffers: Vec<(String, std::borrow::Cow<'static, [u8]>)> =
-        Vec::with_capacity(plan.len());
-    for (out_name, src_name) in plan {
-        let src_full = format!("{src_name}{suffix}");
-        let out_full = format!("{out_name}{suffix}");
-        buffers.push((out_full, embedded_bytes(&src_full)?));
+    #[cfg(windows)]
+    if let Some(dir) = packaged_bin_dir_if_complete() {
+        return Ok(dir);
     }
-    let entries: Vec<Entry<'_>> = buffers
-        .iter()
-        .map(|(n, b)| Entry {
-            filename: n.clone(),
-            bytes: b.as_ref(),
-        })
-        .collect();
 
-    extract_into(&entries, &target_dir)?;
-    Ok(target_dir)
+    #[cfg(all(windows, not(debug_assertions)))]
+    {
+        Err(anyhow!(
+            "US-008: packaged Windows helper dir missing or incomplete; refusing to execute helper binaries from the per-user cache"
+        ))
+    }
+
+    #[cfg(any(not(windows), debug_assertions))]
+    {
+        let cache_root = dirs::cache_dir()
+            .ok_or_else(|| anyhow!("US-008: dirs::cache_dir() returned None; cannot extract"))?;
+        let target_dir = cache_root
+            .join(crate::runtime_paths::APP_SUBDIR)
+            .join("bin")
+            .join(VERSION);
+
+        let suffix = exe_suffix();
+        let plan = extract_plan();
+        let mut buffers: Vec<(String, std::borrow::Cow<'static, [u8]>)> =
+            Vec::with_capacity(plan.len());
+        for (out_name, src_name) in plan {
+            let src_full = format!("{src_name}{suffix}");
+            let out_full = format!("{out_name}{suffix}");
+            buffers.push((out_full, embedded_bytes(&src_full)?));
+        }
+        let entries: Vec<Entry<'_>> = buffers
+            .iter()
+            .map(|(n, b)| Entry {
+                filename: n.clone(),
+                bytes: b.as_ref(),
+            })
+            .collect();
+
+        extract_into(&entries, &target_dir)?;
+        Ok(target_dir)
+    }
+}
+
+/// On Windows, enterprise App Control / AppLocker deployments commonly block
+/// executables from `%LocalAppData%` regardless of whether the parent
+/// application is trusted. MSI releases therefore install the helper shims
+/// under the application directory (`Program Files\PaneFlow\bin`) and the
+/// terminal PATH should prefer that managed location.
+#[cfg(windows)]
+fn packaged_bin_dir_if_complete() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.join("bin");
+    let suffix = exe_suffix();
+    for (out_name, _) in extract_plan() {
+        if !dir.join(format!("{out_name}{suffix}")).is_file() {
+            return None;
+        }
+    }
+    Some(dir)
 }
 
 /// EP-001 US-003 - materialize the embedded `paneflow-mcp` bridge at the

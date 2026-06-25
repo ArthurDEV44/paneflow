@@ -295,6 +295,91 @@ jobs:
         shell: bash
         run: bash scripts/build-icons.sh
 
+      # Windows Application Control / Smart App Control evaluates the helper
+      # executable that actually runs from the PaneFlow terminal PATH. The
+      # outer `paneflow.exe` signature does not cover helper bytes after
+      # extraction, so sign the embedded helper artifacts before the app build
+      # ingests them via rust-embed.
+      - name: Prepare signed Windows embedded helpers
+        id: windows_helpers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+        run: |
+          $required = @(
+            'AZURE_TENANT_ID',
+            'AZURE_CLIENT_ID',
+            'AZURE_CLIENT_SECRET',
+            'AZURE_TRUSTED_SIGNING_ENDPOINT',
+            'AZURE_TRUSTED_SIGNING_ACCOUNT',
+            'AZURE_TRUSTED_SIGNING_CERT_PROFILE'
+          )
+          $missing = $required | Where-Object { [string]::IsNullOrEmpty([System.Environment]::GetEnvironmentVariable($_)) }
+          if ($missing.Count -gt 0) {
+            Write-Warning "Skipping signed embedded helpers; missing Azure signing secret(s): $($missing -join ', ')"
+            "helpers_prepared=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          $target = '${{ matrix.target }}'
+          $cargo = if ([string]::IsNullOrEmpty($env:CARGO)) { 'cargo' } else { $env:CARGO }
+          & $cargo build `
+            --profile release-min `
+            --target $target `
+            --target-dir target/embed-build `
+            -p paneflow-shim `
+            -p paneflow-ai-hook `
+            -p paneflow-mcp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $artifactDir = Join-Path 'target/embed-build' "$target/release-min"
+          $embedDir = Join-Path 'src-app/target/embed/bin' $target
+          $packagedHelperDir = Join-Path (Join-Path 'target' $target) 'release/paneflow-helpers'
+          New-Item -ItemType Directory -Path $embedDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $packagedHelperDir -Force | Out-Null
+
+          foreach ($name in @('paneflow-shim.exe', 'paneflow-ai-hook.exe', 'paneflow-mcp.exe')) {
+            $artifact = Join-Path $artifactDir $name
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Expected helper artifact missing: $artifact"
+            }
+            pwsh -NoProfile -File ./scripts/sign-windows.ps1 -InputFile $artifact
+            Copy-Item -LiteralPath $artifact -Destination (Join-Path $embedDir $name) -Force
+          }
+
+          $shim = Join-Path $artifactDir 'paneflow-shim.exe'
+          foreach ($name in @(
+            'claude.exe',
+            'codex.exe',
+            'opencode.exe',
+            'pi.exe',
+            'hermes.exe',
+            'grok.exe',
+            'amp.exe',
+            'cursor-agent.exe',
+            'gemini.exe',
+            'kiro-cli.exe',
+            'agy.exe',
+            'copilot.exe',
+            'codebuddy.exe',
+            'droid.exe',
+            'qodercli.exe',
+            'openclaw.exe'
+          )) {
+            Copy-Item -LiteralPath $shim -Destination (Join-Path $packagedHelperDir $name) -Force
+          }
+          Copy-Item -LiteralPath (Join-Path $artifactDir 'paneflow-ai-hook.exe') `
+            -Destination (Join-Path $packagedHelperDir 'paneflow-ai-hook.exe') `
+            -Force
+
+          "helpers_prepared=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       # --- Release build ---
       # `POSTHOG_API_KEY` is resolved by `option_env!` at compile time
       # (see `src-app/src/app/bootstrap.rs`); embedding it here at the
@@ -315,7 +400,13 @@ jobs:
           # docs/self-update-signing.md.
           PANEFLOW_MINISIGN_PUBKEY: ${{ vars.PANEFLOW_MINISIGN_PUBKEY }}
           PANEFLOW_MINISIGN_PUBKEY_NEXT: ${{ vars.PANEFLOW_MINISIGN_PUBKEY_NEXT }}
-        run: cargo build --release -p paneflow-app --target ${{ matrix.target }}
+          TARGET: ${{ matrix.target }}
+          WINDOWS_HELPERS_PREPARED: ${{ steps.windows_helpers.outputs.helpers_prepared }}
+        run: |
+          if [ "${WINDOWS_HELPERS_PREPARED:-}" = "true" ]; then
+            export PANEFLOW_SKIP_EMBED_BUILD=1
+          fi
+          cargo build --release -p paneflow-app --target "$TARGET"
 
       # --- Phase 1 artifacts ---
       - name: Produce tar.gz
