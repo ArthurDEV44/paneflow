@@ -6,10 +6,10 @@
 //!
 //! The same engine Zed uses. Unlike the old syntect pass (0.3-2.8 s/file → the
 //! reason highlighting shipped gated), a tree-sitter parse is ms-scale, so we
-//! highlight the whole side once at build time (off the GPUI thread, inside
-//! `view.rs`'s `smol::unblock`) and bucket the captures into per-line runs -
-//! no lazy-viewport machinery needed. Unknown extensions / parse failures
-//! return empty runs (→ monochrome, graceful).
+//! highlight each side once at build time (off the GPUI thread, inside
+//! `view.rs`'s `smol::unblock`) and bucket the captures into per-line runs.
+//! Very large sides skip parsing and render monochrome; unknown extensions /
+//! parse failures do the same.
 //!
 //! Grammars bridge through `tree-sitter-language` 0.1 (`LANGUAGE: LanguageFn`);
 //! core `tree-sitter` 0.26 is already a transitive workspace dep via the Zed
@@ -26,6 +26,10 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 use super::syntax::DiffSyntax;
+
+/// Full-file tree-sitter parsing above this size is more likely to hurt Review
+/// responsiveness than help readability. The diff still renders normally.
+const MAX_HIGHLIGHT_BYTES: usize = 300_000;
 
 /// A resolved grammar: its `Language` + parsed highlights `Query`, interned
 /// once per process (`Query::new` is not cheap).
@@ -165,6 +169,10 @@ pub fn highlight_lines(
     ext: &str,
     syntax: &DiffSyntax,
 ) -> Vec<Vec<(Range<usize>, Hsla)>> {
+    if text.len() > MAX_HIGHLIGHT_BYTES {
+        return text.lines().map(|_| Vec::new()).collect();
+    }
+
     // Byte range of each line, matching `str::lines()` exactly (the slices are
     // substrings of `text`, so pointer subtraction gives the offset; `len()`
     // excludes the trailing `\n` / `\r\n`).

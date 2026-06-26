@@ -126,11 +126,6 @@ actions!(
         DiffToggleView,
         DiffToggleSync,
         DiffDismiss,
-        // EP-005 US-018 (prd-review-redesign-2026-Q3.md) - direct the active
-        // review CLI at the hunk under the cursor (or the viewport hunk, for a
-        // keyboard-only loop). Same `DiffView && !Terminal && !TextInput` context
-        // as the rest of the review-loop keys.
-        DiffActOnHunk,
         // US-011 of tasks/prd-agents-ui-codex-redesign-2026-Q3.md - open the
         // overflow (`⋯`) menu for the current Agents thread/chat. Dispatched
         // by the title-bar `⋯` button (a SEPARATE `TitleBar` entity with no

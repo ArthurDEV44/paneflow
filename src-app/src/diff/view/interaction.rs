@@ -67,16 +67,8 @@ impl DiffView {
     ) {
         self.select_column(col_idx, cx);
         let mode = self.effective_mode(window);
-        // prd-ai-in-diff-2026-Q3.md: left-click a changed line sends it to the
-        // review CLI to ask about it - launching Claude Code first if no session
-        // is open. Context/header rows fall through to header-collapse.
-        if let Some(line) = self.resolve_clicked_line(col_idx, ev.position(), mode) {
-            self.ask_review_about_line(col_idx, line, window, cx);
-            return;
-        }
-        // EP-003 US-009: a body click that is not a click-to-ask focuses the
-        // DiffView body so the keyboard review loop ([`/`]/u/s/Esc) is live
-        // without first tabbing into the surface.
+        // EP-003 US-009: focus the DiffView body so the keyboard review loop
+        // ([`/`]/u/s/Esc) is live without first tabbing into the surface.
         window.focus(&self.focus_handle, cx);
         let row = {
             let Some(col) = self.columns.get(col_idx) else {
@@ -271,73 +263,11 @@ impl DiffView {
                 position: point,
                 col_idx,
                 scope,
+                mode,
             });
         cx.notify();
     }
 
-    /// Resolve the changed line under a body point (unified mode only): its file
-    /// path, 1-based line number, content, and whether it is a removed line.
-    /// `None` on a context/header/gap row.
-    pub(super) fn resolve_clicked_line(
-        &self,
-        col_idx: usize,
-        point: Point<Pixels>,
-        mode: ViewMode,
-    ) -> Option<ClickedLine> {
-        if mode != ViewMode::Unified {
-            return None;
-        }
-        let row = self.row_at_point(col_idx, point, mode)?;
-        let col = self.columns.get(col_idx)?;
-        let path = col
-            .disp_anchors_unified
-            .iter()
-            .filter(|(_, hdr)| *hdr <= row)
-            .max_by_key(|(_, hdr)| *hdr)
-            .map(|(p, _)| p.clone())?;
-        let r = col.disp_unified.get(row)?;
-        let (lineno, removed) = match r.kind {
-            RowKind::Added => (r.new_no?, false),
-            RowKind::Removed => (r.old_no?, true),
-            _ => return None,
-        };
-        Some(ClickedLine {
-            path,
-            lineno,
-            content: r.text.to_string(),
-            removed,
-        })
-    }
-
-    /// The row under `point` IF it is a changed line - the hover-to-ask
-    /// affordance. In Unified a left-click sends the line to the review CLI
-    /// (launching Claude Code first if no session is open), so changed lines are
-    /// always clickable. In Split the row is NOT clickable (resolve is
-    /// unified-only by design), but EP-003 US-010 still surfaces a named tooltip
-    /// over a changed line explaining the Unified-only limitation, so this also
-    /// reports changed Split rows (left=removed or right=added).
-    pub(super) fn actionable_row_at(
-        &self,
-        col_idx: usize,
-        point: Point<Pixels>,
-        mode: ViewMode,
-    ) -> Option<usize> {
-        use super::super::align::CellKind;
-        let col = self.columns.get(col_idx)?;
-        let row = self.row_at_point(col_idx, point, mode)?;
-        match mode {
-            ViewMode::Unified => {
-                let r = col.disp_unified.get(row)?;
-                matches!(r.kind, RowKind::Added | RowKind::Removed).then_some(row)
-            }
-            ViewMode::Split => match col.disp_split.get(row)? {
-                SplitRow::Pair { left, right } => (matches!(left.kind, CellKind::Removed)
-                    || matches!(right.kind, CellKind::Added))
-                .then_some(row),
-                _ => None,
-            },
-        }
-    }
     /// EP-003 US-013: toggle a file's hunk collapse from the sidebar (mirrors a
     /// body file-header click). Public so the diff sidebar can drive it without
     /// synthesizing a body click.
@@ -397,6 +327,11 @@ impl DiffView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let has_hunk = menu.scope.hunk_idx.is_some();
+        let copy_hunk_label = if !has_hunk && menu.mode == ViewMode::Split {
+            "Copy hunk (Unified only)"
+        } else {
+            "Copy hunk"
+        };
         let col_idx = menu.col_idx;
         let scope = menu.scope;
         let panel = menu_surface(div().id("diff-body-context-menu"), ui)
@@ -412,23 +347,6 @@ impl DiffView {
             }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            // Send the hunk into the embedded review CLI's input so the user can
-            // ask about it (a changed LINE is sent by left-clicking it directly).
-            .when(has_hunk, |panel| {
-                panel.child(
-                    select_item("diff-menu-ask-hunk", false, ui)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.body_menu = None;
-                            this.ask_review_about_hunk(col_idx, scope, window, cx);
-                            cx.stop_propagation();
-                        }))
-                        .child(
-                            div()
-                                .text_color(ui.text)
-                                .child("Ask the CLI about this hunk"),
-                        ),
-                )
-            })
             .child(
                 // Conditionally disabled, so kept as a bespoke row (matching the
                 // `select_item` geometry) rather than `select_item` itself, which
@@ -452,7 +370,7 @@ impl DiffView {
                                 cx.stop_propagation();
                             }))
                     })
-                    .child("Copy hunk"),
+                    .child(copy_hunk_label),
             )
             .child(
                 select_item("diff-menu-copy-file", false, ui)
@@ -500,160 +418,5 @@ impl DiffView {
         )
         .priority(4)
         .into_any_element()
-    }
-
-    /// EP-005 US-018/019/020: the floating per-hunk action cluster, revealed
-    /// while the cursor hovers a changed line over a resolvable hunk (unified
-    /// only). A deferred overlay anchored just above the cursor - the act layer
-    /// made first-class, NOT buried in the right-click menu. Buttons: Direct
-    /// agent (US-018), Fix & stage (US-019), and a two-step armed Discard
-    /// (US-020). `None` when not over a hunk.
-    pub(super) fn render_hunk_actions(
-        &self,
-        mode: ViewMode,
-        ui: crate::theme::UiColors,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        use super::super::review_terminal::HunkAction;
-        let (col_idx, pos) = self.last_body_pos?;
-        // Only while actively hovering a changed line in this column (US-010
-        // sets `hover_line` on the same mouse move).
-        if self.hover_line.map(|(c, _)| c) != Some(col_idx) {
-            return None;
-        }
-        let scope = self.resolve_body_scope(col_idx, pos, mode)?;
-        let hunk_idx = scope.hunk_idx?; // hunk-scoped only (unified resolve)
-        let armed = self.hunk_discard_armed == Some((col_idx, scope.file_idx, hunk_idx));
-
-        let act_pill =
-            |id: &'static str, icon: &'static str, label: &'static str, action: HunkAction| {
-                div()
-                    .id(id)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.))
-                    .h(px(22.))
-                    .px(px(7.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .text_size(crate::ui_primitives::LABEL_SM)
-                    .text_color(ui.text)
-                    .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle)
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.act_on_hunk(col_idx, scope, action, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .child(
-                        gpui::svg()
-                            .size(px(11.))
-                            .flex_none()
-                            .path(icon)
-                            .text_color(ui.muted),
-                    )
-                    .child(label)
-            };
-
-        let danger = ui.diff_colors().deleted;
-        let discard = div()
-            .id("diff-hunk-discard")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.))
-            .h(px(22.))
-            .px(px(7.))
-            .rounded(px(5.))
-            .cursor_pointer()
-            .text_size(crate::ui_primitives::LABEL_SM)
-            .when(armed, |d| d.bg(with_alpha(danger, 0.18)).text_color(danger))
-            .when(!armed, |d| {
-                d.text_color(ui.muted).hover(|s| {
-                    let ui = crate::theme::ui_colors();
-                    s.bg(ui.subtle)
-                })
-            })
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                if this.hunk_discard_armed == Some((col_idx, scope.file_idx, hunk_idx)) {
-                    // Second click: execute the agent-mediated discard.
-                    this.act_on_hunk(col_idx, scope, HunkAction::Discard, window, cx);
-                } else {
-                    // First click: arm (the pill turns red "Confirm discard").
-                    this.hunk_discard_armed = Some((col_idx, scope.file_idx, hunk_idx));
-                    cx.notify();
-                }
-                cx.stop_propagation();
-            }))
-            .child(
-                gpui::svg()
-                    .size(px(11.))
-                    .flex_none()
-                    .path("icons/trash.svg")
-                    .text_color(if armed { danger } else { ui.muted }),
-            )
-            .child(if armed { "Confirm discard" } else { "Discard" });
-
-        let panel = menu_surface(div().id("diff-hunk-actions"), ui)
-            .occlude()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(2.))
-            .p(px(3.))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(act_pill(
-                "diff-hunk-direct",
-                "icons/sparkles.svg",
-                "Direct agent",
-                HunkAction::Direct,
-            ))
-            .child(act_pill(
-                "diff-hunk-fix",
-                "icons/check.svg",
-                "Fix & stage",
-                HunkAction::FixStage,
-            ))
-            .child(discard);
-
-        Some(
-            deferred(
-                anchored()
-                    .position(point(pos.x, pos.y - px(30.)))
-                    .snap_to_window()
-                    .child(panel),
-            )
-            .priority(5)
-            .into_any_element(),
-        )
-    }
-
-    /// EP-005 US-018: keyboard entry to the act layer (`a`). Directs the agent at
-    /// the hunk under the mouse, or - for a keyboard-only loop - the hunk parked
-    /// at the viewport top by `goto_hunk`. Flashes when no hunk resolves.
-    pub(super) fn act_on_hunk_under_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        use super::super::review_terminal::HunkAction;
-        let mode = self.effective_mode(window);
-        let resolved = self
-            .last_body_pos
-            .and_then(|(c, p)| self.resolve_body_scope(c, p, mode).map(|s| (c, s)))
-            .or_else(|| {
-                let ci = self.selected_or_first_visible()?;
-                let col = self.columns.get(ci)?;
-                let bounds = col.el_scroll.bounds();
-                let p = point(
-                    bounds.left() + px(48.),
-                    bounds.top() + px(HUNK_JUMP_MARGIN + 4.0),
-                );
-                self.resolve_body_scope(ci, p, mode).map(|s| (ci, s))
-            });
-        match resolved {
-            Some((col_idx, scope)) if scope.hunk_idx.is_some() => {
-                self.act_on_hunk(col_idx, scope, HunkAction::Direct, window, cx);
-            }
-            _ => self.set_flash("No hunk under cursor".into(), cx),
-        }
     }
 }

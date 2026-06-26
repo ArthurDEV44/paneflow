@@ -468,13 +468,6 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         context: "DiffView && !Terminal && !TextInput",
         description: "Diff: close popover / refocus body",
     },
-    // EP-005 US-018: direct the agent at the hunk under the cursor / viewport.
-    ActionMeta {
-        name: "diff_act_on_hunk",
-        factory: || Box::new(crate::DiffActOnHunk),
-        context: "DiffView && !Terminal && !TextInput",
-        description: "Diff: direct agent at this hunk",
-    },
     // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md): Cli-cockpit steering.
     // Global context - the handlers gate on `AppMode::Cli` themselves.
     ActionMeta {

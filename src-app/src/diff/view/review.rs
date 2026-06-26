@@ -5,158 +5,13 @@ use super::*;
 use paneflow_config::schema::TerminalSurfaceProfile;
 
 impl DiffView {
-    /// Append `text` to the column's review CLI input WITHOUT Enter, then focus
-    /// it, so the user types their question after. If NO session is open on the
-    /// column, default to launching Claude Code and pre-fill `text` once it boots
-    /// (prd-ai-in-diff-2026-Q3.md: left-click a line with no session running).
-    pub(super) fn send_to_review(
-        &mut self,
-        col_idx: usize,
-        text: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Existing session -> send immediately + focus.
-        if let Some(col) = self.columns.get(col_idx)
-            && let Some(rt) = col.review_terminals.first()
-        {
-            let term = rt.terminal.clone();
-            term.read(cx).send_text(&text);
-            term.read(cx).focus_handle(cx).focus(window, cx);
-            return;
-        }
-        // No session -> launch Claude Code by default, pre-fill `text` after boot.
-        let Some(col) = self.columns.get(col_idx) else {
-            return;
-        };
-        let cwd = col.path.clone();
-        let ws_id = col.workspace_id.unwrap_or(0);
-        let cli = super::super::review_terminal::ReviewCli::ClaudeCode;
-        let term = cx.new(|cx| {
-            crate::terminal::TerminalView::with_cwd_and_profile(
-                ws_id,
-                Some(cwd),
-                None,
-                TerminalSurfaceProfile::Review,
-                cx,
-            )
-        });
-        let config = paneflow_config::loader::load_config();
-        let command = cli.launch_command(&config);
-        // US-011: configurable prefill delay (default 2000 ms). The clipboard
-        // write below stays the synchronous safety net regardless of the delay.
-        let delay = config.resolved_review_prefill_delay_ms();
-        term.read(cx).send_command(&command);
-        let prefill = text.clone();
-        let term_weak = term.downgrade();
-        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-            smol::Timer::after(Duration::from_millis(delay)).await;
-            cx.update(|cx| {
-                if let Some(t) = term_weak.upgrade() {
-                    t.read(cx).send_text(&prefill);
-                }
-            });
-        })
-        .detach();
-        term.read(cx).focus_handle(cx).focus(window, cx);
-        if let Some(col) = self.columns.get_mut(col_idx) {
-            col.review_terminals.push(ReviewTerminal {
-                label: cli.label().into(),
-                terminal: term,
-            });
-        }
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-        cx.notify();
-    }
-
-    /// Send a changed line (`path:line` + content) into the review CLI input so
-    /// the user can ask about it.
-    pub(super) fn ask_review_about_line(
-        &mut self,
-        col_idx: usize,
-        line: ClickedLine,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let tag = if line.removed {
-            format!("{}:{} (removed)", line.path, line.lineno)
-        } else {
-            format!("{}:{}", line.path, line.lineno)
-        };
-        let text = format!("`{tag}` `{}` - ", line.content.trim());
-        self.send_to_review(col_idx, text, window, cx);
-    }
-
-    /// Send a hunk's unified diff into the review CLI input so the user can ask
-    /// about it.
-    pub(super) fn ask_review_about_hunk(
-        &mut self,
-        col_idx: usize,
-        scope: DiffBodyScope,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let text = {
-            let Some(col) = self.columns.get(col_idx) else {
-                return;
-            };
-            let ColumnState::Loaded { files_full, .. } = &col.state else {
-                return;
-            };
-            let Some(file) = files_full.get(scope.file_idx) else {
-                return;
-            };
-            let Some(hunk) = scope.hunk_idx.and_then(|h| file.hunks.get(h)) else {
-                return;
-            };
-            format!(
-                "About this change:\n{}\n",
-                super::super::extract::hunk_to_unified(file, hunk)
-            )
-        };
-        self.send_to_review(col_idx, text, window, cx);
-    }
-    /// EP-005 US-018/019/020: send a hunk to the active review CLI framed for an
-    /// "act" intent (direct / fix-and-stage / discard), pre-filled, no
-    /// auto-submit. Reuses [`Self::send_to_review`] (launches Claude Code if no
-    /// CLI is open). Paneflow runs no git write itself - the agent performs any
-    /// staging/discard in the witnessed terminal.
-    pub(super) fn act_on_hunk(
-        &mut self,
-        col_idx: usize,
-        scope: DiffBodyScope,
-        action: super::super::review_terminal::HunkAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let text = {
-            let Some(col) = self.columns.get(col_idx) else {
-                return;
-            };
-            let ColumnState::Loaded { files_full, .. } = &col.state else {
-                return;
-            };
-            let Some(file) = files_full.get(scope.file_idx) else {
-                return;
-            };
-            let Some(hunk) = scope.hunk_idx.and_then(|h| file.hunks.get(h)) else {
-                return;
-            };
-            let diff = super::super::extract::hunk_to_unified(file, hunk);
-            super::super::review_terminal::build_cli_hunk_prompt(action, &file.path, &diff)
-        };
-        // Any act clears a pending armed-discard (the user committed to an action).
-        self.hunk_discard_armed = None;
-        self.send_to_review(col_idx, text, window, cx);
-    }
-
     /// A branch column has something to review when it's loaded with > 0 files.
     pub(super) fn column_has_changes(col: &Column) -> bool {
         matches!(&col.state, ColumnState::Loaded { file_count, .. } if *file_count > 0)
     }
 
     /// Open/close a column's Review CLI multi-select. On open, sync the pick
-    /// toggles to the CLI list (default all-on). Clicking the same column's
+    /// toggles to the CLI list (default first-on). Clicking the same column's
     /// Review button again (or a different one) toggles / re-targets the popover.
     pub(super) fn toggle_review_menu(&mut self, col_idx: usize, cx: &mut Context<Self>) {
         if self.review_menu_open == Some(col_idx) {
@@ -165,7 +20,7 @@ impl DiffView {
             self.review_menu_open = Some(col_idx);
             let n = super::super::review_terminal::ReviewCli::all().len();
             if self.review_picks.len() != n {
-                self.review_picks = vec![true; n];
+                self.review_picks = (0..n).map(|i| i == 0).collect();
             }
         }
         cx.notify();
@@ -192,10 +47,29 @@ impl DiffView {
         self.review_menu_open = None;
         let clis = super::super::review_terminal::ReviewCli::all();
         let selected: Vec<usize> = (0..clis.len())
-            .filter(|i| self.review_picks.get(*i).copied().unwrap_or(true))
+            .filter(|i| self.review_picks.get(*i).copied().unwrap_or(*i == 0))
             .collect();
         if selected.is_empty() {
             self.set_flash("Select at least one CLI".into(), cx);
+            return;
+        }
+        let blocked_by_running_review = {
+            let Some(col) = self.columns.get_mut(col_idx) else {
+                return;
+            };
+            if col.has_running_review_terminal(cx) {
+                col.drop_exited_review_terminals(cx);
+                true
+            } else {
+                col.drop_review_terminals();
+                false
+            }
+        };
+        if blocked_by_running_review {
+            self.set_flash(
+                "Close Review terminals before running Review again".into(),
+                cx,
+            );
             return;
         }
         let Some(col) = self.columns.get(col_idx) else {
@@ -504,7 +378,7 @@ impl DiffView {
                     .child("Launch a CLI to review this branch"),
             );
         for (i, cli) in clis.iter().enumerate() {
-            let checked = self.review_picks.get(i).copied().unwrap_or(true);
+            let checked = self.review_picks.get(i).copied().unwrap_or(i == 0);
             let label = cli.label();
             menu = menu.child(
                 select_item(

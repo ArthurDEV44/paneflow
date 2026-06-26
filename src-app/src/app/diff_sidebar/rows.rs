@@ -182,24 +182,19 @@ impl PaneFlowApp {
                         }),
                 )
             })
-            // EP-003 US-013: hover-revealed per-file actions, right-anchored over
-            // the +/- counts (matching the Agents sidebar's hover cluster). Each
-            // button routes to the active host (single DiffView or the selected
-            // repo of the multi-project view) like the row click does.
+            // EP-003 US-013: hover-revealed per-file actions. Keep them in a
+            // stable trailing slot so the +/- counts stay readable on hover.
             .child(
                 div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right(px(6.))
+                    .flex_none()
+                    .w(px(48.))
                     .flex()
                     .flex_row()
                     .items_center()
+                    .justify_end()
                     .gap(px(2.))
-                    .pl(px(8.))
-                    .bg(ui.subtle)
                     .invisible()
-                    .group_hover(group.clone(), |s| s.visible())
+                    .group_hover(group, |s| s.visible())
                     .child(
                         crate::ui_primitives::icon_button_sm(
                             SharedString::from(format!(

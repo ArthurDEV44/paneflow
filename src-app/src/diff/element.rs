@@ -160,10 +160,6 @@ pub struct DiffElement {
     /// number (floor [`GUTTER_W`]). A field so the layout helpers read one
     /// resolved value instead of threading it through every signature.
     gutter_w: Pixels,
-    /// prd-ai-in-diff-2026-Q3.md: the unified-row index currently hovered while a
-    /// review CLI is running on the column, painted with a brighter wash to signal
-    /// "click to ask the CLI about this line". `None` when not actionable.
-    hover_row: Option<usize>,
 }
 
 impl DiffElement {
@@ -190,14 +186,7 @@ impl DiffElement {
             font_size: px(12.),
             line_height: px(ROW_HEIGHT),
             gutter_w: px(GUTTER_W),
-            hover_row: None,
         }
-    }
-
-    /// Mark a unified row as hover-highlighted (clickable to ask the review CLI).
-    pub fn hover_row(mut self, row: Option<usize>) -> Self {
-        self.hover_row = row;
-        self
     }
 
     /// Split a line into `TextRun`s: the syntax runs carry their own color, the
@@ -920,33 +909,20 @@ impl Element for DiffElement {
                         &mut quads,
                         &mut glyphs,
                     );
-                    // Hover-to-ask wash: a brighter overlay on the hovered row so
-                    // it reads as clickable (painted over the row bg, under glyphs).
-                    if Some(i) == self.hover_row {
-                        quads.push(Quad {
-                            bounds: Bounds::new(origin, size(width, row_h)),
-                            color: self.palette.text.opacity(0.08),
-                        });
-                    }
                 }
                 // Pinned sticky header for the file under the viewport top.
-                let cur = (0..=first.min(row_count.saturating_sub(1)))
-                    .rev()
-                    .find(|&i| rows[i].kind == RowKind::FileHeader);
-                if let Some(hidx) = cur
+                let cur = spans
+                    .partition_point(|span| span.header_row <= first)
+                    .checked_sub(1)
+                    .and_then(|file_idx| {
+                        spans.get(file_idx).map(|span| (file_idx, span.header_row))
+                    });
+                if let Some((file_idx, hidx)) = cur
                     && offsets[hidx] < vtop
                 {
                     // Next file header within the slide-up band → push the sticky
                     // up so the incoming file's inline header displaces it.
-                    let mut nh = None;
-                    let mut j = hidx + 1;
-                    while j < row_count && offsets[j] <= vtop + STICKY_HEADER_HEIGHT {
-                        if rows[j].kind == RowKind::FileHeader {
-                            nh = Some(j);
-                            break;
-                        }
-                        j += 1;
-                    }
+                    let nh = spans.get(file_idx + 1).map(|span| span.header_row);
                     let mut sticky_y = mask.bounds.origin.y;
                     if let Some(nh) = nh {
                         let nh_abs = bounds.origin.y + px(offsets[nh]);
@@ -1008,21 +984,16 @@ impl Element for DiffElement {
                     );
                 }
                 // Pinned sticky header for the file under the viewport top.
-                let cur = (0..=first.min(row_count.saturating_sub(1)))
-                    .rev()
-                    .find(|&i| matches!(rows[i], SplitRow::Header(_)));
-                if let Some(hidx) = cur
+                let cur = spans
+                    .partition_point(|span| span.header_row <= first)
+                    .checked_sub(1)
+                    .and_then(|file_idx| {
+                        spans.get(file_idx).map(|span| (file_idx, span.header_row))
+                    });
+                if let Some((file_idx, hidx)) = cur
                     && offsets[hidx] < vtop
                 {
-                    let mut nh = None;
-                    let mut j = hidx + 1;
-                    while j < row_count && offsets[j] <= vtop + STICKY_HEADER_HEIGHT {
-                        if matches!(rows[j], SplitRow::Header(_)) {
-                            nh = Some(j);
-                            break;
-                        }
-                        j += 1;
-                    }
+                    let nh = spans.get(file_idx + 1).map(|span| span.header_row);
                     let mut sticky_y = mask.bounds.origin.y;
                     if let Some(nh) = nh {
                         let nh_abs = bounds.origin.y + px(offsets[nh]);

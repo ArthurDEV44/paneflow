@@ -175,10 +175,6 @@ impl Render for DiffView {
             .on_action(cx.listener(|this, _: &crate::DiffDismiss, window, cx| {
                 this.dismiss_overlays(window, cx);
             }))
-            // EP-005 US-018: direct the agent at the hunk under the cursor.
-            .on_action(cx.listener(|this, _: &crate::DiffActOnHunk, window, cx| {
-                this.act_on_hunk_under_cursor(window, cx);
-            }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                 if let Some((column_index, start_y, start_height)) = this.review_resizing
                     && let Some(column) = this.columns.get_mut(column_index)
@@ -230,18 +226,12 @@ impl Render for DiffView {
         let body = self.render_arrange(&self.arrange, mode, cx);
 
         let root = root.child(self.render_toolbar(mode, scope_slot, cx));
-        let root = root.children(self.render_ask_hint(mode, ui, cx));
         let mut root = root.child(div().flex_1().min_h_0().flex().child(body));
         if let Some(menu) = &self.body_menu {
             root = root.child(self.render_body_menu(menu, ui, cx));
         }
         if let Some(flash) = &self.flash {
             root = root.child(self.render_flash(flash.clone(), ui));
-        }
-        // EP-005: the per-hunk act cluster floats over the body when hovering a
-        // changed line on a resolvable hunk.
-        if let Some(cluster) = self.render_hunk_actions(mode, ui, cx) {
-            root = root.child(cluster);
         }
         root
     }
@@ -271,70 +261,6 @@ impl DiffView {
         self.body_menu = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
-    }
-
-    /// EP-003 US-010: a one-line onboarding bar naming the click-to-ask
-    /// capability. Shown on first entry - while at least one column has changes
-    /// to ask about, no review CLI is running yet (the capability is otherwise
-    /// self-evident), in Unified mode (where click-to-ask works), and not
-    /// dismissed. `None` otherwise.
-    fn render_ask_hint(
-        &self,
-        mode: ViewMode,
-        ui: crate::theme::UiColors,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if self.ask_hint_dismissed || mode != ViewMode::Unified {
-            return None;
-        }
-        let any_changes = self.columns.iter().any(Self::column_has_changes);
-        let any_review = self.columns.iter().any(|c| !c.review_terminals.is_empty());
-        if !any_changes || any_review {
-            return None;
-        }
-        Some(
-            div()
-                .flex_none()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.))
-                .mx(px(10.))
-                .mb(px(4.))
-                .px(px(8.))
-                .py(px(4.))
-                .rounded(px(6.))
-                .bg(ui.accent.opacity(0.10))
-                .child(
-                    gpui::svg()
-                        .size(px(13.))
-                        .flex_none()
-                        .path("icons/sparkles.svg")
-                        .text_color(ui.accent),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(LABEL_SM)
-                        .text_color(ui.text)
-                        .child("Click any changed line to ask an agent about it."),
-                )
-                .child(
-                    crate::ui_primitives::icon_button_sm(
-                        "diff-ask-hint-dismiss",
-                        "icons/close.svg",
-                        ui.muted,
-                        ui.text.opacity(0.12),
-                    )
-                    .tooltip(crate::ui_primitives::text_tooltip("Dismiss"))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                        this.ask_hint_dismissed = true;
-                        cx.notify();
-                    })),
-                )
-                .into_any_element(),
-        )
     }
 
     fn render_column(
@@ -638,36 +564,21 @@ impl DiffView {
                 // marks this column the sync driver; the click listener maps the
                 // click Y to a row and toggles that file's collapse if it landed
                 // on a file header.
-                let h_offsets = std::rc::Rc::new(col.h_offsets.clone());
                 let body = match mode {
                     ViewMode::Split => DiffBody::Split {
                         rows: col.disp_split.clone(),
                         offsets: col.disp_split_offsets.clone(),
                         max_line_no: col.disp_split_max_no,
                         spans: col.disp_split_spans.clone(),
-                        h_offsets: h_offsets.clone(),
+                        h_offsets: col.h_offsets.clone(),
                     },
                     ViewMode::Unified => DiffBody::Unified {
                         rows: col.disp_unified.clone(),
                         offsets: col.disp_unified_offsets.clone(),
                         max_line_no: col.disp_unified_max_no,
                         spans: col.disp_unified_spans.clone(),
-                        h_offsets,
+                        h_offsets: col.h_offsets.clone(),
                     },
-                };
-                // EP-003 US-010: hover-to-ask affordance over a changed line. In
-                // Unified the line is clickable (pointer + highlight); in Split
-                // click-to-ask is unavailable, so we keep the named tooltip but
-                // drop the pointer/highlight and the tooltip explains the
-                // Unified-only limitation instead (AC: split parity).
-                let hover = self.hover_line.filter(|(c, _)| *c == idx).map(|(_, r)| r);
-                let unified = mode == ViewMode::Unified;
-                let hover_row = if unified { hover } else { None };
-                let ask_tooltip = hover.is_some();
-                let tip = if unified {
-                    "Click to ask an agent about this line"
-                } else {
-                    "Switch to Unified view to ask an agent about this line"
                 };
                 div()
                     .id(SharedString::from(format!("diff-col-{idx}")))
@@ -680,29 +591,13 @@ impl DiffView {
                             this.scroll_driver = idx;
                         },
                     ))
-                    .when(hover_row.is_some(), |d| d.cursor(CursorStyle::PointingHand))
-                    .when(ask_tooltip, |d| {
-                        d.tooltip(crate::ui_primitives::text_tooltip(tip))
-                    })
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         this.handle_body_click(idx, ev, window, cx);
                     }))
-                    // Track the pointer for `Ctrl+Shift+C` (hunk under cursor) AND
-                    // for the hover-to-ask highlight (changed line under cursor while
-                    // a review CLI runs). Only re-renders on a hover-row transition.
-                    .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, window, cx| {
+                    // Track the pointer for `Ctrl+Shift+C` (hunk under cursor)
+                    // without turning changed lines into hover-driven controls.
+                    .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _window, _cx| {
                         this.last_body_pos = Some((idx, ev.position));
-                        let mode = this.effective_mode(window);
-                        let new_hover = this
-                            .actionable_row_at(idx, ev.position, mode)
-                            .map(|r| (idx, r));
-                        if this.hover_line != new_hover {
-                            this.hover_line = new_hover;
-                            // EP-005 US-020: moving to a different line disarms a
-                            // pending discard (the two-step armed pattern).
-                            this.hunk_discard_armed = None;
-                            cx.notify();
-                        }
                     }))
                     .on_mouse_down(
                         MouseButton::Right,
@@ -711,7 +606,7 @@ impl DiffView {
                             this.open_body_menu(idx, ev.position, mode, cx);
                         }),
                     )
-                    .child(DiffElement::new(body, palette).hover_row(hover_row))
+                    .child(DiffElement::new(body, palette))
                     .into_any_element()
             }
         };
@@ -904,11 +799,13 @@ impl DiffView {
                         .items_center()
                         .gap(px(1.))
                         .ml(px(4.))
-                        .child(nav_btn("diff-hunk-prev", "icons/chevron_up.svg").on_click(
-                            cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.goto_hunk(false, window, cx);
-                            }),
-                        ))
+                        .child(
+                            nav_btn("diff-hunk-prev", "icons/chevron_up.svg")
+                                .tooltip(crate::ui_primitives::text_tooltip("Previous hunk ([)"))
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.goto_hunk(false, window, cx);
+                                })),
+                        )
                         .child(
                             div()
                                 .flex_none()
@@ -918,17 +815,18 @@ impl DiffView {
                                 .child(format!("{shown}/{total}")),
                         )
                         .child(
-                            nav_btn("diff-hunk-next", "icons/chevron-down.svg").on_click(
-                                cx.listener(|this, _: &ClickEvent, window, cx| {
+                            nav_btn("diff-hunk-next", "icons/chevron-down.svg")
+                                .tooltip(crate::ui_primitives::text_tooltip("Next hunk (])"))
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.goto_hunk(true, window, cx);
-                                }),
-                            ),
+                                })),
                         ),
                 )
             })
             // EP-004 US-017: aggregated estimated cost across attributed
             // worktrees. Hidden when nothing is priced (no fabricated total).
             .when_some(self.attribution_total(), |d, (total, n)| {
+                let cost = crate::pricing::format_cost(total);
                 d.child(
                     div()
                         .flex_none()
@@ -946,11 +844,11 @@ impl DiffView {
                                 .path("icons/sparkles.svg")
                                 .text_color(ui.muted),
                         )
-                        .child(format!(
-                            "Total {} (est.) · {n} worktree{}",
-                            crate::pricing::format_cost(total),
-                            if n == 1 { "" } else { "s" }
-                        )),
+                        .child(if n == 1 {
+                            format!("{cost} est.")
+                        } else {
+                            format!("{cost} est. · {n}")
+                        }),
                 )
             })
             // --- spacer ---
@@ -1042,12 +940,12 @@ impl DiffView {
                 d.child(
                     control("diff-sync-toggle", self.sync_scroll)
                         .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| this.toggle_sync(cx)))
-                        .child(icon("icons/link.svg"))
-                        .child(if self.sync_scroll {
-                            "Linked"
+                        .tooltip(crate::ui_primitives::text_tooltip(if self.sync_scroll {
+                            "Columns scroll together (s)"
                         } else {
-                            "Independent"
-                        }),
+                            "Columns scroll independently (s)"
+                        }))
+                        .child(icon("icons/link.svg")),
                 )
             })
             // --- right: view-mode segmented control ---
@@ -1076,6 +974,7 @@ impl DiffView {
                             "icons/list.svg",
                             effective == ViewMode::Unified,
                         )
+                        .tooltip(crate::ui_primitives::text_tooltip("Unified view (u)"))
                         .when(effective != ViewMode::Unified, |d| {
                             d.on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                                 this.set_view_mode(ViewMode::Unified, cx);
@@ -1089,6 +988,7 @@ impl DiffView {
                             "icons/split_vertical.svg",
                             effective == ViewMode::Split,
                         )
+                        .tooltip(crate::ui_primitives::text_tooltip("Split view (u)"))
                         .when(effective != ViewMode::Split, |d| {
                             d.on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                                 this.set_view_mode(ViewMode::Split, cx);

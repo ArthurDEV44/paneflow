@@ -365,14 +365,6 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "diff_dismiss",
         context: Some("DiffView && !Terminal && !TextInput"),
     },
-    // EP-005 US-018: `a` = "act" on the hunk under the cursor (or the viewport
-    // hunk for a keyboard-only loop). Same guarded context as the other
-    // review-loop bare keys.
-    DefaultBinding {
-        key: "a",
-        action_name: "diff_act_on_hunk",
-        context: Some("DiffView && !Terminal && !TextInput"),
-    },
     // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md): Composer + broadcast
     // groups. All three are unclaimed `secondary-shift-…` slots (taken set
     // before this block: d/e/w/n/q/j/t/z/=/s/a/g) and none shadows a common

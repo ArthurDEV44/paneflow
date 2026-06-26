@@ -203,7 +203,7 @@ impl DiffView {
                                     files: Rc::new(files),
                                     anchors_unified,
                                     anchors_split,
-                                    files_full: Rc::new(files_full),
+                                    files_full: Arc::new(files_full),
                                 }
                             }
                         };
@@ -260,7 +260,7 @@ impl DiffView {
                 continue;
             }
             let files = match &col.state {
-                ColumnState::Loaded { files_full, .. } => files_full.as_ref().clone(),
+                ColumnState::Loaded { files_full, .. } => files_full.clone(),
                 _ => continue,
             };
             let generation = col.generation;
@@ -273,7 +273,7 @@ impl DiffView {
                 let rows = smol::unblock(move || {
                     let syntax = SYNTAX_HIGHLIGHT_ENABLED
                         .then(|| super::super::syntax::DiffSyntax::from_theme(&theme));
-                    build_rows_for_mode(&files, mode, syntax.as_ref())
+                    build_rows_for_mode(files.as_ref(), mode, syntax.as_ref())
                 })
                 .await;
                 let _ = cx.update(|cx| {

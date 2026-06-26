@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -206,9 +207,9 @@ enum ColumnState {
         /// retained so "copy hunk/file" (US-003) and the agent review payload
         /// (US-005) serialize an exact unified diff at action time (no stable
         /// hunk ID - hunks are resolved from these on demand). Bounded by the
-        /// same per-file caps as the rows; shared `Rc` so reads never clone the
-        /// base/new text.
-        files_full: Rc<Vec<super::git::FileDiff>>,
+        /// same per-file caps as the rows; shared `Arc` so lazy mode builds can
+        /// move the raw diff payload off-thread without cloning base/new text.
+        files_full: Arc<Vec<super::git::FileDiff>>,
     },
     Failed(String),
 }
@@ -323,7 +324,7 @@ struct Column {
     /// `DiffElement` (offset applied per file); the Review view's own wheel +
     /// scrollbar that drive these are a follow-up - until then they stay 0, so
     /// the Review body clips long lines exactly as before (no regression).
-    h_offsets: Vec<f32>,
+    h_offsets: Rc<Vec<f32>>,
 }
 
 impl Column {
@@ -355,14 +356,14 @@ impl Column {
             review_terminals: Vec::new(),
             review_height: REVIEW_DEFAULT_HEIGHT,
             attribution: Vec::new(),
-            h_offsets: Vec::new(),
+            h_offsets: Rc::new(Vec::new()),
         }
     }
 
     fn reset_display_caches(&mut self) {
         self.clear_display_mode(ViewMode::Unified);
         self.clear_display_mode(ViewMode::Split);
-        self.h_offsets.clear();
+        self.h_offsets = Rc::new(Vec::new());
     }
 
     fn clear_display_mode(&mut self, mode: ViewMode) {
@@ -523,7 +524,7 @@ impl Column {
             self.disp_unified_spans = Rc::new(unified_file_spans(&self.disp_unified));
             let file_count = self.disp_unified_spans.len();
             if self.h_offsets.len() != file_count {
-                self.h_offsets.resize(file_count, 0.0);
+                Rc::make_mut(&mut self.h_offsets).resize(file_count, 0.0);
             }
             self.disp_hunk_tops_unified = Rc::new(unified_hunk_tops(&self.disp_unified));
         } else {
@@ -558,7 +559,7 @@ impl Column {
             self.disp_split_spans = Rc::new(split_file_spans(&self.disp_split));
             let file_count = self.disp_split_spans.len();
             if self.h_offsets.len() != file_count {
-                self.h_offsets.resize(file_count, 0.0);
+                Rc::make_mut(&mut self.h_offsets).resize(file_count, 0.0);
             }
             self.disp_hunk_tops_split = Rc::new(split_hunk_tops(&self.disp_split));
         } else {
@@ -664,26 +665,11 @@ pub struct DiffView {
     /// Active review-region resize drag: `(col_idx, start_pointer_y_px,
     /// start_height_px)`. `None` when not dragging.
     review_resizing: Option<(usize, f32, f32)>,
-    /// `(col_idx, unified row)` of the changed line under the cursor while that
-    /// column has a review CLI running - painted as hover-highlighted + clickable
-    /// (left-click sends it to the CLI). `None` when not over an actionable line.
-    hover_line: Option<(usize, usize)>,
-    /// EP-005 US-020: the hunk whose agent-mediated Discard is armed, as
-    /// `(col_idx, file_idx, hunk_idx)`. The first Discard click arms (the pill
-    /// turns red "Confirm"); the second executes. Cleared when the hovered hunk
-    /// changes or any act fires - the two-step armed pattern from
-    /// `agents_sidebar` `hover_actions_cluster`.
-    hunk_discard_armed: Option<(usize, usize, usize)>,
     /// When true, the column-header `×` emits [`DiffViewEvent::CloseColumn`] (the
     /// host deselects the branch from the scope) instead of locally hiding the
     /// column. Set for the Worktree scope, where a branch is either shown or not -
     /// no in-between "hidden but tracked" state with a "N hidden" pill.
     close_removes: bool,
-    /// EP-003 US-010: when `true`, the one-line "click a changed line to ask an
-    /// agent" onboarding bar is suppressed. Set by its `×` (manual dismiss). The
-    /// bar also self-hides once any column has a review terminal running (the
-    /// capability is then self-evident), so it never needs a "used it once" flag.
-    ask_hint_dismissed: bool,
     /// Scope breadcrumb fragment (scope › project › branches) PUSHED by
     /// `render_diff_main` every frame and consumed (`take`) by the next
     /// `render` - same push-only contract as `TitleBar`. The DiffView mounts
@@ -705,16 +691,7 @@ struct DiffBodyMenu {
     position: Point<Pixels>,
     col_idx: usize,
     scope: DiffBodyScope,
-}
-
-/// A changed line resolved under the pointer, for sending into the embedded
-/// review CLI's input (prd-ai-in-diff-2026-Q3.md).
-#[derive(Clone)]
-struct ClickedLine {
-    path: String,
-    lineno: u32,
-    content: String,
-    removed: bool,
+    mode: ViewMode,
 }
 
 /// Which file (+ optional hunk) a body point resolves to. Indices are into the
@@ -787,10 +764,7 @@ impl DiffView {
             review_menu_open: None,
             review_picks: Vec::new(),
             review_resizing: None,
-            hover_line: None,
-            hunk_discard_armed: None,
             close_removes: false,
-            ask_hint_dismissed: false,
             scope_slot: None,
         };
         view.bootstrap(cx);
@@ -954,9 +928,6 @@ impl DiffView {
             .is_some_and(|(col_idx, _, _)| col_idx == idx)
         {
             self.review_resizing = None;
-        }
-        if self.hover_line.is_some_and(|(col_idx, _)| col_idx == idx) {
-            self.hover_line = None;
         }
         if self
             .last_body_pos
@@ -1308,10 +1279,10 @@ mod tests {
             files: Rc::new(vec![file_entry(&file)]),
             anchors_unified: Some(Rc::new(anchors_unified)),
             anchors_split: Some(Rc::new(anchors_split)),
-            files_full: Rc::new(files),
+            files_full: Arc::new(files),
         };
         col.collapsed.insert("src/lib.rs".into());
-        col.h_offsets = vec![12.0];
+        col.h_offsets = Rc::new(vec![12.0]);
         col.recompute_display();
         col
     }

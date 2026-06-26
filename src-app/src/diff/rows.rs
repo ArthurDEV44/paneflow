@@ -18,6 +18,8 @@ use super::git::{FileChange, FileDiff};
 use super::syntax::DiffSyntax;
 use super::worddiff::{MAX_WORD_DIFF_LINE_COUNT, word_diff_ranges};
 
+const MAX_FULL_SPLIT_ALIGN_LINES: usize = 20_000;
+
 /// Per-file word-diff ranges, keyed by line index in each side's text. Only
 /// populated for small modified hunks (US-010); other lines highlight at the
 /// line level only.
@@ -700,6 +702,130 @@ fn resolve_half(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_split_rows_from_hunk_windows(
+    file: &FileDiff,
+    base_lines: &[&str],
+    new_lines: &[&str],
+    words: &WordMaps,
+    syn_old: &[Vec<(Range<usize>, Hsla)>],
+    syn_new: &[Vec<(Range<usize>, Hsla)>],
+    rows: &mut Vec<SplitRow>,
+    dropped: &mut usize,
+) {
+    let emit_pair = |left: Cell, right: Cell, rows: &mut Vec<SplitRow>, dropped: &mut usize| {
+        if rows.len() >= MAX_DISPLAY_ROWS {
+            *dropped += 1;
+        } else {
+            rows.push(SplitRow::Pair {
+                left: resolve_half(left, base_lines, &words.old, syn_old),
+                right: resolve_half(right, new_lines, &words.new, syn_new),
+            });
+        }
+    };
+    let emit_fold = |n: u32, rows: &mut Vec<SplitRow>, dropped: &mut usize| {
+        if n == 0 {
+            return;
+        }
+        if rows.len() >= MAX_DISPLAY_ROWS {
+            *dropped += 1;
+        } else {
+            rows.push(SplitRow::Fold(if n == 1 {
+                "⋯ 1 unchanged line".into()
+            } else {
+                format!("⋯ {n} unchanged lines").into()
+            }));
+        }
+    };
+    let emit_context_range = |base_start: u32,
+                              base_end: u32,
+                              new_start: u32,
+                              rows: &mut Vec<SplitRow>,
+                              dropped: &mut usize| {
+        let count = base_end.saturating_sub(base_start);
+        for k in 0..count {
+            emit_pair(
+                Cell {
+                    kind: CellKind::Context,
+                    line: Some(base_start + k),
+                },
+                Cell {
+                    kind: CellKind::Context,
+                    line: Some(new_start + k),
+                },
+                rows,
+                dropped,
+            );
+        }
+    };
+
+    let mut bc = 0u32;
+    let mut nc = 0u32;
+    for h in &file.hunks {
+        let pre_base = h.base_row_range.start.saturating_sub(CONTEXT_LINES);
+        let pre_new = h.new_row_range.start.saturating_sub(CONTEXT_LINES);
+        emit_fold(
+            pre_base.saturating_sub(bc).min(pre_new.saturating_sub(nc)),
+            rows,
+            dropped,
+        );
+        emit_context_range(
+            pre_base.max(bc),
+            h.base_row_range.start,
+            pre_new.max(nc),
+            rows,
+            dropped,
+        );
+
+        let rem_start = h.base_row_range.start;
+        let add_start = h.new_row_range.start;
+        let rem_len = h.base_row_range.end - rem_start;
+        let add_len = h.new_row_range.end - add_start;
+        for k in 0..rem_len.max(add_len) {
+            let left = if k < rem_len {
+                Cell {
+                    kind: CellKind::Removed,
+                    line: Some(rem_start + k),
+                }
+            } else {
+                Cell {
+                    kind: CellKind::Phantom,
+                    line: None,
+                }
+            };
+            let right = if k < add_len {
+                Cell {
+                    kind: CellKind::Added,
+                    line: Some(add_start + k),
+                }
+            } else {
+                Cell {
+                    kind: CellKind::Phantom,
+                    line: None,
+                }
+            };
+            emit_pair(left, right, rows, dropped);
+        }
+
+        let post_base = (h.base_row_range.end + CONTEXT_LINES).min(base_lines.len() as u32);
+        let post_new = (h.new_row_range.end + CONTEXT_LINES).min(new_lines.len() as u32);
+        emit_context_range(
+            h.base_row_range.end,
+            post_base,
+            h.new_row_range.end,
+            rows,
+            dropped,
+        );
+        bc = post_base;
+        nc = post_new;
+    }
+
+    let remaining = (base_lines.len() as u32)
+        .saturating_sub(bc)
+        .min((new_lines.len() as u32).saturating_sub(nc));
+    emit_fold(remaining, rows, dropped);
+}
+
 /// Build the side-by-side row list for a column's files (US-009). Aligns each
 /// file with [`align_rows`] and resolves cells to text. Honors the same
 /// `MAX_DISPLAY_ROWS` cap as the unified builder.
@@ -744,6 +870,19 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
         let words = build_word_maps(file, &base_lines, &new_lines);
         let syn_old = side_syntax(syntax, file, &file.base_text);
         let syn_new = side_syntax(syntax, file, &file.new_text);
+        if base_lines.len() + new_lines.len() > MAX_FULL_SPLIT_ALIGN_LINES {
+            build_split_rows_from_hunk_windows(
+                file,
+                &base_lines,
+                &new_lines,
+                &words,
+                &syn_old,
+                &syn_new,
+                &mut rows,
+                &mut dropped,
+            );
+            continue;
+        }
         let aligned = align_rows(&file.hunks, base_lines.len() as u32, new_lines.len() as u32);
         // Collapse runs of unchanged (context-on-both-sides) aligned rows the
         // same way the unified builder does: keep CONTEXT_LINES bordering each
@@ -1089,5 +1228,64 @@ mod tests {
         // 1 changed pair + 3 trailing context pairs kept; the rest folded.
         assert_eq!(pairs, 1 + CONTEXT_LINES as usize);
         assert!(rows.len() < 10, "folded row count {} too large", rows.len());
+    }
+
+    #[test]
+    fn split_large_files_use_hunk_windows_instead_of_full_alignment() {
+        // A side-by-side diff over a huge file should keep only the hunk window
+        // and folds. This guards the fast path that avoids aligning every
+        // unchanged line before folding it away.
+        let line_count = (MAX_FULL_SPLIT_ALIGN_LINES / 2) + 50;
+        let changed = (line_count / 2) as u32;
+        let mut base = String::new();
+        let mut new = String::new();
+        for i in 0..line_count {
+            if i as u32 == changed {
+                base.push_str("old\n");
+                new.push_str("new\n");
+            } else {
+                base.push_str(&format!("ctx{i}\n"));
+                new.push_str(&format!("ctx{i}\n"));
+            }
+        }
+        let file = FileDiff {
+            path: "large.txt".into(),
+            change: FileChange::Modified,
+            old_path: None,
+            base_text: base,
+            new_text: new,
+            hunks: vec![crate::diff::engine::DiffHunk {
+                base_row_range: changed..changed + 1,
+                new_row_range: changed..changed + 1,
+                status: DiffHunkStatus::Modified,
+            }],
+            is_binary: false,
+        };
+
+        let (rows, dropped) = build_split_rows(&[file], None);
+        assert_eq!(dropped, 0);
+        assert!(
+            rows.len() < 20,
+            "large split diff should be windowed, got {} rows",
+            rows.len()
+        );
+
+        let folds = rows
+            .iter()
+            .filter(|row| matches!(row, SplitRow::Fold(_)))
+            .count();
+        assert_eq!(folds, 2, "head and tail context should be folded");
+
+        let changed_pairs = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row,
+                    SplitRow::Pair { left, right }
+                        if left.kind == CellKind::Removed && right.kind == CellKind::Added
+                )
+            })
+            .count();
+        assert_eq!(changed_pairs, 1);
     }
 }
