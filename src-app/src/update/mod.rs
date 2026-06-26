@@ -69,7 +69,9 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-use anyhow::{Context, Result};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use anyhow::Context;
+use anyhow::Result;
 
 /// Rendering-facing state of the self-update flow.
 #[derive(Clone, Debug, Default)]
