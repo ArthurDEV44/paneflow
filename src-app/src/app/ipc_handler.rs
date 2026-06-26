@@ -2856,9 +2856,6 @@ impl PaneFlowApp {
                         s.message = None;
                     }
                     cx.notify();
-                    if !self.loader_anim_running {
-                        self.start_loader_animation(cx);
-                    }
                     self.bind_or_resolve_session_surface(
                         workspace_id,
                         key,
@@ -2914,9 +2911,6 @@ impl PaneFlowApp {
                         active_tool_name,
                     );
                     cx.notify();
-                    if !self.loader_anim_running {
-                        self.start_loader_animation(cx);
-                    }
                     self.bind_or_resolve_session_surface(
                         workspace_id,
                         key,

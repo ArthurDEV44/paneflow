@@ -486,7 +486,26 @@ pub struct Content {
 /// scroll/history metadata - so swapping the element onto this producer
 /// (US-009) is a zero `LayoutState` delta change. The caller holds the lock;
 /// this takes `&Term` so the same guard can also drive a resize.
+#[allow(dead_code)]
 pub fn content_from_term(term: &Term<ZedListener>) -> Content {
+    content_from_term_rows(term, None)
+}
+
+/// Snapshot only the viewport rows needed by the renderer. Row bounds are in
+/// viewport coordinates after `display_offset` is applied, matching
+/// [`Content::cells`].
+pub fn content_from_term_visible(
+    term: &Term<ZedListener>,
+    first_visible_row: i32,
+    last_visible_row: i32,
+) -> Content {
+    content_from_term_rows(term, Some(first_visible_row..last_visible_row))
+}
+
+fn content_from_term_rows(
+    term: &Term<ZedListener>,
+    visible_rows: Option<std::ops::Range<i32>>,
+) -> Content {
     let content = term.renderable_content();
     let display_offset = content.display_offset;
     let display_offset_i = display_offset as i32;
@@ -496,14 +515,23 @@ pub fn content_from_term(term: &Term<ZedListener>) -> Content {
     // same coordinate system as the cursor and search-highlight code.
     let cells: Vec<Cell> = content
         .display_iter
-        .map(|ic| Cell {
-            point: Point::new(ic.point.line.0 + display_offset_i, ic.point.column.0),
-            c: ic.cell.c,
-            fg: ic.cell.fg.into(),
-            bg: ic.cell.bg.into(),
-            flags: ic.cell.flags.into(),
-            zerowidth: ic.cell.zerowidth().map(|z| z.to_vec()),
-            hyperlink: ic.cell.hyperlink().is_some(),
+        .filter_map(|ic| {
+            let line = ic.point.line.0 + display_offset_i;
+            if visible_rows
+                .as_ref()
+                .is_some_and(|rows| line < rows.start || line >= rows.end)
+            {
+                return None;
+            }
+            Some(Cell {
+                point: Point::new(line, ic.point.column.0),
+                c: ic.cell.c,
+                fg: ic.cell.fg.into(),
+                bg: ic.cell.bg.into(),
+                flags: ic.cell.flags.into(),
+                zerowidth: ic.cell.zerowidth().map(|z| z.to_vec()),
+                hyperlink: ic.cell.hyperlink().is_some(),
+            })
         })
         .collect();
 

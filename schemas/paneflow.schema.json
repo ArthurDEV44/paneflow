@@ -55,6 +55,12 @@
       "enum": ["client", "server", null],
       "default": "client"
     },
+    "window_backdrop": {
+      "type": ["string", "null"],
+      "description": "Native window backdrop. 'auto' uses Mica on supported Windows 11 builds and opaque elsewhere; 'mica' forces Mica when supported; 'blurred'/'acrylic' opts into blur; 'transparent' keeps a transparent surface; 'opaque'/'off' disables native transparency. Read once at startup; PANEFLOW_WINDOW_BACKDROP overrides it for one launch.",
+      "enum": ["auto", "mica", "blurred", "acrylic", "transparent", "opaque", "off", null],
+      "default": "auto"
+    },
     "option_as_meta": {
       "type": ["boolean", "null"],
       "description": "Treat Alt/Option as Meta and send an ESC prefix. Default true on Linux and Windows. On macOS, set to false if you rely on Option to produce Unicode characters.",

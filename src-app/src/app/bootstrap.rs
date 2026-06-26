@@ -804,7 +804,8 @@ impl PaneFlowApp {
             files_menu_open: None,
             toast: None,
             _toast_task: None,
-            loader_anim_running: false,
+            #[cfg(target_os = "windows")]
+            windows_backdrop_light: None,
             jump_cursor: None,
             swap_source: None,
             closed_panes: Vec::new(),

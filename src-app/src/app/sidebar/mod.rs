@@ -16,8 +16,8 @@ use gpui::{
 };
 
 use crate::{
-    CLAUDE_SPINNER_FRAMES, PaneFlowApp, SIDEBAR_WIDTH, WorkspaceContextMenu, WorkspaceDrag,
-    WorkspaceDragPreview, ai_types, workspace::Workspace,
+    PaneFlowApp, SIDEBAR_WIDTH, WorkspaceContextMenu, WorkspaceDrag, WorkspaceDragPreview,
+    ai_types, workspace::Workspace,
 };
 
 /// US-048: memoized result of the sidebar's sibling-worktree grouping. The
@@ -593,46 +593,25 @@ impl PaneFlowApp {
                         } else {
                             rgb(0xc4c4c4).into()
                         };
-                        let glyph: AnyElement = if is_claude {
-                            let angle = ws.loader_angle.get();
-                            let idx = ((angle / std::f32::consts::TAU)
-                                * CLAUDE_SPINNER_FRAMES.len() as f32)
-                                as usize
-                                % CLAUDE_SPINNER_FRAMES.len();
-                            let spinner = CLAUDE_SPINNER_FRAMES[idx];
-                            div()
-                                .w(px(11.))
-                                .h(px(11.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(format!("{spinner}"))
-                                .into_any_element()
-                        } else {
-                            // Same self-animating arc as the Agents sidebar
-                            // (declarative Animation+Transformation, no shared
-                            // loader-loop state), tinted with the status colour.
-                            svg()
-                                .size(px(11.))
-                                .flex_none()
-                                .path("icons/loader-circle.svg")
-                                .text_color(thinking_color)
-                                .with_animation(
-                                    SharedString::from(format!(
-                                        "sidebar-spinner-{}-{}",
-                                        ws.id,
-                                        agg.tool.display_name()
-                                    )),
-                                    Animation::new(std::time::Duration::from_secs(1)).repeat(),
-                                    |svg, delta| {
-                                        svg.with_transformation(Transformation::rotate(percentage(
-                                            delta,
-                                        )))
-                                    },
-                                )
-                                .into_any_element()
-                        };
+                        let glyph: AnyElement = svg()
+                            .size(px(11.))
+                            .flex_none()
+                            .path("icons/loader-circle.svg")
+                            .text_color(thinking_color)
+                            .with_animation(
+                                SharedString::from(format!(
+                                    "sidebar-spinner-{}-{}",
+                                    ws.id,
+                                    agg.tool.display_name()
+                                )),
+                                Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                                |svg, delta| {
+                                    svg.with_transformation(Transformation::rotate(percentage(
+                                        delta,
+                                    )))
+                                },
+                            )
+                            .into_any_element();
                         card = card.child(
                             div()
                                 .flex()

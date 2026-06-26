@@ -14,8 +14,8 @@ use gpui::{
 use crate::terminal::PtyNotifier;
 use crate::terminal::types::{
     Cell, CellFlags, Color, Content, CopyModeCursorState, CursorShape, Modes, NamedColor,
-    Point as GridPoint, SearchHighlight, SelectionRange, SharedTerm, content_from_term, modes_of,
-    resize_if_needed,
+    Point as GridPoint, SearchHighlight, SelectionRange, SharedTerm, content_from_term_visible,
+    modes_of, resize_if_needed,
 };
 
 pub(super) mod color;
@@ -513,6 +513,20 @@ impl TerminalElement {
             .floor()
             .max(1.0) as usize;
 
+        // Viewport culling range from the content mask - the only remaining
+        // Window dependency. Computing it before the terminal snapshot lets the
+        // seam skip offscreen scrollback rows instead of allocating them and
+        // dropping them later.
+        let content_mask = window.content_mask();
+        let visible_top = content_mask.bounds.origin.y;
+        let visible_bottom = visible_top + content_mask.bounds.size.height;
+        let first_visible_row = ((visible_top - bounds.origin.y) / dims.line_height)
+            .floor()
+            .max(0.0) as i32;
+        let last_visible_row = ((visible_bottom - bounds.origin.y) / dims.line_height)
+            .ceil()
+            .max(0.0) as i32;
+
         // Snapshot the grid into a neutral `Content` under lock (resize first so
         // the snapshot reflects the resized grid), minimizing FairMutex hold
         // time. The renderer never touches alacritty types - the lock-and-read
@@ -541,7 +555,7 @@ impl TerminalElement {
             {
                 term.grid_mut().reset();
             }
-            content_from_term(&term)
+            content_from_term_visible(&term, first_visible_row, last_visible_row)
         };
 
         let display_offset = content.display_offset;
@@ -580,20 +594,6 @@ impl TerminalElement {
             };
 
         let cells = content.cells;
-
-        // Viewport culling range from the content mask - the only remaining
-        // Window dependency. Everything downstream is Window-free and lives in
-        // `layout_from_snapshot` (US-002). Rows outside `[first, last)` are
-        // skipped during cell processing.
-        let content_mask = window.content_mask();
-        let visible_top = content_mask.bounds.origin.y;
-        let visible_bottom = visible_top + content_mask.bounds.size.height;
-        let first_visible_row = ((visible_top - bounds.origin.y) / dims.line_height)
-            .floor()
-            .max(0.0) as i32;
-        let last_visible_row = ((visible_bottom - bounds.origin.y) / dims.line_height)
-            .ceil()
-            .max(0.0) as i32;
 
         layout_from_snapshot(LayoutInputs {
             cells,

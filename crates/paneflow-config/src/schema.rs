@@ -20,6 +20,10 @@ pub struct PaneFlowConfig {
     pub commands: Vec<CommandDefinition>,
     /// Window decoration mode: `"client"` (CSD, default) or `"server"` (SSD).
     pub window_decorations: Option<String>,
+    /// Native window backdrop: `"auto"` (default), `"mica"`, `"blurred"` /
+    /// `"acrylic"`, `"transparent"`, or `"opaque"` / `"off"`. Read at
+    /// startup; `PANEFLOW_WINDOW_BACKDROP` overrides it for one launch.
+    pub window_backdrop: Option<String>,
     /// Terminal line height multiplier (default: 1.3, valid range: 1.0-2.5).
     pub line_height: Option<f32>,
     /// Terminal font family (default: platform-specific monospace fallback).
@@ -1390,6 +1394,7 @@ mod tests {
             theme: Some("One Dark".to_string()),
             commands: Vec::new(),
             window_decorations: Some("client".to_string()),
+            window_backdrop: Some("auto".to_string()),
             line_height: Some(1.3),
             font_family: Some("Lilex".to_string()),
             font_fallbacks: Some(vec!["FiraCode Nerd Font Mono".to_string()]),

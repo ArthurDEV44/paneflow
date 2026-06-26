@@ -87,8 +87,7 @@ pub use app::actions::*;
 // so callers like `crate::TOAST_HOLD_MS` keep resolving without an
 // import-rewrite churn across the workspace.
 pub(crate) use app::constants::{
-    CLAUDE_SPINNER_FRAMES, MAX_CLOSED_PANE_SCROLLBACK_BYTES, MAX_CLOSED_PANES, RESIZE_BORDER,
-    SIDEBAR_WIDTH, TOAST_HOLD_MS,
+    MAX_CLOSED_PANE_SCROLLBACK_BYTES, MAX_CLOSED_PANES, RESIZE_BORDER, SIDEBAR_WIDTH, TOAST_HOLD_MS,
 };
 // `TOAST_ENTER_MS` and `TOAST_EXIT_MS` are used only by the toast
 // renderer inside `app::notifications`; not re-exported at crate root.
@@ -627,8 +626,9 @@ struct PaneFlowApp {
     toast: Option<Toast>,
     /// Dismiss timer for the active toast - dropped on new toast to cancel the old timer.
     _toast_task: Option<gpui::Task<()>>,
-    /// Whether the loader animation spawn is currently running.
-    loader_anim_running: bool,
+    /// Last light/dark value applied to the Windows native backdrop.
+    #[cfg(target_os = "windows")]
+    windows_backdrop_light: Option<bool>,
     /// US-019 (orchestration-v2): the surface last visited by
     /// `JumpNextWaiting`, so repeated presses cycle through the waiting
     /// agents instead of bouncing on the first one.
@@ -863,7 +863,13 @@ impl Render for PaneFlowApp {
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
         #[cfg(target_os = "windows")]
-        crate::window_chrome::backdrop::sync_wallpaper_mica_theme(window, theme.background.l > 0.5);
+        {
+            let is_light = theme.background.l > 0.5;
+            if self.windows_backdrop_light != Some(is_light) {
+                crate::window_chrome::backdrop::sync_wallpaper_mica_theme(window, is_light);
+                self.windows_backdrop_light = Some(is_light);
+            }
+        }
         #[cfg(target_os = "macos")]
         crate::window_chrome::macos_backdrop::sync_subtle_sidebar_material_theme(
             theme.background.l > 0.5,
@@ -2105,16 +2111,22 @@ fn main() {
                     window_min_size: Some(size(px(800.0), px(500.0))),
                     window_decorations: Some(decorations),
                     titlebar: Some(titlebar_options),
-                    window_background: crate::app::constants::window_background_appearance(),
+                    window_background: crate::app::constants::window_background_appearance(
+                        config.window_backdrop.as_deref(),
+                    ),
                     app_id: Some("paneflow".into()),
                     ..Default::default()
                 },
                 |window, cx| {
                     #[cfg(target_os = "windows")]
-                    crate::window_chrome::backdrop::apply_wallpaper_mica(
-                        window,
-                        crate::theme::active_theme().background.l > 0.5,
-                    );
+                    if crate::app::constants::window_backdrop_uses_mica(
+                        config.window_backdrop.as_deref(),
+                    ) {
+                        crate::window_chrome::backdrop::apply_wallpaper_mica(
+                            window,
+                            crate::theme::active_theme().background.l > 0.5,
+                        );
+                    }
                     #[cfg(target_os = "macos")]
                     crate::window_chrome::macos_backdrop::apply_subtle_sidebar_material(
                         window,
@@ -2201,6 +2213,7 @@ fn main() {
                 Ok(_) => cx.activate(true),
                 Err(e) => {
                     log::error!("Failed to open PaneFlow window: {e}");
+                    #[cfg(target_os = "linux")]
                     eprintln!(
                         "Error: PaneFlow requires a GPU with Vulkan support.\n\n\
                          Install mesa-vulkan-drivers (AMD/Intel) or your GPU's proprietary driver.\n\n\
@@ -2210,6 +2223,21 @@ fn main() {
                          \x20 Arch:           sudo pacman -S vulkan-radeon vulkan-intel or nvidia-utils\n\n\
                          Run `vulkaninfo` to verify Vulkan support.\n\
                          If drivers are already installed, run with RUST_LOG=error for details.\n\n\
+                         Underlying error: {e}"
+                    );
+                    #[cfg(target_os = "windows")]
+                    eprintln!(
+                        "Error: PaneFlow could not create its GPU-backed window on Windows.\n\n\
+                         Update your GPU driver from NVIDIA, AMD, Intel, or your PC vendor, then restart Paneflow.\n\
+                         If this started after enabling a native backdrop, launch once with:\n\
+                         \x20 PANEFLOW_WINDOW_BACKDROP=off\n\n\
+                         Underlying error: {e}"
+                    );
+                    #[cfg(target_os = "macos")]
+                    eprintln!(
+                        "Error: PaneFlow could not create its GPU-backed window on macOS.\n\n\
+                         Update macOS and restart Paneflow. If this started after enabling a native backdrop, launch once with:\n\
+                         \x20 PANEFLOW_WINDOW_BACKDROP=off\n\n\
                          Underlying error: {e}"
                     );
                     std::process::exit(1);

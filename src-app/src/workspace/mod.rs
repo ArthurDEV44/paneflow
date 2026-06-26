@@ -21,9 +21,6 @@ pub use ports::{PaneScan, scan_panes};
 /// re-declared as a local `const` at every create/IPC site).
 pub(crate) const MAX_WORKSPACES: usize = 20;
 
-use std::cell::Cell;
-use std::rc::Rc;
-
 use gpui::{App, Entity, Window};
 use paneflow_config::schema::{ButtonCommand, LayoutNode};
 
@@ -91,10 +88,6 @@ pub struct Workspace {
     /// `ai_types::aggregate_by_tool`. Cleaned up by the stale-PID sweep
     /// in `event_handlers::sweep_stale_pids`.
     pub agent_sessions: std::collections::HashMap<u32, AgentSession>,
-    /// Animation angle for the agent thinking spinner (radians, 0..TAU).
-    /// Single angle shared by all `Thinking` sessions in the workspace -
-    /// the sidebar driver advances it in `start_loader_animation`.
-    pub loader_angle: Rc<Cell<f32>>,
     /// AI agent process basenames detected by walking the workspace's
     /// PTY descendants (Linux `/proc/<pid>/comm`, macOS `libproc::name`).
     /// Independent of the optional IPC hook handshake -- this is what
@@ -157,7 +150,6 @@ impl Workspace {
             port_scan_pending: false,
             service_labels: std::collections::HashMap::new(),
             agent_sessions: std::collections::HashMap::new(),
-            loader_angle: Rc::new(Cell::new(0.0)),
             detected_agents: std::collections::HashSet::new(),
             custom_buttons: Vec::new(),
             files_expanded: Vec::new(),

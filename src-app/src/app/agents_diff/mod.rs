@@ -92,6 +92,11 @@ impl PaneFlowApp {
         self.agents_view.agents_diff = Some(AgentsDiffData::loading(cwd.clone()));
         cx.notify();
 
+        let split = self.agents_view.agents_diff_split;
+        self.spawn_agents_diff_build(cwd, split, cx);
+    }
+
+    fn spawn_agents_diff_build(&mut self, cwd: String, split: bool, cx: &mut Context<Self>) {
         // Capture the theme on the main thread (the syntax pass needs it) and
         // move it into the worker, exactly as the Review view does.
         let theme = crate::theme::active_theme();
@@ -99,7 +104,7 @@ impl PaneFlowApp {
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let result = smol::unblock({
                     let cwd = cwd.clone();
-                    move || build_agents_diff(&cwd, theme)
+                    move || build_agents_diff(&cwd, theme, split)
                 })
                 .await;
                 let _ = cx.update(|cx| {
@@ -117,10 +122,17 @@ impl PaneFlowApp {
                         // Read the live collapse set (it may have changed during
                         // the async build) so the first paint honors it.
                         let collapsed = app.agents_view.agents_diff_collapsed.clone();
-                        app.agents_view.agents_diff = Some(match result {
-                            Ok(built) => AgentsDiffData::loaded(cwd.clone(), built, &collapsed),
-                            Err(err) => AgentsDiffData::message(cwd.clone(), err),
-                        });
+                        match result {
+                            Ok(built) => {
+                                if let Some(data) = app.agents_view.agents_diff.as_mut() {
+                                    data.apply_built(built, &collapsed);
+                                }
+                            }
+                            Err(err) => {
+                                app.agents_view.agents_diff =
+                                    Some(AgentsDiffData::message(cwd.clone(), err));
+                            }
+                        }
                         cx.notify();
                     })
                 });
@@ -173,6 +185,16 @@ impl PaneFlowApp {
             return;
         }
         self.agents_view.agents_diff_split = split;
+        let cwd_to_load = self.agents_view.agents_diff.as_ref().and_then(|data| {
+            (!data.loading && data.error.is_none() && !data.has_mode(split))
+                .then(|| data.cwd.clone())
+        });
+        if let Some(cwd) = cwd_to_load {
+            if let Some(data) = self.agents_view.agents_diff.as_mut() {
+                data.loading = true;
+            }
+            self.spawn_agents_diff_build(cwd, split, cx);
+        }
         cx.notify();
     }
 
@@ -270,7 +292,11 @@ impl PaneFlowApp {
         // Per-file horizontal offsets, lazily resized to the current file count
         // (collapse/split never change it) so a fresh diff with a different file
         // set starts unscrolled. Cloned into the element each frame.
-        let file_count = data.disp_unified_spans.len();
+        let file_count = if split {
+            data.disp_split_spans.len()
+        } else {
+            data.disp_unified_spans.len()
+        };
         if self.agents_view.agents_diff_h_offsets.len() != file_count {
             self.agents_view
                 .agents_diff_h_offsets

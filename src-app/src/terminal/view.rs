@@ -765,15 +765,9 @@ fn sequence_would_submit(seq: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 impl TerminalView {
-    /// Detect regex URLs on the line at the given grid point.
-    /// Extracts line text from the locked term grid, runs the URL regex,
-    /// and returns zones that cover the given column (for hover hit-testing).
-    pub fn detect_url_at_hover(&self) -> Vec<HyperlinkZone> {
-        let point = match self.hovered_cell {
-            Some(p) => p,
-            None => return Vec::new(),
-        };
-        // Read-only grid scan for URL regex; unfair lock keeps the
+    fn hovered_line_text(&self) -> Option<(alacritty_terminal::index::Line, String, Vec<usize>)> {
+        let point = self.hovered_cell?;
+        // Read-only grid scan for hover detection; unfair lock keeps the
         // mouse-move hot path off the PTY reader's fair queue.
         let term = self.terminal.term.lock_unfair();
         let grid = term.grid();
@@ -781,54 +775,9 @@ impl TerminalView {
         // US-011 hardening: a stale hovered cell (captured before a resize,
         // `clear`, or alt-screen swap) may now be outside the grid's line
         // range. alacritty bounds-checks the grid only under debug_assert!, so
-        // guard before indexing to avoid a release-mode panic. Columns are
-        // already bounded by the `0..cols` loop below.
+        // guard before indexing to avoid a release-mode panic.
         if line < term.topmost_line() || line > term.bottommost_line() {
-            return Vec::new();
-        }
-
-        // Extract line text from grid cells, skipping wide-char spacer placeholders.
-        // Track a char-to-column mapping so regex byte offsets map to grid columns.
-        let cols = term.columns();
-        let mut line_text = String::with_capacity(cols);
-        let mut char_to_col: Vec<usize> = Vec::with_capacity(cols);
-        for col in 0..cols {
-            let cell = &grid[line][alacritty_terminal::index::Column(col)];
-            if cell
-                .flags
-                .contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
-            {
-                continue; // Skip trailing spacer of wide chars
-            }
-            char_to_col.push(col);
-            line_text.push(cell.c);
-        }
-
-        // Trim trailing whitespace for cleaner regex matching
-        let trimmed = line_text.trim_end();
-        crate::terminal::element::detect_urls_on_line_mapped(trimmed, line, &char_to_col)
-    }
-
-    /// Detect `.md` / `.markdown` file paths on the line at the hovered grid
-    /// point (US-019). Mirrors `detect_url_at_hover`: extracts line text with
-    /// wide-char-aware char→column mapping, then runs the file-path scanner
-    /// against the pane's tracked CWD.
-    pub(super) fn detect_file_path_at_hover(&self) -> Vec<HyperlinkZone> {
-        let point = match self.hovered_cell {
-            Some(p) => p,
-            None => return Vec::new(),
-        };
-        // Same as detect_url_at_hover: read-only scan on mouse-move.
-        let term = self.terminal.term.lock_unfair();
-        let grid = term.grid();
-        let line = point.line;
-        // US-011 hardening: a stale hovered cell (captured before a resize,
-        // `clear`, or alt-screen swap) may now be outside the grid's line
-        // range. alacritty bounds-checks the grid only under debug_assert!, so
-        // guard before indexing to avoid a release-mode panic. Columns are
-        // already bounded by the `0..cols` loop below.
-        if line < term.topmost_line() || line > term.bottommost_line() {
-            return Vec::new();
+            return None;
         }
 
         let cols = term.columns();
@@ -845,14 +794,58 @@ impl TerminalView {
             char_to_col.push(col);
             line_text.push(cell.c);
         }
-        drop(term);
+        Some((line, line_text, char_to_col))
+    }
 
-        // `trim_end` shortens the text without changing leading chars, so
-        // `char_to_col` stays valid for the trimmed prefix; we just truncate
-        // the column map to match. Without this, a path that ends right
-        // before trailing whitespace at end-of-line would silently lose its
-        // hover zone (the scanner's `char_to_col.get(char_end)` would still
-        // succeed but downstream consumers may misalign).
+    pub(super) fn detect_links_at_hover(&self) -> Vec<HyperlinkZone> {
+        let Some((line, line_text, char_to_col)) = self.hovered_line_text() else {
+            return Vec::new();
+        };
+        let trimmed = line_text.trim_end();
+        let trimmed_chars = trimmed.chars().count();
+        let map = &char_to_col[..trimmed_chars];
+        let cwd = self
+            .terminal
+            .current_cwd
+            .as_deref()
+            .map(std::path::Path::new);
+
+        let mut zones = crate::terminal::element::detect_urls_on_line_mapped(trimmed, line, map);
+        zones.extend(crate::terminal::element::detect_file_paths_on_line_mapped(
+            trimmed, line, map, cwd,
+        ));
+        zones.extend(crate::terminal::element::detect_code_paths_on_line_mapped(
+            trimmed, line, map, cwd,
+        ));
+        zones
+    }
+
+    /// Detect regex URLs on the line at the given grid point.
+    /// Extracts line text from the locked term grid, runs the URL regex,
+    /// and returns zones that cover the given column (for hover hit-testing).
+    #[allow(dead_code)]
+    pub fn detect_url_at_hover(&self) -> Vec<HyperlinkZone> {
+        let Some((line, line_text, char_to_col)) = self.hovered_line_text() else {
+            return Vec::new();
+        };
+        let trimmed = line_text.trim_end();
+        let trimmed_chars = trimmed.chars().count();
+        crate::terminal::element::detect_urls_on_line_mapped(
+            trimmed,
+            line,
+            &char_to_col[..trimmed_chars],
+        )
+    }
+
+    /// Detect `.md` / `.markdown` file paths on the line at the hovered grid
+    /// point (US-019). Mirrors `detect_url_at_hover`: extracts line text with
+    /// wide-char-aware char→column mapping, then runs the file-path scanner
+    /// against the pane's tracked CWD.
+    #[allow(dead_code)]
+    pub(super) fn detect_file_path_at_hover(&self) -> Vec<HyperlinkZone> {
+        let Some((line, line_text, char_to_col)) = self.hovered_line_text() else {
+            return Vec::new();
+        };
         let trimmed = line_text.trim_end();
         let trimmed_chars = trimmed.chars().count();
         let map = &char_to_col[..trimmed_chars];
@@ -869,39 +862,11 @@ impl TerminalView {
     /// returned zones carry `line`/`col` populated from `path:42` or
     /// `path:42:7` style references so the click handler can pass the
     /// location through to the editor.
+    #[allow(dead_code)]
     pub(super) fn detect_code_path_at_hover(&self) -> Vec<HyperlinkZone> {
-        let point = match self.hovered_cell {
-            Some(p) => p,
-            None => return Vec::new(),
-        };
-        let term = self.terminal.term.lock_unfair();
-        let grid = term.grid();
-        let line = point.line;
-        // US-011 hardening: a stale hovered cell (captured before a resize,
-        // `clear`, or alt-screen swap) may now be outside the grid's line
-        // range. alacritty bounds-checks the grid only under debug_assert!, so
-        // guard before indexing to avoid a release-mode panic. Columns are
-        // already bounded by the `0..cols` loop below.
-        if line < term.topmost_line() || line > term.bottommost_line() {
+        let Some((line, line_text, char_to_col)) = self.hovered_line_text() else {
             return Vec::new();
-        }
-
-        let cols = term.columns();
-        let mut line_text = String::with_capacity(cols);
-        let mut char_to_col: Vec<usize> = Vec::with_capacity(cols);
-        for col in 0..cols {
-            let cell = &grid[line][alacritty_terminal::index::Column(col)];
-            if cell
-                .flags
-                .contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
-            {
-                continue;
-            }
-            char_to_col.push(col);
-            line_text.push(cell.c);
-        }
-        drop(term);
-
+        };
         let trimmed = line_text.trim_end();
         let trimmed_chars = trimmed.chars().count();
         let map = &char_to_col[..trimmed_chars];

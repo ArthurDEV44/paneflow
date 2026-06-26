@@ -148,6 +148,10 @@ impl MarkdownView {
     /// `&mut self`, no GPUI context.
     fn reload_from_disk(&mut self) {
         let (ast, error) = load_from_disk(&self.path);
+        self.apply_loaded(ast, error);
+    }
+
+    fn apply_loaded(&mut self, ast: Option<Vec<MdNode>>, error: Option<SharedString>) {
         self.ast = ast;
         self.error = error;
         // US-022 - only refresh the search corpus when the find bar is open
@@ -502,6 +506,7 @@ impl MarkdownView {
         // Keep the watcher alive on the entity. Dropping the entity drops the
         // watcher, which unregisters the OS handle and closes the channel.
         self._watcher = Some(watcher);
+        let path = self.path.clone();
 
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
@@ -529,25 +534,20 @@ impl MarkdownView {
                             Either::Right(_) => break,
                         }
                     }
-                    // Apply the reload on the GPUI main thread. `is_err()`
-                    // catches the AsyncApp-dropped case directly. The
+                    let path = path.clone();
+                    let (ast, error) = smol::unblock(move || load_from_disk(&path)).await;
+
+                    // Apply the parsed snapshot on the GPUI main thread.
+                    // `is_err()` catches the AsyncApp-dropped case directly. The
                     // entity-dropped case (this.update returning Err) is
                     // handled by the natural channel-closure chain: when
                     // MarkdownView is dropped, `_watcher` drops, the notify
                     // sender drops, `rx.next().await` returns None, and the
                     // outer `while let` exits on the next iteration.
-                    //
-                    // Perf note: the reload reads + parses on the main
-                    // thread. For a near-`MAX_INPUT_BYTES` file, parsing
-                    // can take 30-50 ms, so the 200 ms debounce caps this
-                    // path at ~5 reloads/sec. If a user opens a multi-MB
-                    // markdown that an agent rewrites continuously, a
-                    // future story should add a min inter-reload interval
-                    // (~500 ms) on top of the debounce.
                     if cx
                         .update(|cx| {
                             this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
-                                view.reload_from_disk();
+                                view.apply_loaded(ast, error);
                                 cx.notify();
                             })
                         })

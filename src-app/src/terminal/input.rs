@@ -607,21 +607,11 @@ impl TerminalView {
                 && hover_point.column >= z.start.column
                 && hover_point.column <= z.end.column
         };
-        self.ctrl_hovered_link = osc8_link
-            .or_else(|| self.detect_url_at_hover().into_iter().find(|z| in_zone(z)))
-            .or_else(|| {
-                // US-019: .md/.markdown file-path fallback.
-                self.detect_file_path_at_hover()
-                    .into_iter()
-                    .find(|z| in_zone(z))
-            })
-            .or_else(|| {
-                // Source-code path with optional :line[:col]. Last so OSC 8 /
-                // URL / markdown win on the same cell (single hover affordance).
-                self.detect_code_path_at_hover()
-                    .into_iter()
-                    .find(|z| in_zone(z))
-            });
+        self.ctrl_hovered_link = osc8_link.or_else(|| {
+            self.detect_links_at_hover()
+                .into_iter()
+                .find(|z| in_zone(z))
+        });
         cx.notify();
     }
 
@@ -888,10 +878,24 @@ impl TerminalView {
                 mouse::ScrollDirection::Down
             };
             let button = mouse::scroll_button_code(direction, event.modifiers);
-            // Send one report per scroll line
+            let format = mouse::MouseFormat::from_mode(Modes::from(mode));
+            let report = match format {
+                mouse::MouseFormat::Sgr => {
+                    mouse::sgr_mouse_report(point.into(), button, true).into_bytes()
+                }
+                mouse::MouseFormat::Normal { utf8 } => {
+                    match mouse::normal_mouse_report(point.into(), button, utf8) {
+                        Some(bytes) => bytes,
+                        None => return,
+                    }
+                }
+            };
+            let count = lines.unsigned_abs() as usize;
+            let mut buf = Vec::with_capacity(report.len() * count);
             for _ in 0..lines.unsigned_abs() {
-                self.write_mouse_report(point, button, true, mode);
+                buf.extend_from_slice(&report);
             }
+            self.terminal.write_to_pty(buf);
             return;
         }
 
@@ -959,7 +963,12 @@ impl TerminalView {
         // Positive wheel delta means scrolling up (toward history in natural-scroll
         // convention), which matches AlacScroll::Delta positive = scroll toward history.
         let mut term = self.terminal.term.lock();
+        let before = term.grid().display_offset();
         term.scroll_display(AlacScroll::Delta(lines));
+        let after = term.grid().display_offset();
+        if after == before {
+            return;
+        }
         self.terminal.dirty = true;
         drop(term);
 
@@ -984,7 +993,12 @@ impl TerminalView {
             return;
         }
         let mut term = self.terminal.term.lock();
+        let before = term.grid().display_offset();
         term.scroll_display(AlacScroll::PageUp);
+        let after = term.grid().display_offset();
+        if after == before {
+            return;
+        }
         self.terminal.dirty = true;
         drop(term);
         cx.notify();
@@ -1003,7 +1017,12 @@ impl TerminalView {
             return;
         }
         let mut term = self.terminal.term.lock();
+        let before = term.grid().display_offset();
         term.scroll_display(AlacScroll::PageDown);
+        let after = term.grid().display_offset();
+        if after == before {
+            return;
+        }
         self.terminal.dirty = true;
         drop(term);
         cx.notify();

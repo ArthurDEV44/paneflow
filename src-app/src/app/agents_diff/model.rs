@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gpui::Hsla;
 
-use super::git::AgentsDiffBuilt;
+use super::git::{AgentsDiffBuilt, AgentsDiffRows};
 use crate::diff::{
     DisplayRow, FileSpan, SplitRow, apply_collapse_split, apply_collapse_unified, split_file_spans,
     split_max_line_no, split_offsets, unified_file_spans, unified_max_line_no, unified_offsets,
@@ -44,6 +44,8 @@ pub(crate) struct AgentsDiffData {
     pub(crate) cwd: String,
     pub(super) loading: bool,
     pub(super) error: Option<String>,
+    pub(super) unified_loaded: bool,
+    pub(super) split_loaded: bool,
     // Full (uncollapsed) rows + path→header-index anchors from the shared
     // pipeline, retained so a collapse toggle re-derives the filtered views.
     pub(super) unified: Rc<Vec<DisplayRow>>,
@@ -77,6 +79,8 @@ impl AgentsDiffData {
             cwd,
             loading: true,
             error: None,
+            unified_loaded: false,
+            split_loaded: false,
             unified: Rc::new(Vec::new()),
             split: Rc::new(Vec::new()),
             anchors_unified: Rc::new(Vec::new()),
@@ -98,34 +102,6 @@ impl AgentsDiffData {
         }
     }
 
-    pub(super) fn loaded(cwd: String, built: AgentsDiffBuilt, collapsed: &HashSet<String>) -> Self {
-        let mut data = Self {
-            cwd,
-            loading: false,
-            error: None,
-            unified: Rc::new(built.unified),
-            split: Rc::new(built.split),
-            anchors_unified: Rc::new(built.anchors_unified),
-            anchors_split: Rc::new(built.anchors_split),
-            disp_unified: Rc::new(Vec::new()),
-            disp_split: Rc::new(Vec::new()),
-            disp_anchors_unified: Rc::new(Vec::new()),
-            disp_anchors_split: Rc::new(Vec::new()),
-            disp_unified_offsets: Rc::new(vec![0.0]),
-            disp_split_offsets: Rc::new(vec![0.0]),
-            disp_unified_max_no: 0,
-            disp_split_max_no: 0,
-            disp_unified_spans: Rc::new(Vec::new()),
-            disp_split_spans: Rc::new(Vec::new()),
-            paths: built.paths,
-            file_count: built.file_count,
-            added: built.added,
-            removed: built.removed,
-        };
-        data.recompute(collapsed);
-        data
-    }
-
     pub(super) fn message(cwd: String, error: String) -> Self {
         let mut data = Self::loading(cwd);
         data.loading = false;
@@ -138,24 +114,71 @@ impl AgentsDiffData {
     /// otherwise collapsed files keep only their header. Mirrors
     /// [`crate::diff::DiffView`]'s `recompute_display`.
     pub(super) fn recompute(&mut self, collapsed: &HashSet<String>) {
+        if self.unified_loaded {
+            self.recompute_unified(collapsed);
+        }
+        if self.split_loaded {
+            self.recompute_split(collapsed);
+        }
+    }
+
+    pub(super) fn has_mode(&self, split: bool) -> bool {
+        if split {
+            self.split_loaded
+        } else {
+            self.unified_loaded
+        }
+    }
+
+    pub(super) fn apply_built(&mut self, built: AgentsDiffBuilt, collapsed: &HashSet<String>) {
+        self.loading = false;
+        self.error = None;
+        self.paths = built.paths;
+        self.file_count = built.file_count;
+        self.added = built.added;
+        self.removed = built.removed;
+
+        match built.rows {
+            AgentsDiffRows::Unified { rows, anchors } => {
+                self.unified = Rc::new(rows);
+                self.anchors_unified = Rc::new(anchors);
+                self.unified_loaded = true;
+                self.recompute_unified(collapsed);
+            }
+            AgentsDiffRows::Split { rows, anchors } => {
+                self.split = Rc::new(rows);
+                self.anchors_split = Rc::new(anchors);
+                self.split_loaded = true;
+                self.recompute_split(collapsed);
+            }
+        }
+    }
+
+    fn recompute_unified(&mut self, collapsed: &HashSet<String>) {
         if collapsed.is_empty() {
             self.disp_unified = self.unified.clone();
-            self.disp_split = self.split.clone();
             self.disp_anchors_unified = self.anchors_unified.clone();
-            self.disp_anchors_split = self.anchors_split.clone();
         } else {
             let (du, au) = apply_collapse_unified(&self.unified, &self.anchors_unified, collapsed);
-            let (ds, as_) = apply_collapse_split(&self.split, &self.anchors_split, collapsed);
             self.disp_unified = Rc::new(du);
-            self.disp_split = Rc::new(ds);
             self.disp_anchors_unified = Rc::new(au);
-            self.disp_anchors_split = Rc::new(as_);
         }
         self.disp_unified_offsets = Rc::new(unified_offsets(&self.disp_unified));
-        self.disp_split_offsets = Rc::new(split_offsets(&self.disp_split));
         self.disp_unified_max_no = unified_max_line_no(&self.disp_unified);
-        self.disp_split_max_no = split_max_line_no(&self.disp_split);
         self.disp_unified_spans = Rc::new(unified_file_spans(&self.disp_unified));
+    }
+
+    fn recompute_split(&mut self, collapsed: &HashSet<String>) {
+        if collapsed.is_empty() {
+            self.disp_split = self.split.clone();
+            self.disp_anchors_split = self.anchors_split.clone();
+        } else {
+            let (ds, as_) = apply_collapse_split(&self.split, &self.anchors_split, collapsed);
+            self.disp_split = Rc::new(ds);
+            self.disp_anchors_split = Rc::new(as_);
+        }
+        self.disp_split_offsets = Rc::new(split_offsets(&self.disp_split));
+        self.disp_split_max_no = split_max_line_no(&self.disp_split);
         self.disp_split_spans = Rc::new(split_file_spans(&self.disp_split));
     }
 

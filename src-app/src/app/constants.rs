@@ -51,25 +51,83 @@ pub(crate) const WORKSPACE_CARD_CORNER_RADIUS: Pixels = px(12.);
 /// installs a semantic AppKit sidebar material after the native window opens.
 /// Linux starts opaque and switches to a transparent surface only after the
 /// compositor advertises a supported blur protocol.
-pub(crate) fn window_background_appearance() -> WindowBackgroundAppearance {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WindowBackdropPreference {
+    Auto,
+    Mica,
+    Blurred,
+    Transparent,
+    Opaque,
+}
+
+pub(crate) fn window_backdrop_preference(config_value: Option<&str>) -> WindowBackdropPreference {
+    let raw = std::env::var("PANEFLOW_WINDOW_BACKDROP")
+        .ok()
+        .or_else(|| config_value.map(str::to_string));
+    match raw
+        .as_deref()
+        .map(|value| value.trim().to_ascii_lowercase())
+    {
+        None => WindowBackdropPreference::Auto,
+        Some(value) if value.is_empty() || value == "auto" => WindowBackdropPreference::Auto,
+        Some(value) if value == "mica" => WindowBackdropPreference::Mica,
+        Some(value) if value == "blurred" || value == "acrylic" => {
+            WindowBackdropPreference::Blurred
+        }
+        Some(value) if value == "transparent" => WindowBackdropPreference::Transparent,
+        Some(value) if value == "opaque" || value == "off" => WindowBackdropPreference::Opaque,
+        Some(value) => {
+            log::warn!("Invalid window_backdrop value '{value}', using 'auto'");
+            WindowBackdropPreference::Auto
+        }
+    }
+}
+
+pub(crate) fn window_background_appearance(
+    config_value: Option<&str>,
+) -> WindowBackgroundAppearance {
+    let preference = window_backdrop_preference(config_value);
     #[cfg(target_os = "windows")]
     {
-        if windows_supports_system_backdrop() {
-            WindowBackgroundAppearance::MicaBackdrop
-        } else {
-            WindowBackgroundAppearance::Blurred
+        match preference {
+            WindowBackdropPreference::Auto | WindowBackdropPreference::Mica => {
+                if windows_supports_system_backdrop() {
+                    WindowBackgroundAppearance::MicaBackdrop
+                } else {
+                    WindowBackgroundAppearance::Opaque
+                }
+            }
+            WindowBackdropPreference::Blurred => WindowBackgroundAppearance::Blurred,
+            WindowBackdropPreference::Transparent => WindowBackgroundAppearance::Transparent,
+            WindowBackdropPreference::Opaque => WindowBackgroundAppearance::Opaque,
         }
     }
 
     #[cfg(target_os = "macos")]
     {
-        WindowBackgroundAppearance::Transparent
+        match preference {
+            WindowBackdropPreference::Opaque => WindowBackgroundAppearance::Opaque,
+            WindowBackdropPreference::Blurred => WindowBackgroundAppearance::Blurred,
+            _ => WindowBackgroundAppearance::Transparent,
+        }
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        WindowBackgroundAppearance::Opaque
+        match preference {
+            WindowBackdropPreference::Transparent => WindowBackgroundAppearance::Transparent,
+            WindowBackdropPreference::Blurred => WindowBackgroundAppearance::Blurred,
+            _ => WindowBackgroundAppearance::Opaque,
+        }
     }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn window_backdrop_uses_mica(config_value: Option<&str>) -> bool {
+    matches!(
+        window_background_appearance(config_value),
+        WindowBackgroundAppearance::MicaBackdrop
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -203,11 +261,6 @@ fn sidebar_tab_background(light_opacity: f32, dark_opacity: f32) -> Hsla {
     };
     Hsla::from(gpui::rgb(tint)).opacity(opacity)
 }
-
-/// Claude Code spinner glyphs - same characters Claude renders in the terminal.
-/// Claude Code keeps this unique glyph spinner; every other agent uses the
-/// rotating `loader-circle.svg` arc (shared with the Agents sidebar).
-pub(crate) const CLAUDE_SPINNER_FRAMES: [char; 6] = ['·', '✻', '✽', '✶', '✳', '✢'];
 
 /// Toast animation durations (ms). The `hold_ms` carried on each `Toast`
 /// must match the dismiss timer in `push_toast` - otherwise the exit

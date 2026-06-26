@@ -875,6 +875,7 @@ mod tests {
                 command: Some("echo hello".to_string()),
             }],
             window_decorations: None,
+            window_backdrop: None,
             line_height: None,
             font_family: None,
             font_fallbacks: None,
