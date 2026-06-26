@@ -19,8 +19,8 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClickEvent, Context, DragMoveEvent, Entity,
     EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, Pixels, Point, Render, SharedString, Size, Styled, Window, deferred, div,
-    ease_out_quint, img, prelude::*, px, rgb, svg,
+    MouseDownEvent, Pixels, Point, Render, SharedString, Size, Styled, Transformation, Window,
+    deferred, div, ease_out_quint, img, percentage, prelude::*, px, rgb, svg,
 };
 use paneflow_config::schema::ButtonCommand;
 
@@ -109,12 +109,21 @@ const TAB_GAP: f32 = 7.0;
 const STRIP_GAP: f32 = 4.0;
 /// Leading inset of the strip so the first chip isn't flush to the edge.
 const STRIP_PL: f32 = 8.0;
-/// Max chip width. Longer labels get truncated with ellipsis.
-const TAB_MAX_WIDTH: f32 = 200.0;
-/// Close-button container size inside a chip.
-const CLOSE_SIZE: f32 = 18.0;
+/// Fixed chip width. Longer labels get truncated with ellipsis inside this box.
+const TAB_WIDTH: f32 = 140.0;
+/// Approximate title capacity inside `TAB_WIDTH` after the leading slot, gaps,
+/// and horizontal padding. Above this, the CSS ellipsis is expected to engage.
+const TAB_TITLE_TOOLTIP_THRESHOLD: usize = 13;
+/// Leading icon / close-button slot size inside a chip.
+const LEADING_SLOT_SIZE: f32 = 15.0;
 /// Section padding (start/end areas of the bar).
 const SECTION_PX: f32 = 6.0;
+/// Square size shared by tab-bar icon buttons.
+const ACTION_BUTTON_SIZE: f32 = 22.0;
+/// Approximate width of the compact zoom badge in the action cluster.
+const ZOOM_BADGE_WIDTH: f32 = 18.0;
+/// Duration for folding/unfolding the tab-bar action cluster.
+const ACTION_CLUSTER_ANIMATION_MS: u64 = 160;
 /// Uniform gap (px) between the drop-to-split preview overlay and its region's
 /// edges, so the blue box floats inside the target half/pane (EP-003 US-008).
 const OVERLAY_MARGIN: f32 = 8.0;
@@ -122,10 +131,7 @@ const OVERLAY_MARGIN: f32 = 8.0;
 const OVERLAY_RADIUS: f32 = 8.0;
 /// Hard upper bound on tab title length in characters. Mirrors Zed's
 /// `MAX_TAB_TITLE_LEN` (`zed/crates/editor/src/items.rs:64`). Anything past
-/// this is replaced with a trailing ellipsis so the tab chip stays inside
-/// `TAB_MAX_WIDTH` even when the flex layout's `max_w(...)` constraint
-/// fails to propagate (a known quirk when there's no explicit `w(...)`
-/// on the parent and the child has `whitespace_nowrap`).
+/// this is replaced with a trailing ellipsis before the CSS ellipsis layer.
 const MAX_TAB_TITLE_LEN: usize = 24;
 
 /// Char-boundary-safe `truncate_and_trailoff`. Counts chars (not bytes) so
@@ -279,6 +285,13 @@ pub struct Pane {
     /// Workspace-specific command buttons rendered in the tab bar after the
     /// built-in defaults. Populated/updated by `Workspace::propagate_custom_buttons`.
     pub custom_buttons: Vec<ButtonCommand>,
+    /// Local UI state for folding the dense right-side tab-bar action cluster.
+    /// Kept per pane and intentionally not persisted: it is a transient layout
+    /// preference for the current window, not workspace state.
+    tab_bar_actions_collapsed: bool,
+    /// Incremented on every action-cluster toggle so the GPUI one-shot
+    /// animation gets a fresh element id and replays both ways.
+    tab_bar_actions_animation_epoch: u64,
     /// US-015: cached `paneflow.json` so `render_tab_bar` never calls the
     /// blocking `load_config()` per frame (the agent-button visibility gate and
     /// the launch command read it). Hydrated at creation, refreshed by
@@ -355,6 +368,8 @@ impl Pane {
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
+            tab_bar_actions_collapsed: false,
+            tab_bar_actions_animation_epoch: 0,
             // US-015: hydrate the tab-bar config cache once at creation (not
             // per frame); refreshed on ConfigWatcher reload via propagation.
             cached_config: paneflow_config::loader::load_config(),
@@ -393,6 +408,8 @@ impl Pane {
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
+            tab_bar_actions_collapsed: false,
+            tab_bar_actions_animation_epoch: 0,
             // US-015: see `Pane::new`.
             cached_config: paneflow_config::loader::load_config(),
             rename: None,
@@ -786,6 +803,14 @@ impl Pane {
     /// propagate the constraint, so capping the string up front is
     /// load-bearing for visual consistency. Without this, a long markdown
     /// filename like `prd-opencode-sessions.md` overflows the tab chip.
+    fn tab_full_title(tab: &TabContent, cx: &App) -> String {
+        match tab {
+            TabContent::Markdown(md) => md.read(cx).title().to_string(),
+            TabContent::Diff(d) => d.read(cx).title(),
+            TabContent::Terminal(t) => Self::terminal_tab_full_title(t, cx),
+        }
+    }
+
     fn tab_title(tab: &TabContent, cx: &App) -> String {
         let raw = match tab {
             TabContent::Markdown(md) => md.read(cx).title().to_string(),
@@ -813,46 +838,130 @@ impl Pane {
             return custom.clone();
         }
         let raw = &view.terminal.title;
-        if raw.is_empty() {
-            return "Terminal".into();
-        }
-        // Detect well-known programs from OSC title
-        let lower = raw.to_lowercase();
-        if lower.contains("claude") {
-            return "Claude Code".into();
-        }
-        if lower.contains("codex") {
-            return "Codex".into();
-        }
-        if lower.contains("nvim") || lower.contains("neovim") {
-            return "Neovim".into();
-        }
-        if lower.contains("vim") && !lower.contains("nvim") {
-            return "Vim".into();
-        }
-        if lower.contains("htop")
-            || lower.contains("btop")
-            || lower.contains("top") && lower.len() < 10
-        {
-            return "System Monitor".into();
+        if let Some(agent_title) = Self::agent_title_from_terminal_title(raw) {
+            return agent_title.into();
         }
         // For shell titles like "user@host: /path/to/dir", extract the last path component
-        if let Some(path_part) = raw.rsplit(':').next() {
-            let trimmed = path_part.trim();
-            if (trimmed.starts_with('/') || trimmed.starts_with('~'))
-                && let Some(last) = trimmed.rsplit('/').next()
-            {
-                if !last.is_empty() {
-                    return last.to_string();
-                }
-                // Root "/" - show "/"
-                return "/".into();
-            }
+        if let Some(path_title) =
+            Self::shell_path_title(raw).and_then(|path| Self::cwd_label(&path))
+        {
+            return path_title;
+        }
+        if Self::is_default_terminal_title(raw)
+            && let Some(cwd) = view.terminal.current_cwd.as_deref()
+            && let Some(label) = Self::cwd_label(cwd)
+        {
+            return label;
         }
         // Fallback: pass the raw title through. Length capping happens
         // uniformly in `tab_title` via `truncate_tab_title`, which counts
         // chars (not bytes) so multibyte UTF-8 stays sound.
-        raw.clone()
+        if raw.is_empty() {
+            "Terminal".into()
+        } else {
+            raw.clone()
+        }
+    }
+
+    fn terminal_tab_full_title(terminal: &Entity<TerminalView>, cx: &App) -> String {
+        let view = terminal.read(cx);
+        if let Some(custom) = view.terminal.custom_name.as_ref().filter(|c| !c.is_empty()) {
+            return custom.clone();
+        }
+        let raw = &view.terminal.title;
+        if let Some(agent_title) = Self::agent_title_from_terminal_title(raw) {
+            return agent_title.into();
+        }
+        if let Some(path_title) = Self::shell_path_title(raw) {
+            return path_title;
+        }
+        if Self::is_default_terminal_title(raw)
+            && let Some(cwd) = view
+                .terminal
+                .current_cwd
+                .as_ref()
+                .filter(|cwd| !cwd.is_empty())
+        {
+            return cwd.clone();
+        }
+        if raw.is_empty() {
+            "Terminal".into()
+        } else {
+            raw.clone()
+        }
+    }
+
+    fn is_default_terminal_title(title: &str) -> bool {
+        title.trim().is_empty() || title.trim().eq_ignore_ascii_case("terminal")
+    }
+
+    fn agent_title_from_terminal_title(title: &str) -> Option<&'static str> {
+        let lower = title.to_lowercase();
+        if lower.contains("claude") {
+            Some("Claude Code")
+        } else if lower.contains("codex") {
+            Some("Codex")
+        } else if lower.contains("nvim") || lower.contains("neovim") {
+            Some("Neovim")
+        } else if lower.contains("vim") && !lower.contains("nvim") {
+            Some("Vim")
+        } else if lower.contains("htop")
+            || lower.contains("btop")
+            || lower.contains("top") && lower.len() < 10
+        {
+            Some("System Monitor")
+        } else {
+            None
+        }
+    }
+
+    fn shell_path_title(title: &str) -> Option<String> {
+        let trimmed = title.rsplit(':').next()?.trim();
+        if trimmed.starts_with('/') || trimmed.starts_with('~') {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    }
+
+    fn cwd_label(cwd: &str) -> Option<String> {
+        let trimmed = cwd.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let path = std::path::Path::new(trimmed);
+        if dirs::home_dir().as_deref() == Some(path) {
+            return Some("~".into());
+        }
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .or_else(|| Some(trimmed.to_string()))
+    }
+
+    fn add_action_cluster_width(width: &mut f32, count: &mut usize, item_width: f32) {
+        if *count > 0 {
+            *width += TAB_GAP;
+        }
+        *width += item_width;
+        *count += 1;
+    }
+
+    fn tab_bar_action_cluster_width(
+        zoomed: bool,
+        fixed_buttons: usize,
+        agent_buttons: usize,
+        custom_buttons: usize,
+    ) -> f32 {
+        let mut width = 0.0;
+        let mut count = 0;
+        if zoomed {
+            Self::add_action_cluster_width(&mut width, &mut count, ZOOM_BADGE_WIDTH);
+        }
+        for _ in 0..(fixed_buttons + agent_buttons + custom_buttons) {
+            Self::add_action_cluster_width(&mut width, &mut count, ACTION_BUTTON_SIZE);
+        }
+        width
     }
 
     /// Render a small icon button for the tab bar end section.
@@ -903,8 +1012,8 @@ impl Pane {
             .flex()
             .items_center()
             .justify_center()
-            .w(px(22.))
-            .h(px(22.))
+            .w(px(ACTION_BUTTON_SIZE))
+            .h(px(ACTION_BUTTON_SIZE))
             .rounded(px(4.))
             .cursor_pointer()
             .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
@@ -913,7 +1022,7 @@ impl Pane {
     }
 
     /// Close a tab at the given index. Emits `PaneEvent::Remove` if the pane becomes empty.
-    fn close_tab_at(&mut self, idx: usize, cx: &mut Context<Self>) {
+    pub fn close_tab_at(&mut self, idx: usize, cx: &mut Context<Self>) {
         if idx >= self.tabs.len() {
             return;
         }
@@ -1137,15 +1246,23 @@ impl Pane {
                 .child(format!("{buffer}|"))
                 .into_any_element()
         } else {
-            div()
+            let full_title = Self::tab_full_title(&self.tabs[i], cx);
+            let display_title = Self::tab_title(&self.tabs[i], cx);
+            let show_tooltip = full_title != display_title
+                || full_title.chars().count() > TAB_TITLE_TOOLTIP_THRESHOLD;
+            let mut title = div()
+                .id(SharedString::from(format!("pane-tab-title-{i}")))
                 .flex_1()
                 .min_w_0()
                 .overflow_x_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .text_size(px(12.5))
-                .child(Self::tab_title(&self.tabs[i], cx))
-                .into_any_element()
+                .child(display_title);
+            if show_tooltip {
+                title = title.tooltip(crate::ui_primitives::text_tooltip(full_title));
+            }
+            title.into_any_element()
         }
     }
 
@@ -1314,7 +1431,9 @@ impl Pane {
             (with_alpha(ui.text, 0.0), ui.muted)
         };
         let chip_hover = with_alpha(ui.text, if is_selected { 0.09 } else { 0.05 });
-        let close_hover = with_alpha(ui.text, 0.14);
+        let close_base_bg = with_alpha(ui.text, 0.16);
+        let close_hover_bg = with_alpha(ui.text, 0.92);
+        let close_hover_fg = ui.base;
 
         // US-006: a small accent dot when this tab's terminal has an
         // unacknowledged bell. Zero-size placeholder otherwise so tab
@@ -1342,7 +1461,7 @@ impl Pane {
             .get(i)
             .and_then(|t| t.as_terminal())
             .is_some_and(|t| self.errored.contains(&t.entity_id()));
-        let bell_dot = if has_errored || has_attention || has_bell {
+        let bell_dot = (has_errored || has_attention || has_bell).then(|| {
             div()
                 .flex_none()
                 .w(px(6.0))
@@ -1357,9 +1476,7 @@ impl Pane {
                     ui.accent
                 })
                 .into_any_element()
-        } else {
-            div().into_any_element()
-        };
+        });
 
         // EP-001 US-003 (cli-cockpit): queued-prompt chip - tab-anatomy slot
         // ranked just below the state dot. Zero-size placeholder otherwise so
@@ -1369,7 +1486,7 @@ impl Pane {
             .get(i)
             .and_then(|t| t.as_terminal())
             .is_some_and(|t| self.pending_prefill.contains(&t.entity_id()));
-        let pending_chip = if has_pending {
+        let pending_chip = has_pending.then(|| {
             div()
                 .flex_none()
                 .ml_1()
@@ -1380,9 +1497,7 @@ impl Pane {
                 .text_color(ui.muted)
                 .child("1 queued")
                 .into_any_element()
-        } else {
-            div().into_any_element()
-        };
+        });
 
         // EP-005 US-013/US-014 + EP-006 US-018 - identity pill, port badges
         // and the transient fleet-match badge, governed by the FR-11 tab
@@ -1407,55 +1522,54 @@ impl Pane {
             });
             let mut slots_used: u8 =
                 u8::from(has_errored || has_attention || has_bell) + u8::from(has_pending);
-            let mut pill = div().into_any_element();
-            let mut badges = div().into_any_element();
-            let mut hits_badge = div().into_any_element();
+            let mut pill = None;
+            let mut badges = None;
+            let mut hits_badge = None;
             if let Some((agent, confirmed, ports, conflicts, hits)) = term_meta {
                 if let Some(agent) = agent
                     && slots_used < 2
                 {
                     let compact = slots_used == 1;
-                    pill = Self::render_agent_pill(i, agent, confirmed, compact, ui);
+                    pill = Some(Self::render_agent_pill(i, agent, confirmed, compact, ui));
                     slots_used += 1;
                 }
                 if slots_used < 2 && (!ports.is_empty() || !conflicts.is_empty()) {
-                    badges = Self::render_port_badges(i, &ports, &conflicts, ui);
+                    badges = Some(Self::render_port_badges(i, &ports, &conflicts, ui));
                     slots_used += 1;
                 }
                 if slots_used < 2
                     && let Some(count) = hits.filter(|c| *c > 0)
                 {
-                    hits_badge = div()
-                        .flex_none()
-                        .ml_1()
-                        .px(px(4.))
-                        .rounded(px(3.))
-                        .bg(ui.subtle)
-                        .text_size(px(9.))
-                        .text_color(ui.accent)
-                        .child(format!("{count} hits"))
-                        .into_any_element();
+                    hits_badge = Some(
+                        div()
+                            .flex_none()
+                            .ml_1()
+                            .px(px(4.))
+                            .rounded(px(3.))
+                            .bg(ui.subtle)
+                            .text_size(px(9.))
+                            .text_color(ui.accent)
+                            .child(format!("{count} hits"))
+                            .into_any_element(),
+                    );
                 }
             }
             (pill, badges, hits_badge)
         };
 
+        let tab_hover_group = SharedString::from(format!("pane-tab-hover-{i}"));
         let mut tab = div()
             .id(SharedString::from(format!("pane-tab-{i}")))
+            .group(tab_hover_group.clone())
             .relative()
             .flex()
             .flex_row()
             .items_center()
             .h(px(TAB_HEIGHT))
+            .w(px(TAB_WIDTH))
             .flex_shrink_0()
-            .max_w(px(TAB_MAX_WIDTH))
-            // Belt-and-suspenders against text-ellipsis miss: even if
-            // the inner `content` div fails to honour `min_w_0()` and
-            // grows past `max_w`, the visual paint is clipped here so
-            // the title never bleeds into the next tab. CSS flex with
-            // `max-width` on the parent doesn't always propagate a
-            // definite size to flex_1 children; GPUI inherits that
-            // quirk from Taffy.
+            // Clip at the fixed chip width; the title slot inside owns
+            // ellipsis and keeps a stable right padding.
             .overflow_x_hidden()
             .rounded(px(TAB_RADIUS))
             .cursor_pointer()
@@ -1547,20 +1661,27 @@ impl Pane {
                 );
         }
 
-        // Close button - chip style (matches the Agents bottom-panel tabs):
-        // always visible, a muted glyph in a rounded hit target that washes in
-        // on hover. `on_mouse_down` swallows the press so closing never selects
-        // the tab underneath.
+        // Leading slot swaps the normal tab icon for the close affordance on
+        // tab hover. Keeping both in the same fixed box avoids fragile overlay
+        // anchoring and keeps the label start stable.
+        let close_hover_group = SharedString::from(format!("pane-tab-close-hover-{i}"));
         let close_btn = div()
             .id(SharedString::from(format!("pane-tab-close-{i}")))
-            .flex_none()
-            .size(px(CLOSE_SIZE))
+            .group(close_hover_group.clone())
+            .absolute()
+            .left_0()
+            .top_0()
+            .size(px(LEADING_SLOT_SIZE))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(5.))
+            .rounded_full()
+            .bg(close_base_bg)
+            .opacity(0.)
+            .group_hover(tab_hover_group.clone(), |s| s.opacity(1.))
             .cursor_pointer()
-            .hover(move |d| d.bg(close_hover))
+            .shadow_lg()
+            .hover(move |d| d.bg(close_hover_bg))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, _window, cx| {
                 // US-020: resolve the live index by identity, not by the
@@ -1575,21 +1696,33 @@ impl Pane {
             }))
             .child(
                 svg()
-                    .size(px(11.))
+                    .size(px(9.))
                     .flex_none()
                     .path("icons/close.svg")
-                    .text_color(ui.muted),
+                    .text_color(ui.text)
+                    .group_hover(close_hover_group, move |s| s.text_color(close_hover_fg)),
             );
 
         // Inner content row: [icon] [label] [adornments] [close]. The icon
         // (terminal vs markdown vs diff) is a bare 13px glyph tinted to the
         // chip foreground, matching the Agents bottom-panel tab.
         let icon_path = Self::tab_icon(&self.tabs[i]);
-        let leading_icon = svg()
-            .size(px(13.))
+        let leading_slot = div()
+            .relative()
             .flex_none()
-            .path(icon_path)
-            .text_color(chip_fg);
+            .size(px(LEADING_SLOT_SIZE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                svg()
+                    .size(px(13.))
+                    .flex_none()
+                    .path(icon_path)
+                    .text_color(chip_fg)
+                    .group_hover(tab_hover_group.clone(), |s| s.opacity(0.)),
+            )
+            .child(close_btn);
         let content = div()
             .id(SharedString::from(format!("pane-tab-content-{i}")))
             .flex()
@@ -1599,19 +1732,9 @@ impl Pane {
             .h_full()
             .pl(px(TAB_PL))
             .pr(px(TAB_PR))
-            // Critical: as the only flex child of `tab` (which uses
-            // `max_w(TAB_MAX_WIDTH)`), `content` defaults to
-            // `min-width: auto` and refuses to shrink below its
-            // natural size - which for a 24-char title is ~270px,
-            // overflowing the tab's 200px cap and pushing the title
-            // visibly past the close-button slot. `min_w_0()` opts
-            // into the "can shrink to anything" mode so the flex
-            // engine actually clamps `content` to the tab's effective
-            // width, which in turn lets the title's
-            // `flex_1 + min_w_0 + text_ellipsis` chain ellipsize.
-            // See Zed `crates/markdown/src/markdown.rs:1291` for the
-            // same `flex_1().w_0()` workaround in their list-item
-            // path.
+            // Keep the chip content start-aligned: no full-width stretch, while
+            // still allowing the title slot to shrink and ellipsize under the
+            // tab's max width.
             .min_w_0()
             .w_full()
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
@@ -1637,14 +1760,13 @@ impl Pane {
                 cx.notify();
                 cx.stop_propagation();
             }))
-            .child(bell_dot)
-            .child(pending_chip)
-            .child(leading_icon)
+            .children(bell_dot)
+            .children(pending_chip)
+            .child(leading_slot)
             .child(self.render_tab_title(i, cx))
-            .child(agent_pill)
-            .child(port_badges)
-            .child(match_badge)
-            .child(close_btn);
+            .children(agent_pill)
+            .children(port_badges)
+            .children(match_badge);
 
         tab.child(content).into_any_element()
     }
@@ -1846,11 +1968,84 @@ impl Pane {
             .items_center()
             .h_full()
             .px(px(SECTION_PX))
+            .gap(px(0.));
+
+        let actions_collapsed = self.tab_bar_actions_collapsed;
+        let animation_epoch = self.tab_bar_actions_animation_epoch;
+        let toggle_icon_base = svg()
+            .size(px(14.))
+            .flex_none()
+            .path("icons/chevron-right.svg")
+            .text_color(ui.muted);
+        let toggle_icon = if animation_epoch == 0 {
+            if actions_collapsed {
+                toggle_icon_base
+                    .with_transformation(Transformation::rotate(percentage(0.5)))
+                    .into_any_element()
+            } else {
+                toggle_icon_base.into_any_element()
+            }
+        } else {
+            toggle_icon_base
+                .with_animation(
+                    SharedString::from(format!("pane-actions-chevron-{animation_epoch}")),
+                    Animation::new(Duration::from_millis(ACTION_CLUSTER_ANIMATION_MS))
+                        .with_easing(ease_out_quint()),
+                    move |icon, delta| {
+                        let rotation = if actions_collapsed {
+                            0.5 * delta
+                        } else {
+                            0.5 * (1.0 - delta)
+                        };
+                        icon.with_transformation(Transformation::rotate(percentage(rotation)))
+                    },
+                )
+                .into_any_element()
+        };
+        end_section = end_section.child(
+            div()
+                .id("pane-btn-toggle-actions")
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(ACTION_BUTTON_SIZE))
+                .h(px(ACTION_BUTTON_SIZE))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+                .on_click(cx.listener(|this, _e: &ClickEvent, _window, cx| {
+                    this.tab_bar_actions_collapsed = !this.tab_bar_actions_collapsed;
+                    this.tab_bar_actions_animation_epoch =
+                        this.tab_bar_actions_animation_epoch.saturating_add(1);
+                    cx.notify();
+                    cx.stop_propagation();
+                }))
+                .child(toggle_icon),
+        );
+
+        let config = &self.cached_config;
+        let visible_agents = crate::agent_launcher::TerminalAgent::visible(config);
+        let show_sessions_button = !crate::agent_sessions::enabled_session_agents().is_empty();
+        let fixed_button_count = 5 + usize::from(show_sessions_button);
+        let action_cluster_width = Self::tab_bar_action_cluster_width(
+            self.zoomed,
+            fixed_button_count,
+            visible_agents.len(),
+            self.custom_buttons.len(),
+        );
+
+        let mut action_cluster = div()
+            .flex()
+            .flex_none()
+            .flex_row()
+            .items_center()
+            .h_full()
+            .w(px(action_cluster_width))
             .gap(px(TAB_GAP));
 
         // Zoom indicator badge
         if self.zoomed {
-            end_section = end_section.child(
+            action_cluster = action_cluster.child(
                 div()
                     .flex()
                     .items_center()
@@ -1865,7 +2060,7 @@ impl Pane {
             );
         }
 
-        end_section = end_section
+        action_cluster = action_cluster
             // Copy this surface's reference (its human-readable name) so it
             // can be pasted into an AI agent ("read the logs in cargo-run").
             // US-010: fallback affordance for when semantic disambiguation by
@@ -1930,19 +2125,16 @@ impl Pane {
             // Settings → AI Agent: with no agent visible the sidebar would open
             // empty, so the icon itself is suppressed for symmetry with the
             // launcher buttons below.
-            .when(
-                !crate::agent_sessions::enabled_session_agents().is_empty(),
-                |s| {
-                    s.child(Self::action_button(
-                        "pane-btn-claude-sessions",
-                        "icons/sessions.svg",
-                        cx.listener(|_this, _e: &ClickEvent, _window, cx| {
-                            cx.emit(PaneEvent::ToggleAgentSessions);
-                            cx.stop_propagation();
-                        }),
-                    ))
-                },
-            );
+            .when(show_sessions_button, |s| {
+                s.child(Self::action_button(
+                    "pane-btn-claude-sessions",
+                    "icons/sessions.svg",
+                    cx.listener(|_this, _e: &ClickEvent, _window, cx| {
+                        cx.emit(PaneEvent::ToggleAgentSessions);
+                        cx.stop_propagation();
+                    }),
+                ))
+            });
 
         // Built-in agent launcher buttons (the 15 CLI coding agents).
         // `TerminalAgent::visible` applies the per-agent `*_button_visible`
@@ -1951,13 +2143,12 @@ impl Pane {
         // click handler reads `this.cached_config` live so the Claude bypass
         // toggle still takes effect on the next click (the cache is refreshed
         // by the ConfigWatcher propagation).
-        let config = &self.cached_config;
-        for agent in crate::agent_launcher::TerminalAgent::visible(config) {
+        for agent in visible_agents {
             let tint: Hsla = match agent.accent() {
                 Some(c) => rgb(c).into(),
                 None => tab_colors().text,
             };
-            end_section = end_section.child(Self::command_button(
+            action_cluster = action_cluster.child(Self::command_button(
                 SharedString::from(format!("pane-btn-{}", agent.tag())),
                 SharedString::from(agent.icon_path()),
                 tint,
@@ -1979,7 +2170,7 @@ impl Pane {
             let command = btn.command.clone();
             let id = SharedString::from(format!("pane-btn-custom-{}", btn.id));
             let icon = SharedString::from(btn.icon.clone());
-            end_section = end_section.child(Self::command_button(
+            action_cluster = action_cluster.child(Self::command_button(
                 id,
                 icon,
                 ui.muted,
@@ -1992,6 +2183,44 @@ impl Pane {
                 }),
             ));
         }
+
+        let target_width = if actions_collapsed {
+            0.0
+        } else {
+            TAB_GAP + action_cluster_width
+        };
+        let target_opacity = if actions_collapsed { 0.0 } else { 1.0 };
+        let action_cluster_shell = div()
+            .flex_none()
+            .h_full()
+            .overflow_x_hidden()
+            .child(div().ml(px(TAB_GAP)).h_full().child(action_cluster));
+        let action_cluster_element = if animation_epoch == 0 {
+            action_cluster_shell
+                .w(px(target_width))
+                .opacity(target_opacity)
+                .into_any_element()
+        } else {
+            action_cluster_shell
+                .with_animation(
+                    SharedString::from(format!("pane-actions-cluster-{animation_epoch}")),
+                    Animation::new(Duration::from_millis(ACTION_CLUSTER_ANIMATION_MS))
+                        .with_easing(ease_out_quint()),
+                    move |cluster, delta| {
+                        let progress = if actions_collapsed {
+                            1.0 - delta
+                        } else {
+                            delta
+                        };
+                        cluster
+                            .w(px((TAB_GAP + action_cluster_width) * progress))
+                            .opacity(progress)
+                    },
+                )
+                .into_any_element()
+        };
+
+        end_section = end_section.child(action_cluster_element);
 
         end_section
     }
@@ -2337,5 +2566,27 @@ mod tests {
         let cjk = "プロジェクト・パネフロー・テスト・ドキュメント.md";
         let out = truncate_tab_title(cjk);
         assert_eq!(out.chars().count(), MAX_TAB_TITLE_LEN);
+    }
+
+    #[test]
+    fn cwd_label_uses_last_path_component() {
+        let cwd = std::env::temp_dir().join("paneflow-tab-title");
+
+        assert_eq!(
+            super::Pane::cwd_label(&cwd.to_string_lossy()),
+            Some("paneflow-tab-title".into())
+        );
+    }
+
+    #[test]
+    fn tab_bar_action_cluster_width_counts_items_and_gaps() {
+        assert_eq!(
+            super::Pane::tab_bar_action_cluster_width(false, 2, 1, 0),
+            super::ACTION_BUTTON_SIZE * 3.0 + super::TAB_GAP * 2.0
+        );
+        assert_eq!(
+            super::Pane::tab_bar_action_cluster_width(true, 1, 0, 0),
+            super::ZOOM_BADGE_WIDTH + super::TAB_GAP + super::ACTION_BUTTON_SIZE
+        );
     }
 }

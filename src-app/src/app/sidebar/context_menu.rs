@@ -4,12 +4,15 @@
 //!
 //! Part of the US-025 sidebar decomposition.
 
+use std::path::PathBuf;
+
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, SharedString, Styled, Window, deferred, div, prelude::*, px,
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, SharedString, Styled, Window, deferred, div, prelude::*, px,
 };
 
-use crate::pane::Pane;
+use crate::app::files_tree;
+use crate::pane::{Pane, TabContent};
 use crate::settings::components::{menu_divider_color, select_item, select_menu, with_alpha};
 use crate::{PaneFlowApp, TabContextMenu, WorkspaceContextMenu};
 
@@ -301,23 +304,55 @@ impl PaneFlowApp {
 
         // Enumerate the panes of the workspace that owns the source pane, in
         // tree order, dropping the source itself.
-        let others: Vec<(usize, Entity<Pane>)> = self
+        let (workspace_cwd, others): (Option<PathBuf>, Vec<(usize, Entity<Pane>)>) = self
             .workspaces
             .iter()
             .find_map(|ws| {
-                ws.root
-                    .as_ref()
-                    .filter(|r| r.contains_leaf(&source))
-                    .map(|r| r.collect_leaves())
+                let root = ws.root.as_ref()?;
+                root.contains_leaf(&source).then(|| {
+                    let panes = root
+                        .collect_leaves()
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(_, p)| p != &source)
+                        .collect();
+                    (Some(PathBuf::from(&ws.cwd)), panes)
+                })
             })
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .filter(|(_, p)| p != &source)
-            .collect();
+            .unwrap_or((None, Vec::new()));
 
-        let rows = others.len().max(1);
-        let menu_height = px(16. + rows as f32 * 27.);
+        let tab_path = source
+            .read(cx)
+            .tabs
+            .get(source_idx)
+            .and_then(|tab| Self::tab_context_path(tab, cx));
+        let target_tab_id = source
+            .read(cx)
+            .tabs
+            .get(source_idx)
+            .map(|tab| tab.entity_id());
+        let full_path = tab_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        let relative_path = tab_path.as_ref().map(|path| {
+            workspace_cwd
+                .as_ref()
+                .map(|root| files_tree::workspace_relative_path(root, path))
+                .unwrap_or_else(|| path.to_string_lossy().into_owned())
+        });
+
+        // EP-001 US-003 (cli-cockpit): cancel this tab's queued prompt -
+        // the non-Composer cancel path. Only shown when a buffer exists.
+        let pending_sid = source
+            .read(cx)
+            .tabs
+            .get(source_idx)
+            .and_then(|t| t.as_terminal())
+            .map(|t| t.entity_id().as_u64())
+            .filter(|sid| self.broadcast.pending.contains_key(sid));
+
+        let rows = 2 + others.len().max(1) + usize::from(pending_sid.is_some()) + 1;
+        let menu_height = px(8. + rows as f32 * 29. + 18.);
         let win_h = window.window_bounds().get_bounds().size.height;
         let menu_y = if menu.position.y + menu_height > win_h {
             (menu.position.y - menu_height).max(px(0.))
@@ -325,26 +360,67 @@ impl PaneFlowApp {
             menu.position.y
         };
 
-        let mut context_menu = div()
-            .id("tab-context-menu")
+        let mut context_menu = select_menu("tab-context-menu", ui)
             .occlude()
             .absolute()
             .left(menu.position.x)
             .top(menu_y)
             .w(px(248.))
-            .bg(ui.overlay)
-            .border_1()
-            .border_color(ui.border)
-            .rounded(px(8.))
-            .flex()
-            .flex_col()
-            .p(px(4.))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.tab_menu_open = None;
                 cx.notify();
             }))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+
+        if let Some(value) = full_path {
+            context_menu = context_menu.child(self.render_select_menu_item(
+                "tab-context-copy-path".into(),
+                "Copy Path",
+                None,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                    this.tab_menu_open = None;
+                    this.show_toast("Copied path", cx);
+                    cx.stop_propagation();
+                }),
+            ));
+        } else {
+            context_menu = context_menu.child(Self::render_disabled_select_menu_item(
+                "tab-context-copy-path-disabled".into(),
+                "Copy Path unavailable",
+                ui,
+            ));
+        }
+
+        if let Some(value) = relative_path {
+            context_menu = context_menu.child(self.render_select_menu_item(
+                "tab-context-copy-relative-path".into(),
+                "Copy Relative Path",
+                None,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                    this.tab_menu_open = None;
+                    this.show_toast("Copied relative path", cx);
+                    cx.stop_propagation();
+                }),
+            ));
+        } else {
+            context_menu = context_menu.child(Self::render_disabled_select_menu_item(
+                "tab-context-copy-relative-path-disabled".into(),
+                "Copy Relative Path unavailable",
+                ui,
+            ));
+        }
+
+        context_menu = context_menu.child(
+            div()
+                .mx(px(6.))
+                .my(px(4.))
+                .h(px(1.))
+                .bg(menu_divider_color(ui)),
+        );
 
         if others.is_empty() {
             // AC US-006: with a single pane there is nowhere to move to.
@@ -366,7 +442,7 @@ impl PaneFlowApp {
                 );
                 let dest_for_click = dest.clone();
                 let source_for_click = source.clone();
-                context_menu = context_menu.child(self.render_context_menu_item(
+                context_menu = context_menu.child(self.render_select_menu_item(
                     SharedString::from(format!("tab-move-{orig_idx}")),
                     &label,
                     None,
@@ -409,17 +485,8 @@ impl PaneFlowApp {
             }
         }
 
-        // EP-001 US-003 (cli-cockpit): cancel this tab's queued prompt -
-        // the non-Composer cancel path. Only shown when a buffer exists.
-        let pending_sid = source
-            .read(cx)
-            .tabs
-            .get(source_idx)
-            .and_then(|t| t.as_terminal())
-            .map(|t| t.entity_id().as_u64())
-            .filter(|sid| self.broadcast.pending.contains_key(sid));
         if let Some(sid) = pending_sid {
-            context_menu = context_menu.child(self.render_context_menu_item(
+            context_menu = context_menu.child(self.render_select_menu_item(
                 SharedString::from("tab-cancel-queued"),
                 "Cancel queued prompt",
                 None,
@@ -433,6 +500,78 @@ impl PaneFlowApp {
             ));
         }
 
+        context_menu = context_menu.child(
+            div()
+                .mx(px(6.))
+                .my(px(4.))
+                .h(px(1.))
+                .bg(menu_divider_color(ui)),
+        );
+
+        let source_for_close = source.clone();
+        let target_tab_id_for_close = target_tab_id.clone();
+        context_menu = context_menu.child(self.render_select_menu_item(
+            "tab-context-close".into(),
+            "Close Tab",
+            None,
+            ui,
+            cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                this.tab_menu_open = None;
+                source_for_close.update(cx, |pane, pane_cx| {
+                    if let Some(tab_id) = target_tab_id_for_close
+                        && let Some(idx) =
+                            pane.tabs.iter().position(|tab| tab.entity_id() == tab_id)
+                    {
+                        pane.close_tab_at(idx, pane_cx);
+                    }
+                });
+                this.save_session(cx);
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        ));
+
         deferred(context_menu).priority(3).into_any_element()
+    }
+
+    fn render_disabled_select_menu_item(
+        id: SharedString,
+        label: &str,
+        ui: crate::theme::UiColors,
+    ) -> impl IntoElement {
+        div()
+            .id(id)
+            .h(px(28.))
+            .px(px(8.))
+            .rounded(px(7.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(12.))
+            .text_color(ui.muted)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_x_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(label.to_string()),
+            )
+    }
+
+    fn tab_context_path(tab: &TabContent, cx: &App) -> Option<PathBuf> {
+        match tab {
+            TabContent::Terminal(terminal) => terminal
+                .read(cx)
+                .terminal
+                .current_cwd
+                .as_ref()
+                .filter(|cwd| !cwd.is_empty())
+                .map(PathBuf::from),
+            TabContent::Markdown(markdown) => Some(markdown.read(cx).path.clone()),
+            TabContent::Diff(diff) => diff.read(cx).column_paths().into_iter().next(),
+        }
     }
 }
