@@ -1,10 +1,9 @@
 //! "AI Agent" settings page - compact toggles for the built-in AI launcher
 //! buttons rendered in every tab bar, plus the Claude bypass-permissions guard.
 //!
-//! Two sections, each a lowercase eyebrow ("Tab bar buttons", "Permissions")
-//! followed by a `setting_card` of one row per toggle, separated by `hairline()`
-//! dividers. Only the switch is interactive - the row itself does not hover or
-//! click.
+//! Sections use lowercase eyebrows followed by `setting_card` groups of toggles,
+//! separated by `hairline()` dividers. Only the switch is interactive - the row
+//! itself does not hover or click.
 //!
 //! Persistence goes through [`PaneFlowApp::persist_setting`] - it mutates the
 //! cached config for instant feedback and writes `paneflow.json` off the main
@@ -317,114 +316,13 @@ impl PaneFlowApp {
             .child(section_header(ui, "AI access"))
             .child(access_card);
 
-        // EP-003 US-011: review-prefill delay stepper.
-        let prefill_delay = config.resolved_review_prefill_delay_ms();
-        let review_section = div()
-            .mt(px(24.))
-            .flex()
-            .flex_col()
-            .child(section_header(ui, "Review"))
-            .child(setting_card(ui).child(self.review_prefill_row(prefill_delay, ui, cx)));
-
         div()
             .flex()
             .flex_col()
             .child(buttons_section)
             .child(permissions_section)
             .child(access_section)
-            .child(review_section)
-    }
-
-    /// EP-003 US-011: a `−`/`+` stepper for the review-prefill delay (ms). The
-    /// value is clamped to the schema's `[MIN, MAX]` on every step; the clipboard
-    /// fallback makes any value safe, so this only tunes how long Paneflow waits
-    /// before auto-typing the prompt into a freshly launched review CLI.
-    fn review_prefill_row(
-        &self,
-        value: u64,
-        ui: crate::theme::UiColors,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        use paneflow_config::schema::PaneFlowConfig as Cfg;
-        const STEP: u64 = 250;
-        let at_min = value <= Cfg::MIN_REVIEW_PREFILL_DELAY_MS;
-        let at_max = value >= Cfg::MAX_REVIEW_PREFILL_DELAY_MS;
-
-        let dec = cx.listener(move |this, _: &ClickEvent, _w, cx| {
-            let v = value
-                .saturating_sub(STEP)
-                .max(Cfg::MIN_REVIEW_PREFILL_DELAY_MS);
-            this.persist_setting(false, "review_prefill_delay_ms", serde_json::json!(v), cx);
-        });
-        let inc = cx.listener(move |this, _: &ClickEvent, _w, cx| {
-            let v = value
-                .saturating_add(STEP)
-                .min(Cfg::MAX_REVIEW_PREFILL_DELAY_MS);
-            this.persist_setting(false, "review_prefill_delay_ms", serde_json::json!(v), cx);
-        });
-
-        let button = |btn_id: &'static str, glyph: &'static str, disabled: bool| {
-            div()
-                .id(btn_id)
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(24.))
-                .h(px(24.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(ui.border)
-                .bg(ui.base)
-                .text_size(px(15.))
-                .text_color(if disabled { ui.muted } else { ui.text })
-                .when(!disabled, |d| {
-                    d.cursor(CursorStyle::PointingHand)
-                        .hover(|s| s.border_color(ui.muted))
-                })
-                .child(glyph)
-        };
-
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(16.))
-            .px(px(12.))
-            .py(px(10.))
-            .child(setting_text(
-                ui,
-                "Review prefill delay",
-                "How long Paneflow waits before typing the review prompt into a \
-                 freshly launched CLI. The prompt is always copied to the \
-                 clipboard as a fallback - raise this only if a slow-starting \
-                 CLI keeps missing the auto-fill.",
-            ))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        button("review-prefill-dec", "−", at_min)
-                            .when(!at_min, move |b| b.on_click(dec)),
-                    )
-                    .child(
-                        div()
-                            .w(px(64.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(12.))
-                            .text_color(ui.text)
-                            .child(format!("{value} ms")),
-                    )
-                    .child(
-                        button("review-prefill-inc", "+", at_max)
-                            .when(!at_max, move |b| b.on_click(inc)),
-                    ),
-            )
+            .child(div().h(px(180.)).flex_none())
     }
 }
 
