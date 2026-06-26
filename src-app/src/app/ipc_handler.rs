@@ -2290,12 +2290,24 @@ impl PaneFlowApp {
                 // generation counter so a client detects pane-idle without a
                 // timer heuristic (kills the flow engine's settling poll).
                 let output_generation = terminal.read(cx).terminal.output_generation;
+                let sid = terminal.entity_id().as_u64();
+                let read_started = std::time::Instant::now();
                 let full = terminal
                     .read(cx)
                     .terminal
                     .extract_scrollback()
                     .unwrap_or_default();
+                let extract_elapsed = read_started.elapsed();
                 let (text, returned, total, eof) = paginate_scrollback(&full, lines, offset);
+                let total_elapsed = read_started.elapsed();
+                if total_elapsed >= std::time::Duration::from_millis(10) {
+                    log::debug!(
+                        "surface.read sid={sid} lines={lines} offset={offset} total_lines={total} returned={returned} bytes={} extract_ms={} total_ms={}",
+                        full.len(),
+                        extract_elapsed.as_millis(),
+                        total_elapsed.as_millis()
+                    );
+                }
                 // US-025: an offset past the oldest retained line is a client
                 // error, not a silent empty read. The old `saturating_sub`
                 // path returned `("", 0, total, true)`, indistinguishable from
@@ -2319,7 +2331,6 @@ impl PaneFlowApp {
                     .and_then(|v| v.as_bool())
                     .unwrap_or_else(|| self.cached_config.ai_injection_fence_enabled());
                 let text = if fenced {
-                    let sid = terminal.entity_id().as_u64();
                     wrap_untrusted(
                         &format!("source=\"surface:{sid}\" total_lines=\"{total}\" eof=\"{eof}\""),
                         &text,

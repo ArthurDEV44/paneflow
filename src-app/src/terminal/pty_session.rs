@@ -38,6 +38,7 @@ use paneflow_config::schema::{TerminalConfig, TerminalSurfaceProfile};
 /// `terminal.scrollback_lines` in `paneflow.json` - see
 /// [`paneflow_config::TerminalConfig::resolved_scrollback_lines`].
 const DEFAULT_SCROLLBACK_LINES: usize = TerminalConfig::DEFAULT_SCROLLBACK_LINES;
+const PTY_DRAIN_ON_EXIT: bool = true;
 
 /// Read the user's configured scrollback length, clamped to the
 /// [`paneflow_config::TerminalConfig`] allowed range. Falls back to
@@ -891,14 +892,10 @@ impl TerminalState {
         let options = tty::Options {
             shell: Some(tty::Shell::new(params.shell, params.extra_args)),
             working_directory: Some(params.cwd),
-            // We close the master and signal the child ourselves in `Drop`, so
-            // the EventLoop stops on child exit rather than draining to EOF.
-            // NOTE: this DIVERGES from Zed, which sets `drain_on_exit: true`
-            // (zed/crates/terminal/src/alacritty.rs:168) to keep reading the
-            // PTY after the child exits so its final output isn't clipped.
-            // PaneFlow shows an exit overlay instead; if a shell's last output
-            // burst is ever truncated on exit, revisit this.
-            drain_on_exit: false,
+            // Keep reading after child exit so a shell's final burst reaches
+            // the grid before the exit overlay lands. Mirrors Zed's terminal
+            // path and must match the EventLoop flag below.
+            drain_on_exit: PTY_DRAIN_ON_EXIT,
             env: params.env,
             #[cfg(windows)]
             escape_args: true,
@@ -952,8 +949,11 @@ impl TerminalState {
 
         let pty = Osc7Pty::new(pty, cwd_tx);
         let event_loop = EventLoop::new(
-            term, listener, pty, false, // drain_on_exit
-            false, // ref_test
+            term,
+            listener,
+            pty,
+            PTY_DRAIN_ON_EXIT, // drain_on_exit
+            false,             // ref_test
         )
         .map_err(|e| anyhow::anyhow!("failed to start pty event loop: {e}"))?;
         let channel = event_loop.channel();
@@ -2263,16 +2263,6 @@ impl Drop for TerminalState {
 
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-            use windows_sys::Win32::System::Threading::{
-                OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
-            };
-            // SYNCHRONIZE access right is required for WaitForSingleObject on the
-            // returned handle; PROCESS_TERMINATE alone makes WaitForSingleObject
-            // return WAIT_FAILED. Value mirrors winnt.h (0x0010_0000). Declared
-            // locally to avoid pulling the Win32_Storage_FileSystem feature flag.
-            const SYNCHRONIZE: u32 = 0x0010_0000;
-
             let pid = self.child_pid;
             // US-034 (mirrors the Unix path above): skip the kill ladder entirely
             // once the child has exited. Without this guard a normal exit (the
@@ -2284,42 +2274,7 @@ impl Drop for TerminalState {
                 // SIGTERM-equivalent graceful signal. TerminateProcess is a
                 // hard kill and serves as the escalation; there is no Windows
                 // mirror of the Unix synchronous-SIGTERM grace step above.
-                let terminate = move || {
-                    // SAFETY: Win32 handles are owned within this closure;
-                    // we always CloseHandle before returning each branch.
-                    unsafe {
-                        let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
-                        if handle.is_null() {
-                            log::debug!(
-                                "paneflow: OpenProcess({pid}) returned NULL (child likely already exited)"
-                            );
-                            return;
-                        }
-                        // The child can still exit on its own during the 100 ms
-                        // grace window (the `self.exited` guard only covers exits
-                        // already observed at Drop time). TerminateProcess on an
-                        // exited process fails with ACCESS_DENIED; a zero-timeout
-                        // wait detects that cleanly so we neither call it nor warn.
-                        if WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 {
-                            let _ = CloseHandle(handle);
-                            return;
-                        }
-                        if TerminateProcess(handle, 1) == 0 {
-                            log::debug!(
-                                "paneflow: TerminateProcess({pid}) failed (child exited during grace window)"
-                            );
-                            let _ = CloseHandle(handle);
-                            return;
-                        }
-                        let wait = WaitForSingleObject(handle, 5000);
-                        if wait != WAIT_OBJECT_0 {
-                            log::warn!(
-                                "paneflow: WaitForSingleObject({pid}) returned {wait:#x} (expected WAIT_OBJECT_0)"
-                            );
-                        }
-                        let _ = CloseHandle(handle);
-                    }
-                };
+                let terminate = move || terminate_windows_process_tree(pid);
                 match executor {
                     Some(bg) => {
                         bg.spawn(async move {
@@ -2426,28 +2381,19 @@ fn macos_exe_basename(pid: libc::c_int) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// Windows (US-019): walk the process tree from `root_pid` to its deepest
-/// descendant (the most-recently-spawned leaf ≈ the foreground job under
-/// ConPTY) via a Toolhelp32 snapshot, then resolve that process's executable
-/// basename with `QueryFullProcessImageNameW`. Best-effort (Windows recycles
-/// PIDs); `None` on any failure → caller falls back to the OSC title.
 #[cfg(windows)]
-fn windows_foreground_command(root_pid: u32) -> Option<String> {
+fn windows_process_entries() -> Vec<(u32, u32)> {
     use std::mem;
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        QueryFullProcessImageNameW,
-    };
 
     // SAFETY: Win32 call; the returned snapshot handle is closed below.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE {
-        return None;
+        return Vec::new();
     }
 
     // Collect (pid, parent_pid) for every process in the snapshot.
@@ -2466,6 +2412,106 @@ fn windows_foreground_command(root_pid: u32) -> Option<String> {
     }
     // SAFETY: `snap` is a valid handle obtained above.
     unsafe { CloseHandle(snap) };
+    entries
+}
+
+#[cfg(windows)]
+fn windows_descendants_postorder(root_pid: u32, entries: &[(u32, u32)]) -> Vec<u32> {
+    fn visit(
+        pid: u32,
+        entries: &[(u32, u32)],
+        seen: &mut std::collections::HashSet<u32>,
+        out: &mut Vec<u32>,
+    ) {
+        if !seen.insert(pid) {
+            return;
+        }
+        let mut children: Vec<u32> = entries
+            .iter()
+            .filter_map(|(child, parent)| (*parent == pid).then_some(*child))
+            .collect();
+        children.sort_unstable();
+        for child in children {
+            visit(child, entries, seen, out);
+            out.push(child);
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    visit(root_pid, entries, &mut seen, &mut out);
+    out
+}
+
+#[cfg(windows)]
+fn terminate_windows_pid(pid: u32) {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+    };
+    // SYNCHRONIZE access right is required for WaitForSingleObject on the
+    // returned handle; PROCESS_TERMINATE alone makes WaitForSingleObject
+    // return WAIT_FAILED. Value mirrors winnt.h (0x0010_0000). Declared
+    // locally to avoid pulling the Win32_Storage_FileSystem feature flag.
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+
+    // SAFETY: Win32 handles are owned in this function and closed on every
+    // non-null path before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            log::debug!(
+                "paneflow: OpenProcess({pid}) returned NULL (process likely already exited)"
+            );
+            return;
+        }
+        // The process can still exit on its own during the 100 ms grace window.
+        // TerminateProcess on an exited process fails with ACCESS_DENIED; a
+        // zero-timeout wait detects that cleanly so we neither call it nor warn.
+        if WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 {
+            let _ = CloseHandle(handle);
+            return;
+        }
+        if TerminateProcess(handle, 1) == 0 {
+            log::debug!(
+                "paneflow: TerminateProcess({pid}) failed (process exited during grace window)"
+            );
+            let _ = CloseHandle(handle);
+            return;
+        }
+        let wait = WaitForSingleObject(handle, 5000);
+        if wait != WAIT_OBJECT_0 {
+            log::warn!(
+                "paneflow: WaitForSingleObject({pid}) returned {wait:#x} (expected WAIT_OBJECT_0)"
+            );
+        }
+        let _ = CloseHandle(handle);
+    }
+}
+
+#[cfg(windows)]
+fn terminate_windows_process_tree(root_pid: u32) {
+    let entries = windows_process_entries();
+    for child in windows_descendants_postorder(root_pid, &entries) {
+        terminate_windows_pid(child);
+    }
+    terminate_windows_pid(root_pid);
+}
+
+/// Windows (US-019): walk the process tree from `root_pid` to its deepest
+/// descendant (the most-recently-spawned leaf ≈ the foreground job under
+/// ConPTY) via a Toolhelp32 snapshot, then resolve that process's executable
+/// basename with `QueryFullProcessImageNameW`. Best-effort (Windows recycles
+/// PIDs); `None` on any failure → caller falls back to the OSC title.
+#[cfg(windows)]
+fn windows_foreground_command(root_pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+
+    let entries = windows_process_entries();
 
     // Descend parent → child from the shell to the deepest leaf. At each level
     // pick the child with the HIGHEST pid: Windows assigns pids in increasing
@@ -3331,6 +3377,44 @@ mod tests {
         assert!(
             found,
             "EP-002: the EventLoop read path did not deliver shell output to the grid"
+        );
+    }
+
+    #[test]
+    fn eventloop_drains_final_output_after_exit() {
+        let mut state = TerminalState::new(None, 1, 1, Some((80, 24)), None, None)
+            .expect("spawn a PTY-backed terminal");
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        state
+            .notifier
+            .notify(b"echo PANEFLOW_FINAL_OK\nexit\n".to_vec());
+
+        let mut found = false;
+        for _ in 0..240 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            state.sync();
+            let scrollback = state.extract_scrollback().unwrap_or_default();
+            if scrollback.contains("PANEFLOW_FINAL_OK") {
+                found = true;
+                break;
+            }
+        }
+
+        assert!(
+            found,
+            "final PTY output must survive a fast shell exit before the overlay lands"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_descendants_postorder_places_children_before_parent() {
+        let entries = vec![(10, 1), (11, 10), (12, 10), (13, 12), (20, 1)];
+
+        assert_eq!(
+            windows_descendants_postorder(10, &entries),
+            vec![11, 13, 12]
         );
     }
 

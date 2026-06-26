@@ -182,3 +182,70 @@ impl LayoutTree {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui::{AppContext, Entity, TestAppContext};
+
+    use crate::pane::Pane;
+    use crate::terminal::TerminalView;
+
+    use super::*;
+    use crate::layout::SplitDirection;
+
+    fn test_pane(cx: &mut impl AppContext, workspace_id: u64) -> Entity<Pane> {
+        let terminal = cx.new(|cx| TerminalView::display_only_for_test(workspace_id, cx));
+        cx.new(|cx| Pane::new(terminal, workspace_id, cx))
+    }
+
+    fn leaf_ids(tree: &LayoutTree) -> Vec<gpui::EntityId> {
+        tree.collect_leaves()
+            .into_iter()
+            .map(|pane| pane.entity_id())
+            .collect()
+    }
+
+    #[gpui::test]
+    fn remove_pane_redistributes_removed_ratio(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let a = test_pane(cx, 1);
+        let b = test_pane(cx, 1);
+        let c = test_pane(cx, 1);
+        let tree = LayoutTree::from_panes_equal(
+            SplitDirection::Vertical,
+            vec![a.clone(), b.clone(), c.clone()],
+        )
+        .expect("non-empty layout");
+
+        let tree = tree.remove_pane(&b).expect("two panes should remain");
+
+        assert_eq!(tree.leaf_count(), 2);
+        assert_eq!(leaf_ids(&tree), vec![a.entity_id(), c.entity_id()]);
+        match tree {
+            LayoutTree::Container { children, .. } => {
+                assert_eq!(children.len(), 2);
+                assert!((children[0].ratio.get() - 0.5).abs() < 0.0001);
+                assert!((children[1].ratio.get() - 0.5).abs() < 0.0001);
+            }
+            LayoutTree::Leaf(_) => panic!("two remaining panes should stay in a container"),
+        }
+    }
+
+    #[gpui::test]
+    fn remove_pane_collapses_single_child_container(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let a = test_pane(cx, 2);
+        let b = test_pane(cx, 2);
+        let tree = LayoutTree::new_split(
+            SplitDirection::Horizontal,
+            LayoutTree::Leaf(a.clone()),
+            LayoutTree::Leaf(b.clone()),
+        );
+
+        let tree = tree.remove_pane(&b).expect("one pane should remain");
+
+        assert_eq!(tree.leaf_count(), 1);
+        assert_eq!(leaf_ids(&tree), vec![a.entity_id()]);
+        assert!(matches!(tree, LayoutTree::Leaf(_)));
+    }
+}

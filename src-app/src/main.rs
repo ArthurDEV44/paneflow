@@ -76,7 +76,7 @@ use gpui::{
 use gpui_platform::application;
 use notify::Watcher;
 
-use crate::pane::Pane;
+use crate::pane::{Pane, TabContent};
 use crate::terminal::TerminalView;
 use crate::workspace::Workspace;
 
@@ -820,6 +820,21 @@ impl PaneFlowApp {
         cx.subscribe(&terminal, Self::handle_terminal_event)
             .detach();
         let pane = cx.new(|cx| Pane::new(terminal, workspace_id, cx));
+        cx.subscribe(&pane, Self::handle_pane_event).detach();
+        pane
+    }
+
+    /// Create a pane around an existing tab and subscribe to pane-level events.
+    /// Terminal tabs passed here have already been wired to app-level terminal
+    /// events by their original owner; re-subscribing would duplicate CWD,
+    /// port-scan, and exit handling.
+    pub(crate) fn create_pane_with_existing_tab(
+        &mut self,
+        tab: TabContent,
+        workspace_id: u64,
+        cx: &mut Context<Self>,
+    ) -> Entity<Pane> {
+        let pane = cx.new(|cx| Pane::new_with_tab(tab, workspace_id, cx));
         cx.subscribe(&pane, Self::handle_pane_event).detach();
         pane
     }

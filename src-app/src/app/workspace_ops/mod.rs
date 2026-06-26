@@ -254,12 +254,14 @@ impl PaneFlowApp {
         if let Some(ws) = self.active_workspace()
             && ws.is_zoomed()
         {
+            self.show_toast("Unzoom before splitting panes", cx);
             return;
         }
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
             && root.leaf_count() >= MAX_PANES
         {
+            self.show_toast(format!("Maximum pane count reached ({MAX_PANES})"), cx);
             return;
         }
         // Inherit CWD from the focused pane's active terminal. `cwd_now()` is
@@ -410,6 +412,7 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         let Some(record) = self.closed_panes.pop() else {
+            self.show_toast("No closed pane to restore", cx);
             return; // No closed panes to restore
         };
 

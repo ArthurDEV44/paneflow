@@ -12,6 +12,7 @@ use notify::Watcher;
 
 use crate::layout::{LayoutTree, MAX_PANES};
 use crate::pane::{self, Pane};
+use crate::pane_drag::DropEdge;
 use crate::terminal::{self, TerminalView};
 use crate::window_chrome::title_bar;
 use crate::{PaneFlowApp, ai_types};
@@ -72,6 +73,19 @@ fn pid_is_alive(pid: u32) -> bool {
         // badge state.
         let _ = pid;
         true
+    }
+}
+
+fn split_pane_at_edge(
+    root: &mut LayoutTree,
+    target: &Entity<Pane>,
+    edge: DropEdge,
+    new_pane: Entity<Pane>,
+) {
+    let (direction, swap) = edge.to_split();
+    root.split_at_pane(target, direction, new_pane.clone());
+    if swap {
+        root.swap_panes(target, &new_pane);
     }
 }
 
@@ -370,17 +384,11 @@ impl PaneFlowApp {
                     else {
                         return;
                     };
-                    let p = cx.new(|cx| crate::pane::Pane::new_with_tab(tab, ws_id, cx));
-                    cx.subscribe(&p, Self::handle_pane_event).detach();
-                    p
+                    self.create_pane_with_existing_tab(tab, ws_id, cx)
                 };
 
-                let (direction, swap) = edge.to_split();
                 if let Some(root) = &mut self.workspaces[ws_idx].root {
-                    root.split_at_pane(target, direction, new_pane.clone());
-                    if swap {
-                        root.swap_panes(target, &new_pane);
-                    }
+                    split_pane_at_edge(root, target, edge, new_pane.clone());
                 }
 
                 // Move-only: reflow away the source pane if it emptied.
@@ -535,12 +543,8 @@ impl PaneFlowApp {
                         // `create_pane` wires the app-level CWD/port subscription
                         // and the pane-event subscription (mirrors `DropSplit`).
                         let new_pane = self.create_pane(term, ws_id, cx);
-                        let (direction, swap) = edge.to_split();
                         if let Some(root) = &mut self.workspaces[ws_idx].root {
-                            root.split_at_pane(&target, direction, new_pane.clone());
-                            if swap {
-                                root.swap_panes(&target, &new_pane);
-                            }
+                            split_pane_at_edge(root, &target, edge, new_pane.clone());
                         }
                         self.workspaces[ws_idx].propagate_custom_buttons(cx);
                         self.pending_pane_focus = Some(new_pane);
@@ -600,20 +604,13 @@ impl PaneFlowApp {
 
                 match edge {
                     Some(edge) => {
-                        let new_pane = cx.new(|cx| {
-                            crate::pane::Pane::new_with_tab(
-                                crate::pane::TabContent::Markdown(markdown),
-                                ws_id,
-                                cx,
-                            )
-                        });
-                        cx.subscribe(&new_pane, Self::handle_pane_event).detach();
-                        let (direction, swap) = edge.to_split();
+                        let new_pane = self.create_pane_with_existing_tab(
+                            crate::pane::TabContent::Markdown(markdown),
+                            ws_id,
+                            cx,
+                        );
                         if let Some(root) = &mut self.workspaces[ws_idx].root {
-                            root.split_at_pane(&target, direction, new_pane.clone());
-                            if swap {
-                                root.swap_panes(&target, &new_pane);
-                            }
+                            split_pane_at_edge(root, &target, edge, new_pane.clone());
                         }
                         self.workspaces[ws_idx].propagate_custom_buttons(cx);
                         self.pending_pane_focus = Some(new_pane);
@@ -636,6 +633,7 @@ impl PaneFlowApp {
                     && let Some(root) = &ws.root
                     && root.leaf_count() >= MAX_PANES
                 {
+                    self.show_toast(format!("Maximum pane count reached ({MAX_PANES})"), cx);
                     return;
                 }
                 // Inherit CWD and estimate initial grid size from the source terminal.

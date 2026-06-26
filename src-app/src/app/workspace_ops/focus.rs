@@ -6,7 +6,7 @@
 use gpui::{Context, Focusable, Window};
 
 use crate::PaneFlowApp;
-use crate::layout::FocusDirection;
+use crate::layout::{FocusDirection, FocusNav};
 use crate::{FocusDown, FocusLeft, FocusRight, FocusUp, JumpNextWaiting, SWAP_MODE};
 
 impl PaneFlowApp {
@@ -24,7 +24,7 @@ impl PaneFlowApp {
                 && let Some(root) = &ws.root
             {
                 // Move focus to find the target pane
-                root.focus_in_direction(dir, window, cx);
+                let moved = matches!(root.focus_in_direction(dir, window, cx), FocusNav::Moved);
                 if let Some(target) = root.focused_pane(window, cx)
                     && target != source
                 {
@@ -36,6 +36,8 @@ impl PaneFlowApp {
                     }
                     // Focus the original source pane (now at the target's position)
                     source.read(cx).focus_handle(cx).focus(window, cx);
+                } else if !moved {
+                    self.show_toast("No pane in that direction", cx);
                 }
             }
             self.save_session(cx);
@@ -45,8 +47,9 @@ impl PaneFlowApp {
 
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
+            && !matches!(root.focus_in_direction(dir, window, cx), FocusNav::Moved)
         {
-            root.focus_in_direction(dir, window, cx);
+            self.show_toast("No pane in that direction", cx);
         }
         cx.notify();
     }

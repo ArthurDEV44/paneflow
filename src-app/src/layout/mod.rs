@@ -23,7 +23,7 @@ mod render;
 mod serde;
 mod tree;
 
-pub use navigation::FocusDirection;
+pub use navigation::{FocusDirection, FocusNav};
 pub use tree::{LayoutTree, SplitDirection};
 // US-011: off-thread scrollback re-injection helper for `save_session`.
 pub(crate) use serde::fill_scrollback;

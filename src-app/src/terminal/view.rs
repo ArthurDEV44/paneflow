@@ -649,6 +649,12 @@ impl TerminalView {
             needs_initial_clear: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn display_only_for_test(workspace_id: u64, cx: &mut Context<Self>) -> Self {
+        let terminal = TerminalState::new_display_only(24, 80);
+        Self::from_terminal_state(workspace_id, terminal, cx)
+    }
 }
 
 // ---------------------------------------------------------------------------

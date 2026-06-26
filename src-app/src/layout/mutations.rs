@@ -158,3 +158,88 @@ impl LayoutTree {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui::{AppContext, Entity, TestAppContext};
+
+    use crate::pane::Pane;
+    use crate::terminal::TerminalView;
+
+    use super::*;
+
+    fn test_pane(cx: &mut impl AppContext, workspace_id: u64) -> Entity<Pane> {
+        let terminal = cx.new(|cx| TerminalView::display_only_for_test(workspace_id, cx));
+        cx.new(|cx| Pane::new(terminal, workspace_id, cx))
+    }
+
+    fn leaf_ids(tree: &LayoutTree) -> Vec<gpui::EntityId> {
+        tree.collect_leaves()
+            .into_iter()
+            .map(|pane| pane.entity_id())
+            .collect()
+    }
+
+    fn child_ratios(tree: &LayoutTree) -> Vec<f32> {
+        match tree {
+            LayoutTree::Container { children, .. } => {
+                children.iter().map(|child| child.ratio.get()).collect()
+            }
+            LayoutTree::Leaf(_) => Vec::new(),
+        }
+    }
+
+    #[gpui::test]
+    fn split_at_pane_inserts_sibling_for_matching_direction(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let a = test_pane(cx, 1);
+        let b = test_pane(cx, 1);
+        let c = test_pane(cx, 1);
+        let mut tree = LayoutTree::new_split(
+            SplitDirection::Vertical,
+            LayoutTree::Leaf(a.clone()),
+            LayoutTree::Leaf(b.clone()),
+        );
+
+        assert!(tree.split_at_pane(&a, SplitDirection::Vertical, c.clone()));
+
+        assert_eq!(tree.leaf_count(), 3);
+        assert_eq!(
+            leaf_ids(&tree),
+            vec![a.entity_id(), c.entity_id(), b.entity_id()]
+        );
+        let ratios = child_ratios(&tree);
+        assert_eq!(ratios.len(), 3);
+        assert!((ratios[0] - 0.25).abs() < f32::EPSILON);
+        assert!((ratios[1] - 0.25).abs() < f32::EPSILON);
+        assert!((ratios[2] - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[gpui::test]
+    fn split_at_pane_wraps_cross_direction_target(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let a = test_pane(cx, 2);
+        let b = test_pane(cx, 2);
+        let c = test_pane(cx, 2);
+        let mut tree = LayoutTree::new_split(
+            SplitDirection::Vertical,
+            LayoutTree::Leaf(a.clone()),
+            LayoutTree::Leaf(b.clone()),
+        );
+
+        assert!(tree.split_at_pane(&a, SplitDirection::Horizontal, c.clone()));
+
+        assert_eq!(tree.leaf_count(), 3);
+        assert_eq!(
+            leaf_ids(&tree),
+            vec![a.entity_id(), c.entity_id(), b.entity_id()]
+        );
+        match tree {
+            LayoutTree::Container { children, .. } => {
+                assert!(matches!(children[0].node, LayoutTree::Container { .. }));
+                assert!(matches!(children[1].node, LayoutTree::Leaf(_)));
+            }
+            LayoutTree::Leaf(_) => panic!("split should keep a container root"),
+        }
+    }
+}
