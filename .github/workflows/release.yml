@@ -75,19 +75,14 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runs-on }}
-    # Every leg is hard-required as of 2026-05-27. The lifted expression
-    # used to allow best-effort legs (Intel Mac, Windows x64) to fail
-    # without blocking the release; both legs are now CLOSED targets
-    # entirely, so no matrix entry sets continue-on-error and this
-    # expression always resolves to `false`. Kept as a one-line lever
-    # in case a future best-effort leg needs reintroducing.
-    continue-on-error: ${{ matrix.continue-on-error == true }}
+    # Every matrix leg is hard-required. A failed Linux, macOS, or
+    # Windows build must fail the whole release workflow and block
+    # publishing.
     strategy:
-      # fail-fast: true keeps the cross-arch Linux matrix atomic - a broken
-      # aarch64 Linux build cancels the x86_64 leg and vice versa, so we
-      # never ship a half-matrix Linux release. The macOS Intel leg below
-      # opts OUT of this via `continue-on-error: true` (AC5): a best-effort
-      # Intel failure is allowed to not block the release cut.
+      # fail-fast: true keeps the four-platform build matrix atomic: a
+      # broken target cancels queued siblings where possible, and any
+      # completed failure fails `build`, blocking publish and downstream
+      # release gates.
       fail-fast: true
       matrix:
         include:
@@ -122,13 +117,12 @@ jobs:
           # Signing is provisioned for the Strivex subscription (account
           # strivex-signing, cert profile StriveX-Release; the 6 AZURE_*
           # secrets are set - see memory/project_windows_signing.md).
-          # best-effort (continue-on-error) for the first cuts; promote to
-          # hard-required after 2-3 green Windows releases. The historical
-          # closure note is kept further down for context.
+          # Hard-required since 2026-06-26: Windows is a release target, so
+          # any Windows build, signing, packaging, or staging failure must
+          # fail the workflow.
           - target: x86_64-pc-windows-msvc
             arch: x86_64
             runs-on: windows-2022
-            continue-on-error: true
           # CLOSED TARGET - x86_64-apple-darwin (Intel Mac / macos-13)
           # Decision: 2026-04-21 (US-008, v0.2.1). Removed from the
           # matrix entirely until v0.3.0's macOS release cut. Two
@@ -147,38 +141,11 @@ jobs:
           # refactor of the `Publish` job's `needs:` to not block on
           # best-effort legs. See docs/release-runbook.md §"Supported
           # release targets" for the authoritative status list.
-          # CLOSED TARGET - x86_64-pc-windows-msvc (Windows x64)
-          # Decision: 2026-05-27. Removed from the matrix entirely
-          # until Azure Trusted Signing is provisioned for the
-          # Strivex subscription ($9.99/mo Basic - see
-          # memory/project_windows_signing.md for the rotation +
-          # secret-list and the post-onboarding restoration runbook).
-          # Without a Code Signing Certificate the MSI built by this
-          # leg would publish as unsigned, which (a) trips Microsoft
-          # Defender SmartScreen "Windows protected your PC" prompts
-          # on first install and (b) makes the winget submission
-          # validator reject the manifest (winget requires either a
-          # signed installer or an explicit InstallerSignatureSha256
-          # null, which downstream auto-update tooling cannot honor).
-          # The historical entry was:
-          #     - target: x86_64-pc-windows-msvc
-          #       arch: x86_64
-          #       runs-on: windows-2022
-          #       continue-on-error: true
-          # Restoration steps once Trusted Signing is live:
-          #   1. Add the 6 GH Secrets listed in
-          #      memory/project_windows_signing.md to the repo's
-          #      Actions secrets.
-          #   2. Restore the matrix entry above.
-          #   3. Flip `windows_check` / `windows_render_smoke` /
-          #      `windows_aarch64_check` `if: false` → original
-          #      expression in run_tests.yml.
-          #   4. Recreate update_winget.yml (removed 2026-05-28 while
-          #      Windows is out of scope -- restore from git history) with
-          #      its `release: published` trigger.
-          # The downstream `release` job already drops Windows
-          # assets from its `release-assets-*` glob whenever this
-          # leg is absent, so no other change is required.
+          # Historical Windows closure context: Windows was absent from
+          # the matrix while Trusted Signing was not provisioned because
+          # an unsigned MSI would trigger SmartScreen and fail winget
+          # validation. Now that the Windows leg is restored, it is a
+          # hard release gate like Linux and macOS.
 
     steps:
       - uses: actions/checkout@v5
@@ -930,9 +897,7 @@ jobs:
       # signal that the asset was published unsigned. When secrets are
       # absent the leg leaves the unsigned `.app` in `dist/` for local
       # inspection, prints the warning banner from the previous step, and
-      # produces no release asset. The leg's `continue-on-error: true`
-      # absorbs the resulting empty-asset condition without blocking the
-      # Linux release legs.
+      # produces no release asset.
       #
       # The output filename `paneflow-<tag>-<arch>-apple-darwin.dmg` is
       # chosen to match US-008's `update_checker.rs::pick_asset`; any
@@ -1016,13 +981,6 @@ jobs:
       # cargo-wix at all - the build/test/clippy validation above is what
       # we need for cross-platform coverage. Once the secrets land, this
       # whole chain re-activates without any other workflow change.
-      #
-      # ┌─ NOTE to US-017 implementer ────────────────────────────────────┐
-      # │ AC-4 of US-016 requires the Windows matrix entry to carry       │
-      # │ `continue-on-error: true` (parity with Intel Mac, line 59), so  │
-      # │ an Azure signing outage does not block Linux/macOS legs from    │
-      # │ publishing. Copy the Intel Mac entry pattern - do NOT omit.     │
-      # └─────────────────────────────────────────────────────────────────┘
       #
       # windows-2022 preinstalls WiX 3.14.1.8722. signtool.exe lives in
       # the Windows 10/11 SDK but is NOT resolved here: sign-windows.ps1
@@ -1456,15 +1414,10 @@ jobs:
   # GitHub Release exactly once with the merged file set.
   #
   # Atomic-release guarantee (PRD AC6): `needs: [build]` waits for
-  # every matrix leg to finish. `fail-fast: true` + hard-required legs
-  # (Linux x64/aarch64, macOS aarch64) propagate a failure to cancel
-  # siblings and fail `build`, so this job never runs on a broken
-  # hard-required leg. Best-effort legs (Intel Mac, Windows - both
-  # `continue-on-error: true`) are excluded from `fail-fast`: a failure
-  # there is allowed, the `build` job is still marked success, and the
-  # release ships without those assets. This keeps the release-day
-  # blast radius bounded to the platforms the user base actually
-  # depends on while letting experimental/best-effort legs ride along.
+  # every matrix leg to finish. `fail-fast: true` plus hard-required
+  # Linux x64, Linux aarch64, macOS aarch64, and Windows x64 legs means
+  # any failed build leg fails `build`, so this job never publishes from
+  # a broken platform matrix.
   release:
     name: Publish GitHub Release
     # US-003: skip the entire publish chain in dry-run mode. The
@@ -1509,7 +1462,7 @@ jobs:
     # validated in a follow-up dry-run dispatch.
     #
     # KEPT (validated on v0.2.11 release path):
-    #   - build (hard-required + best-effort matrix)
+    #   - build (hard-required four-platform matrix)
     #   - smoke-test-ubuntu
     #   - smoke-test-fedora
     #
