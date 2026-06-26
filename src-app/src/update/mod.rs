@@ -51,22 +51,22 @@ pub mod migrations;
 // `update/linux/targz.rs`, not re-exported to avoid a dead `pub use`).
 pub use error::UpdateError;
 
-// US-005 - Unix-only; the `set_mode` callsite in `download_installer` is
-// cfg-guarded symmetrically. Windows self-update takes the MSI path
-// (EP-W4) and never chmods.
-#[cfg(unix)]
+// US-005 - Linux-only legacy `.run`; the `set_mode` callsite in
+// `download_installer` is cfg-guarded symmetrically. Windows self-update
+// takes the MSI path and macOS takes the DMG path, so neither compiles this.
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-// US-008 - timeout constant is only referenced from the Unix-only legacy
-// `.run` downloader. Gate it symmetrically so non-Unix builds don't carry
-// a dead const (clippy `dead_code` is `-D warnings` in release.yml).
-#[cfg(unix)]
+// US-008 - timeout constant is only referenced from the Linux-only legacy
+// `.run` downloader. Gate it symmetrically so other targets don't carry a
+// dead const (clippy `dead_code` is `-D warnings` in release.yml).
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 /// Upper bound on the legacy `.run` installer download (US-001). Kept in
 /// sync with the constant of the same name in `checker.rs`, `linux/targz.rs`,
 /// and `linux/appimage.rs`; a bump here should bump those too.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 use anyhow::{Context, Result};
@@ -114,12 +114,12 @@ impl SelfUpdateStatus {
 /// don't spike memory. Blocking ureq is fine here - the caller runs us in
 /// `smol::unblock` / `cx.background_spawn`.
 ///
-/// US-008: Unix-only. The `.run` installer is a bash self-extracting script
+/// US-008: Linux-only. The `.run` installer is a bash self-extracting script
 /// that never runs on Windows/macOS - those platforms take the MSI (EP-W4 /
 /// US-010) and DMG (EP-M / US-009) paths respectively. Gating at compile
 /// time makes the invariant enforceable by the compiler and prevents a
-/// future dispatch regression from silently reaching this code on non-Unix.
-#[cfg(unix)]
+/// future dispatch regression from silently reaching this code elsewhere.
+#[cfg(target_os = "linux")]
 pub fn download_installer(asset_url: &str) -> Result<PathBuf> {
     let target = std::env::temp_dir().join(format!("paneflow-update-{}.run", std::process::id()));
 
@@ -157,7 +157,7 @@ pub fn download_installer(asset_url: &str) -> Result<PathBuf> {
     // chmod +x - the installer is a bash self-extracting script, it needs
     // execute permission to run. Windows never takes this path (the .run
     // flow is Linux-only; Windows uses the MSI flow from EP-W4).
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         let mut perms = std::fs::metadata(&target)?.permissions();
         perms.set_mode(0o755);
@@ -173,8 +173,8 @@ pub fn download_installer(asset_url: &str) -> Result<PathBuf> {
 /// The installer is non-interactive: it extracts its payload and copies the
 /// new binary to `~/.local/bin/paneflow`, then exits. No stdin is forwarded.
 ///
-/// US-008: Unix-only - see [`download_installer`] for rationale.
-#[cfg(unix)]
+/// US-008: Linux-only - see [`download_installer`] for rationale.
+#[cfg(target_os = "linux")]
 pub fn run_installer(path: &std::path::Path) -> Result<()> {
     let output = std::process::Command::new(path)
         .stdin(std::process::Stdio::null())
