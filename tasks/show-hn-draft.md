@@ -2,51 +2,35 @@
 
 Document de travail. On construit le post étape par étape, section par section.
 
-## Titre (validé le 2026-06-18)
+## Titre
 
 ```
-Show HN: Paneflow - cross-platform GPUI workspace for parallel coding agents
+Show HN: Paneflow - cross-platform GPUI app for parallel coding agents
 ```
 
-76 caractères (limite Hacker News : 80).
+70 caractères (limite Hacker News : 80). Angle retenu : app native cross-platform en GPUI pour piloter plusieurs agents en parallèle.
 
 ## Texte du post
 
-### Version FR (V3 - cadrage workspace)
+### Version FR
 
-> La version postée sera en anglais (HN oblige). Le français sert à valider le fond. Conservée pour comparaison avec la V4.
+Je fais tourner beaucoup d'agents de code en parallèle sur mes projets, notamment Claude Code, Codex, OpenCode ou d'autres CLI. Les lancer n'a jamais été le problème. Le vrai problème, c'était de garder une vue fiable de tout ce qui tourne : lequel réfléchit, lequel attend une réponse, lequel a fini, sur quelle branche.
 
-Je lançais plusieurs agents de codage en parallèle sur le même repo, le plus souvent Claude Code et Codex, parfois plus. Dans une grille tmux, ou pire une dizaine de fenêtres Ghostty avec plusieurs sessions Claude Code dans chacune, je perdais le fil en continu : lequel réfléchit, lequel attend une réponse de ma part, lequel a fini. Chaque changement de branche git emportait le contexte avec lui. J'adore Ghostty, mais empiler dix de ses fenêtres, chacune avec son propre renderer, finit par peser lourd sur la machine.
+Dans une grille tmux, ou dans une dizaine de fenêtres Ghostty avec plusieurs sessions dans chacune, la charge mentale monte vite. À un moment, ce n'est plus un problème de terminal : c'est un problème de coordination. Ghostty est très bien, mais chaque fenêtre relance son propre renderer GPU, donc cette façon de travailler finit aussi par peser sur la machine.
 
-La plupart des orchestrateurs que j'ai testés étaient soit des apps Electron ou Tauri dont la latence me gênait, soit des apps natives réservées à macOS. Je voulais quelque chose de natif qui tourne aussi sur ma machine Linux, alors je l'ai construit en Rust sur GPUI, le framework d'interface de Zed. Paneflow tourne sur Linux, macOS et Windows, sans WSL. Un seul process rend tous les panes : il démarre dans les 40-50 MB et reste autour de 110 MB (PSS) même avec une trentaine de panes ouverts, là où chaque fenêtre Ghostty séparée charge son propre renderer GPU.
+Alors je l'ai construit. Paneflow, un workspace natif en Rust sur GPUI, le framework de Zed. Il tourne sur Linux, macOS et Windows, sans WSL ni Electron. Il est pensé pour alléger à la fois la charge mentale et la charge machine.
 
-Les agents peuvent lire le terminal des autres. Paneflow embarque un serveur MCP en lecture seule (`paneflow mcp install` le câble dans Claude Code, Codex, Gemini et opencode) avec trois outils : list_panes, read_pane et search_pane. Claude Code dans un pane peut lire la sortie de tests que Codex vient de produire dans un autre, ou grep une erreur dans le scrollback d'un autre agent, sans que je copie-colle entre les fenêtres.
+Le vrai pari est la coordination. J'ai appelé ce système Paneflow Conductor : tout ce que je peux faire dans Paneflow, un agent peut le faire aussi par la même CLI et le même socket local. Je peux tout piloter à la main, ou laisser un agent en coordonner trois autres pendant que je supervise et reprends la main sur n'importe quelle pane. Quand plusieurs agents travaillent sur la même branche, ils ne restent pas chacun dans leur coin : Paneflow détecte les changements du repo, expose l'état de chaque pane, et permet à un agent de lire la sortie d'un autre avant d'agir pour réduire les chevauchements.
 
-Les agents pilotent ce serveur via un socket JSON-RPC local, et tout le reste aussi. La sidebar lit l'état de chaque agent directement depuis ses hooks CLI (réfléchit, attend, a fini, bloqué), pas par polling, et déclenche une notification desktop en fin de tour quand la fenêtre n'a pas le focus.
+Si tu connais les Agent Teams de Claude Code ou les workflows de type swarm, le modèle mental est proche : un leader qui délègue. La différence, c'est que Paneflow Conductor n'est pas un swarm fermé dans un seul outil. Il transforme chaque pane en terminal pilotable et observable. Par exemple Claude Code peut piloter un pane Codex CLI, un OpenCode, un Droid CLI ou une autre CLI prise en charge dans Paneflow.
 
-Quand je veux isoler des tâches, chacune tourne sur sa propre branche dans un worktree git dédié, et je vois alors tous les diffs côte à côte dans une seule vue, une colonne par worktree. Chaque colonne a son propre agent intégré juste en dessous : un clic sur une ligne pré-remplit une demande à cet agent pour qu'il l'explique ou la corrige, et c'est moi qui valide, sans quitter la vue. Chaque colonne porte aussi l'agent qui l'a produite, son modèle, et une estimation de son coût en dollars, avec un total à travers tous les worktrees.
+`paneflow ps` liste les panes et agents en cours avec leur état réel. `paneflow watch` streame les changements en JSONL, poussés par les hooks et l'event bus, sans polling. Un agent peut donc voir ce qui tourne, lire l'état d'un pane, envoyer un prompt à un autre agent et attendre un event, le tout via la CLI publique.
 
-C'est scriptable jusqu'en bas : un fichier flow.toml décrit un DAG d'étapes d'agents (dépendances, relais conditionnés par regex, variables capturées) que `paneflow flow run` exécute contre une fenêtre live.
+Par défaut, les prompts sont pré-remplis et c'est moi qui appuie sur Entrée. Le mode auto-submit est opt-in, et les lectures inter-panes restent encadrées par une protection anti-injection qui traite la sortie terminal comme non fiable.
 
-Gratuit et open source (GPL-3.0-or-later).
-Démo : [lien vidéo]
-Repo : https://github.com/ArthurDEV44/paneflow
+Les agents peuvent aussi lire le terminal des autres en lecture seule via le serveur MCP intégré (`list_panes`, `read_pane`, `search_pane`). Claude Code dans un pane peut lire la sortie de test que Codex vient de produire dans un autre, sans copier-coller.
 
-### Version FR (V4 - cadrage control plane)
-
-> Reframe complet, maintenant que le control plane est shippé : le wedge devient "tu pilotes, ou un agent pilote", plus "workspace multi-agent". RAM + vécu Ghostty (re-render par fenêtre) réintégrés de la V3. flow.toml et notif desktop coupés du corps (à garder pour les commentaires). À poster seulement une fois le conductor testé vert.
-
-Je fais tourner plein d'agents de code en parallèle sur mes projets, surtout Claude Code et Codex, parfois OpenCode ou Gemini. Les lancer n'a jamais été le problème. Garder le fil, si : lequel réfléchit, lequel attend une réponse de ma part, lequel a fini, sur quelle branche. Dans une grille tmux, ou pire une dizaine de fenêtres Ghostty empilées avec plusieurs sessions dans chacune, je perdais le contexte en continu. J'adore Ghostty, mais chaque fenêtre relance son propre renderer GPU, donc dix fenêtres finissent par peser lourd sur la machine. Et surtout, je ne pouvais rien savoir de l'état des agents par programme : je devais scraper le scrollback et poller.
-
-Alors je l'ai construit. Paneflow est un workspace natif, en Rust sur GPUI (le framework de Zed), qui tourne sur Linux, macOS et Windows, sans WSL ni Electron. Un seul process rend tous les panes : il démarre dans les 40-50 MB et reste autour de 110 MB (PSS) même avec une trentaine de panes ouverts, là où chaque fenêtre séparée rechargerait son propre renderer GPU.
-
-Mais le vrai pari est ailleurs : tout ce que je peux faire dans Paneflow, un agent peut le faire aussi, par la même CLI et le même socket. Je pilote la flotte à la main, ou je laisse un agent la piloter pendant que je supervise. C'est moi qui règle le curseur, tâche par tâche.
-
-Il y a un vrai plan de contrôle, lisible et poussé. `paneflow ps` liste tous les agents en cours avec leur état en un appel. `paneflow watch` streame les changements d'état en JSONL, poussés, sans polling. Un agent conducteur peut donc énumérer la flotte, lire l'état réel de chaque pane, dispatcher un prompt à un pair et attendre un event, le tout via la CLI publique. J'ai un agent qui en orchestre trois autres pendant que je garde la main sur n'importe quelle pane.
-
-Par défaut, tout passe par moi : les prompts sont pré-remplis, c'est moi qui appuie sur Entrée. Un mode accès libre, débrayable et opt-in, laisse un conducteur soumettre à ma place quand je l'assume, idéalement sur des worktrees isolés. Une protection anti-injection reste active même dans ce mode : la sortie d'un agent est traitée comme non fiable, pour qu'un repo piégé ne détourne pas mon conducteur.
-
-Le reste découle de là. Les agents lisent le terminal des autres en lecture seule (un serveur MCP : list_panes, read_pane, search_pane). Et je revois les diffs de tous mes projets et de tous leurs worktrees dans une seule vue au lieu d'ouvrir 40 IDE, chaque colonne taguée avec l'agent qui l'a produite, son modèle et son coût estimé.
+Quand je veux isoler le travail, chaque tâche tourne sur sa propre branche dans un worktree git dédié. Je peux revoir tous les diffs côte à côte dans la vue Review, une colonne par worktree, avec l'agent, le modèle et une estimation de coût par colonne, sans basculer entre des fenêtres ou éditeurs séparés.
 
 Gratuit et open source (GPL-3.0-or-later), pensé pour les power users qui pilotent plusieurs agents, pas pour remplacer ton éditeur.
 
@@ -55,17 +39,23 @@ Repo : https://github.com/ArthurDEV44/paneflow
 
 ### Version EN (à poster)
 
-I run a lot of coding agents in parallel on the same repo. Usually Claude Code and Codex, sometimes more. In a tmux grid, or worse a dozen Ghostty windows each running a few Claude Code sessions, I kept losing the thread: which one is thinking, which is waiting on me, which is done. Switch a git branch and the context goes with it. I love Ghostty, but ten of its windows, each with its own renderer, gets heavy fast.
+I run a lot of coding agents in parallel on my projects, mostly Claude Code and Codex, sometimes OpenCode or Gemini. Starting them was never the hard part. Keeping a reliable view of everything running was: which one is thinking, which one is waiting on me, which one finished, which branch it is on, and how to act on that without scraping scrollback or polling a terminal.
 
-Most orchestrators I tried were either Electron or Tauri apps with latency I could feel, or native apps locked to macOS. I wanted something native that also ran on Linux, so I built it in Rust on GPUI, the UI framework behind Zed. Paneflow runs on Linux, macOS and Windows. No WSL. One process renders every pane: it starts in the 40-50 MB range and stays around 110 MB (PSS) with thirty-odd panes open, where each separate Ghostty window would load its own GPU renderer.
+In a tmux grid, or worse a dozen Ghostty windows with a few sessions in each, I kept losing context. I love Ghostty, but each separate window brings its own GPU renderer, so that workflow also gets heavy fast.
 
-Agents can read each other's terminals. Paneflow ships a read-only MCP server (`paneflow mcp install` wires it into Claude Code, Codex, Gemini and opencode) with three tools: list_panes, read_pane, search_pane. Claude Code in one pane can read the test output Codex just produced in another, or grep another agent's scrollback for an error. No copy-paste between windows.
+So I built Paneflow: a native workspace in Rust on GPUI, the UI framework behind Zed. It runs on Linux, macOS and Windows. No WSL, no Electron. One process renders every pane; on my live Linux workstation it stays around 110 MB PSS with roughly thirty panes open.
 
-Agents drive that server over a local JSON-RPC socket. So does everything else. The sidebar reads each agent's state straight from its CLI hooks (thinking, waiting, done, stalled), not by polling, and fires a desktop notification at the end of a turn when the window isn't focused.
+The bigger bet is coordination. I called this system Paneflow Conductor: anything I can do in Paneflow, an agent can do through the same CLI and local socket. I can drive everything by hand, or let one agent coordinate three others while I keep the window open and can take over any pane. It also makes same-branch multi-agent work less blind: each agent can see the other panes' state, read their output, and react to changes landing in the repo.
 
-When I want to isolate work, each task runs on its own branch in a dedicated git worktree, and I get all the diffs side by side in one view, one column per worktree. Each column has its own agent embedded right below it. Click a line and it pre-fills a prompt asking that agent to explain or fix it, and I'm the one who hits Enter, without leaving the view. Each column is also tagged with the agent that wrote it, its model, and an estimate of what it cost in dollars, with a running total across all worktrees.
+If you have used Claude Code Agent Teams or swarm-style workflows, the mental model is similar: a lead agent delegates. The difference is that Paneflow Conductor is not a closed swarm inside one tool. It turns every pane into a controllable, observable terminal. For example, Claude Code can drive a Codex CLI pane, OpenCode, Droid CLI, or any other CLI supported in Paneflow.
 
-It's scriptable all the way down. A flow.toml file describes a DAG of agent steps (dependencies, regex-gated handoffs, captured variables), and `paneflow flow run` runs it against a live window.
+`paneflow ps` lists the running panes and agents with their real state. `paneflow watch` streams state changes as JSONL, pushed by hooks and the event bus instead of polling. An agent can see what is running, read a pane's current state, send a prompt to another agent, and wait for an event, all through the public CLI.
+
+By default, prompts are pre-filled and I still press Enter. Auto-submit is opt-in, and cross-pane reads stay wrapped as untrusted terminal output so a repo or agent transcript cannot silently hijack the run.
+
+Agents can also read each other's terminals through the built-in read-only MCP bridge (`list_panes`, `read_pane`, `search_pane`). Claude Code in one pane can read the test output Codex just produced in another without me copy-pasting between windows.
+
+When I want isolation, each task runs on its own branch in a dedicated git worktree. I can review every diff side by side in one view, one column per worktree, tagged with the agent, model, and estimated cost for that column, without switching across separate editors or windows.
 
 Free and open source (GPL-3.0-or-later).
 Demo: [video link]
@@ -209,7 +199,7 @@ Le delta = ce que coûtent N renderers GPU séparés vs 1 renderer mutualisé.
 - [ ] Repo, site et README alignés (FAIT).
 - [ ] Social preview GitHub uploadée (Settings > General), testée en collant le lien repo dans un champ X/LinkedIn.
 - [ ] Démo vidéo uploadée, lien testé en navigation privée.
-- [ ] Titre final tranché (workspace vs terminal, cf section Titre).
+- [ ] Titre final tranché (angle cross-platform GPUI app, cf section Titre).
 - [ ] Chiffres RAM "à vide" + comparatif Ghostty mesurés (section Notes RAM), screenshot prêt.
 - [ ] Premier commentaire prêt à coller (clarifications + méthodo RAM).
 - [ ] Liens du post testés un par un (repo, download, démo).
@@ -226,8 +216,8 @@ Raison : voix off anglaise non-native = risque downside élevé sur HN (lecture 
 
 ### Déroulé de soumission
 
-1. Sur news.ycombinator.com/submit : **title** = `Show HN: Paneflow - cross-platform GPUI workspace for parallel coding agents`, **url** = `https://github.com/ArthurDEV44/paneflow` (le repo : stars + audience dev), **text** = vide (si l'URL est remplie, le champ texte n'est pas utilisé).
-2. **Juste après**, poster le texte EN (le "I run a lot of coding agents...") en **premier commentaire** d'auteur, avec le lien démo YouTube + le lien download dedans.
+1. Sur news.ycombinator.com/submit : **title** = `Show HN: Paneflow - cross-platform GPUI app for parallel coding agents`, **url** = `https://github.com/ArthurDEV44/paneflow` (le repo : stars + audience dev), **text** = vide (si l'URL est remplie, le champ texte n'est pas utilisé).
+2. **Juste après**, poster la **Version EN (à poster)** en **premier commentaire** d'auteur, avec le lien démo YouTube + le lien download dedans.
 3. Le post arrive dans /newest, invisible du grand public à ce stade.
 4. Monter en front page (home, top ~30, le trafic) = upvotes rapides + peu de flags. L'algo favorise la vélocité des 1-2 premières heures, pas le total. D'où le créneau.
 5. Si ça prend : pic de clics/stars/downloads. Si ça ne prend pas : un repost espacé est toléré si le 1er n'a eu aucune attention.
