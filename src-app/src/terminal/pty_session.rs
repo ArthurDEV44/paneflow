@@ -9,6 +9,7 @@
 //! Extracted from `terminal.rs` per US-012 of the src-app refactor PRD.
 
 use std::borrow::Cow;
+use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 use alacritty_terminal::Term;
@@ -223,6 +224,7 @@ pub struct TerminalState {
     pub term: Arc<FairMutex<Term<ZedListener>>>,
     pub notifier: PtyNotifier,
     pub(super) events_rx: Option<UnboundedReceiver<AlacEvent>>,
+    cwd_rx: Option<UnboundedReceiver<String>>,
     pub exited: Option<i32>,
     /// US-002: set true once any user input (keystroke, paste, mouse report,
     /// IME commit, user scroll) has been written via `write_to_pty`.
@@ -249,10 +251,9 @@ pub struct TerminalState {
     pty_master_fd: Option<i32>,
     /// Terminal title set via OSC 0/2 escape sequences (e.g. shell prompt, Claude Code).
     pub title: String,
-    /// Current working directory of the shell process. EP-002 US-007: derived
-    /// from the process table via `cwd_now()` (proc/libproc), polled in
-    /// `sync_channels`. The pre-VTE OSC 7 byte-scanner was removed with the
-    /// 2-thread reader (the EventLoop owns the read path with no pre-parse hook).
+    /// Current working directory of the shell process. EP-002 US-007: OSC 7
+    /// updates are captured by the PTY byte tap before Alacritty consumes the
+    /// sequence; Unix/macOS also refresh from the process table via `cwd_now()`.
     pub current_cwd: Option<String>,
     /// User-assigned custom name (US-013). When `Some`, it overrides the
     /// auto-derived surface name in `surface.list` / MCP / the sidebar, and is
@@ -386,8 +387,248 @@ pub(super) struct SpawnedPty {
     /// first `cwd_now()` poll - and at all on Windows, where `cwd_now()` is a
     /// stub.
     cwd: std::path::PathBuf,
+    cwd_rx: UnboundedReceiver<String>,
     #[cfg(target_os = "macos")]
     pty_master_fd: Option<i32>,
+}
+
+const OSC7_MAX_PAYLOAD: usize = 4096;
+
+#[derive(Debug, Default)]
+enum Osc7ScanState {
+    #[default]
+    Ground,
+    Esc,
+    Osc,
+    OscEsc,
+}
+
+#[derive(Debug, Default)]
+struct Osc7Scanner {
+    state: Osc7ScanState,
+    payload: Vec<u8>,
+}
+
+impl Osc7Scanner {
+    fn advance<F>(&mut self, bytes: &[u8], mut emit: F)
+    where
+        F: FnMut(String),
+    {
+        for &byte in bytes {
+            match self.state {
+                Osc7ScanState::Ground => {
+                    if byte == 0x1b {
+                        self.state = Osc7ScanState::Esc;
+                    }
+                }
+                Osc7ScanState::Esc => {
+                    if byte == b']' {
+                        self.payload.clear();
+                        self.state = Osc7ScanState::Osc;
+                    } else if byte != 0x1b {
+                        self.state = Osc7ScanState::Ground;
+                    }
+                }
+                Osc7ScanState::Osc => match byte {
+                    0x07 => self.finish(&mut emit),
+                    0x1b => self.state = Osc7ScanState::OscEsc,
+                    _ => self.push_payload_byte(byte),
+                },
+                Osc7ScanState::OscEsc => {
+                    if byte == b'\\' {
+                        self.finish(&mut emit);
+                    } else {
+                        self.push_payload_byte(0x1b);
+                        if byte == 0x1b {
+                            self.state = Osc7ScanState::OscEsc;
+                        } else {
+                            self.push_payload_byte(byte);
+                            self.state = Osc7ScanState::Osc;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn push_payload_byte(&mut self, byte: u8) {
+        if self.payload.len() < OSC7_MAX_PAYLOAD {
+            self.payload.push(byte);
+        } else {
+            self.state = Osc7ScanState::Ground;
+            self.payload.clear();
+        }
+    }
+
+    fn finish<F>(&mut self, emit: &mut F)
+    where
+        F: FnMut(String),
+    {
+        if let Ok(payload) = std::str::from_utf8(&self.payload)
+            && let Some(cwd) = cwd_from_osc7_payload(payload)
+        {
+            emit(cwd);
+        }
+        self.state = Osc7ScanState::Ground;
+        self.payload.clear();
+    }
+}
+
+struct Osc7Pty<T: tty::EventedPty> {
+    inner: T,
+    scanner: Osc7Scanner,
+    cwd_tx: UnboundedSender<String>,
+}
+
+impl<T: tty::EventedPty> Osc7Pty<T> {
+    fn new(inner: T, cwd_tx: UnboundedSender<String>) -> Self {
+        Self {
+            inner,
+            scanner: Osc7Scanner::default(),
+            cwd_tx,
+        }
+    }
+}
+
+impl<T: tty::EventedPty> Read for Osc7Pty<T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.reader().read(buf)?;
+        let cwd_tx = self.cwd_tx.clone();
+        self.scanner.advance(&buf[..read], |cwd| {
+            let _ = cwd_tx.unbounded_send(cwd);
+        });
+        Ok(read)
+    }
+}
+
+impl<T: tty::EventedPty> Write for Osc7Pty<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.writer().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.writer().flush()
+    }
+}
+
+impl<T: tty::EventedPty> tty::EventedReadWrite for Osc7Pty<T> {
+    type Reader = Self;
+    type Writer = Self;
+
+    unsafe fn register(
+        &mut self,
+        poller: &Arc<polling::Poller>,
+        event: polling::Event,
+        mode: polling::PollMode,
+    ) -> io::Result<()> {
+        unsafe { self.inner.register(poller, event, mode) }
+    }
+
+    fn reregister(
+        &mut self,
+        poller: &Arc<polling::Poller>,
+        event: polling::Event,
+        mode: polling::PollMode,
+    ) -> io::Result<()> {
+        self.inner.reregister(poller, event, mode)
+    }
+
+    fn deregister(&mut self, poller: &Arc<polling::Poller>) -> io::Result<()> {
+        self.inner.deregister(poller)
+    }
+
+    fn reader(&mut self) -> &mut Self::Reader {
+        self
+    }
+
+    fn writer(&mut self) -> &mut Self::Writer {
+        self
+    }
+}
+
+impl<T: tty::EventedPty> tty::EventedPty for Osc7Pty<T> {
+    fn next_child_event(&mut self) -> Option<tty::ChildEvent> {
+        self.inner.next_child_event()
+    }
+}
+
+impl<T> alacritty_terminal::event::OnResize for Osc7Pty<T>
+where
+    T: tty::EventedPty + alacritty_terminal::event::OnResize,
+{
+    fn on_resize(&mut self, window_size: AlacWindowSize) {
+        self.inner.on_resize(window_size);
+    }
+}
+
+fn cwd_from_osc7_payload(payload: &str) -> Option<String> {
+    let rest = payload.strip_prefix("7;file://")?;
+    let path = if rest.starts_with('/') {
+        Cow::Borrowed(rest)
+    } else {
+        let (_, path) = rest.split_once('/')?;
+        Cow::Owned(format!("/{path}"))
+    };
+    let decoded = percent_decode_uri_path(&path)?;
+    #[cfg(windows)]
+    if let Some(msys_path) = msys_path_to_windows_path(&decoded) {
+        return Some(msys_path);
+    }
+    if decoded.len() >= 3
+        && decoded.as_bytes()[0] == b'/'
+        && decoded.as_bytes()[1].is_ascii_alphabetic()
+        && decoded.as_bytes()[2] == b':'
+    {
+        Some(decoded[1..].replace('/', "\\"))
+    } else {
+        Some(decoded)
+    }
+}
+
+#[cfg(windows)]
+fn msys_path_to_windows_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    if bytes.len() < 2
+        || bytes[0] != b'/'
+        || !bytes[1].is_ascii_alphabetic()
+        || (bytes.len() > 2 && bytes[2] != b'/')
+    {
+        return None;
+    }
+
+    let drive = (bytes[1] as char).to_ascii_uppercase();
+    if bytes.len() == 2 {
+        Some(format!("{drive}:\\"))
+    } else {
+        Some(format!("{drive}:\\{}", path[3..].replace('/', "\\")))
+    }
+}
+
+fn percent_decode_uri_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = bytes.get(i + 1).copied().and_then(hex_value)?;
+            let lo = bytes.get(i + 2).copied().and_then(hex_value)?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Foreground (main-thread) signal mask, captured so an off-thread PTY spawn
@@ -635,6 +876,7 @@ impl TerminalState {
         signal_mask: Option<ForegroundSignalMask>,
     ) -> anyhow::Result<SpawnedPty> {
         let listener = ZedListener(events_tx);
+        let (cwd_tx, cwd_rx) = unbounded();
         // Pixel size unknown at spawn (apps use the char grid); the live size is
         // pushed via `Msg::Resize` on the first frame.
         let window_size = AlacWindowSize {
@@ -708,6 +950,7 @@ impl TerminalState {
             (dup >= 0).then_some(dup)
         };
 
+        let pty = Osc7Pty::new(pty, cwd_tx);
         let event_loop = EventLoop::new(
             term, listener, pty, false, // drain_on_exit
             false, // ref_test
@@ -722,6 +965,7 @@ impl TerminalState {
             channel,
             child_pid,
             cwd: launch_cwd,
+            cwd_rx,
             #[cfg(target_os = "macos")]
             pty_master_fd,
         })
@@ -735,6 +979,7 @@ impl TerminalState {
     /// child.
     pub(super) fn promote(&mut self, spawned: SpawnedPty) {
         self.notifier = PtyNotifier(PtySender::pty(spawned.channel));
+        self.cwd_rx = Some(spawned.cwd_rx);
         self.child_pid = spawned.child_pid;
         // Seed the working directory from the launch cwd. On Unix `sync_channels`
         // refines this to the live shell cwd within a few poll ticks via
@@ -825,6 +1070,7 @@ impl TerminalState {
             // `promote()` installs a `Pty` sender.
             notifier: PtyNotifier(PtySender::display_only()),
             events_rx: Some(events_rx),
+            cwd_rx: None,
             exited: None,
             keyboard_input_sent: std::sync::atomic::AtomicBool::new(false),
             exit_signal: None,
@@ -904,6 +1150,13 @@ impl TerminalState {
     /// Throttled so we don't `readlink` on every poll tick. Called by the
     /// batched event loop, which handles alacritty events directly.
     pub fn sync_channels(&mut self) {
+        if let Some(mut rx) = self.cwd_rx.take() {
+            while let Ok(cwd) = rx.try_recv() {
+                self.current_cwd = Some(cwd);
+            }
+            self.cwd_rx = Some(rx);
+        }
+
         self.cwd_poll_ticks = self.cwd_poll_ticks.wrapping_add(1);
         if self.cwd_poll_ticks.is_multiple_of(25)
             && let Some(cwd) = self.cwd_now()
@@ -2881,6 +3134,56 @@ mod tests {
         assert!(
             state.cwd_now().is_none(),
             "display-only terminal has no shell CWD to resolve"
+        );
+    }
+
+    #[test]
+    fn osc7_scanner_extracts_bel_and_st_terminated_file_uris() {
+        let mut scanner = Osc7Scanner::default();
+        let mut seen = Vec::new();
+        scanner.advance(b"pre\x1b]7;file:///tmp/project\x07post", |cwd| {
+            seen.push(cwd)
+        });
+        scanner.advance(b"\x1b]7;file://host/home/me/project\x1b\\", |cwd| {
+            seen.push(cwd)
+        });
+
+        assert_eq!(
+            seen,
+            vec!["/tmp/project".to_string(), "/home/me/project".to_string()]
+        );
+    }
+
+    #[test]
+    fn osc7_payload_decodes_windows_file_uri() {
+        assert_eq!(
+            cwd_from_osc7_payload("7;file:///C:/dev/path%20with%20space"),
+            Some(r"C:\dev\path with space".to_string())
+        );
+        assert_eq!(
+            cwd_from_osc7_payload("7;file://DESKTOP-123/C:/dev/paneflow"),
+            Some(r"C:\dev\paneflow".to_string())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn osc7_payload_decodes_git_bash_msys_file_uri() {
+        assert_eq!(
+            cwd_from_osc7_payload("7;file://DESKTOP-123/c/dev/path%20with%20space"),
+            Some(r"C:\dev\path with space".to_string())
+        );
+        assert_eq!(
+            cwd_from_osc7_payload("7;file:///c"),
+            Some("C:\\".to_string())
+        );
+    }
+
+    #[test]
+    fn osc7_payload_rejects_legacy_malformed_windows_uri() {
+        assert_eq!(
+            cwd_from_osc7_payload(r"7;file://DESKTOP-123C:\dev\paneflow"),
+            None
         );
     }
 

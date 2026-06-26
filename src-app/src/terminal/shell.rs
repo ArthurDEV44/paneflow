@@ -104,6 +104,16 @@ function global:__paneflow_path_prepend {
     $env:PATH = (@($env:PANEFLOW_BIN_DIR) + $entries) -join $sep
 }
 
+function global:__paneflow_cwd_uri {
+    $providerPath = (Get-Location).ProviderPath
+    if ([string]::IsNullOrEmpty($providerPath)) { return $null }
+    try {
+        return ([System.Uri]$providerPath).AbsoluteUri
+    } catch {
+        return $null
+    }
+}
+
 # Capture the CURRENT prompt as a ScriptBlock VALUE (snapshot) via
 # `$function:prompt`, NOT `Get-Item function:prompt`. A FunctionInfo from
 # Get-Item is a LIVE handle: its `.ScriptBlock` re-resolves to whatever
@@ -120,8 +130,13 @@ if (-not $global:__paneflow_prompt_wrapped) {
         # the user's last command -- Starship / oh-my-posh read them to render
         # the exit-status segment. Our OSC 7 + PATH bookkeeping runs after.
         $__paneflow_out = if ($global:__paneflow_prev_prompt) { & $global:__paneflow_prev_prompt } else { "PS $($executionContext.SessionState.Path.CurrentLocation)> " }
-        # OSC 7 with BEL terminator (matches zsh/bash/fish emitters).
-        [Console]::Write("`e]7;file://$env:COMPUTERNAME$((Get-Location).ProviderPath)`a")
+        # OSC 7 with BEL terminator (matches zsh/bash/fish emitters). Use
+        # [char]27 instead of `e: Windows PowerShell 5.1 treats `e as a
+        # literal "e", which leaks "e]7;..." into the terminal.
+        $__paneflow_cwd_uri = __paneflow_cwd_uri
+        if ($__paneflow_cwd_uri) {
+            [Console]::Write("$([char]27)]7;$__paneflow_cwd_uri$([char]7)")
+        }
         __paneflow_path_prepend
         $__paneflow_out
     }
@@ -165,15 +180,34 @@ fn configured_shell_if_usable(path: &str) -> Option<String> {
     let candidate: std::path::PathBuf = if has_separator {
         std::path::PathBuf::from(path)
     } else {
-        // PATH search first; on Unix, fall back to well-known install dirs so a
-        // bare `"pwsh"` configured shell still resolves under a GUI launch whose
-        // inherited PATH omits `/opt/homebrew/bin` (the macOS parallel to the
-        // Windows `find_windows_powershell` well-known-location probe). Without
-        // this, the entry was silently rejected and the shell fell back to
-        // `/bin/sh`.
-        which::which(path)
-            .ok()
-            .or_else(|| well_known_shell_dir_lookup(path))?
+        #[cfg(windows)]
+        if is_bare_bash_name(path)
+            && let Some(git_bash) = find_windows_git_bash_path()
+        {
+            git_bash
+        } else {
+            // PATH search first; on Unix, fall back to well-known install dirs so a
+            // bare `"pwsh"` configured shell still resolves under a GUI launch whose
+            // inherited PATH omits `/opt/homebrew/bin` (the macOS parallel to the
+            // Windows `find_windows_powershell` well-known-location probe). Without
+            // this, the entry was silently rejected and the shell fell back to
+            // `/bin/sh`.
+            which::which(path)
+                .ok()
+                .or_else(|| well_known_shell_dir_lookup(path))?
+        }
+        #[cfg(not(windows))]
+        {
+            // PATH search first; on Unix, fall back to well-known install dirs so a
+            // bare `"pwsh"` configured shell still resolves under a GUI launch whose
+            // inherited PATH omits `/opt/homebrew/bin` (the macOS parallel to the
+            // Windows `find_windows_powershell` well-known-location probe). Without
+            // this, the entry was silently rejected and the shell fell back to
+            // `/bin/sh`.
+            which::which(path)
+                .ok()
+                .or_else(|| well_known_shell_dir_lookup(path))?
+        }
     };
     let is_executable = candidate.is_file() && {
         #[cfg(unix)]
@@ -193,6 +227,71 @@ fn configured_shell_if_usable(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+#[cfg(windows)]
+fn is_bare_bash_name(name: &str) -> bool {
+    !name.contains(['/', '\\'])
+        && name
+            .to_ascii_lowercase()
+            .trim_end_matches(".exe")
+            .eq("bash")
+}
+
+#[cfg(windows)]
+pub(crate) fn find_windows_git_bash() -> Option<String> {
+    find_windows_git_bash_path().map(|path| path.to_string_lossy().trim().to_owned())
+}
+
+#[cfg(windows)]
+fn find_windows_git_bash_path() -> Option<std::path::PathBuf> {
+    windows_git_bash_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(windows)]
+fn windows_git_bash_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+
+    for env_var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(base) = std::env::var_os(env_var) {
+            push_git_bash_candidates(&mut candidates, std::path::Path::new(&base).join("Git"));
+        }
+    }
+
+    if let Ok(git) = which::which("git.exe") {
+        candidates.extend(git_bash_candidates_from_git_exe(&git));
+    }
+
+    candidates
+}
+
+#[cfg(windows)]
+fn push_git_bash_candidates(candidates: &mut Vec<std::path::PathBuf>, root: std::path::PathBuf) {
+    for candidate in [root.join("bin\\bash.exe"), root.join("usr\\bin\\bash.exe")] {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn git_bash_candidates_from_git_exe(git: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    let mut dir = git.parent();
+    let mut depth = 0;
+
+    while let Some(current) = dir {
+        if depth > 4 {
+            break;
+        }
+        push_git_bash_candidates(&mut candidates, current.to_path_buf());
+        dir = current.parent();
+        depth += 1;
+    }
+
+    candidates
 }
 
 /// Probe a small set of well-known Unix install directories for a bare shell
@@ -607,6 +706,27 @@ mod tests {
     }
 
     #[test]
+    fn pwsh_osc7_uses_powershell_51_safe_escape_and_file_uri() {
+        let s = super::PWSH_OSC7;
+        assert!(
+            s.contains("$([char]27)]7;"),
+            "OSC 7 must emit ESC via [char]27 for Windows PowerShell 5.1"
+        );
+        assert!(
+            s.contains("$([char]7)"),
+            "OSC 7 must emit BEL via [char]7 for Windows PowerShell 5.1"
+        );
+        assert!(
+            s.contains("([System.Uri]$providerPath).AbsoluteUri"),
+            "PowerShell CWD reporting must produce a real file:// URI"
+        );
+        assert!(
+            !s.contains("`e]7;"),
+            "`e is PowerShell 7-only for ESC and must not be used in shared 5.1/7 script"
+        );
+    }
+
+    #[test]
     fn powershell_agent_profile_skips_user_profile_noise() {
         assert_eq!(
             powershell_startup_args(TerminalSurfaceProfile::Agent, "init".into()),
@@ -662,5 +782,47 @@ mod windows_shell_tests {
                 "unexpected PowerShell binary stem: {found:?}"
             );
         }
+    }
+
+    #[test]
+    fn bare_bash_names_are_detected_without_catching_explicit_paths() {
+        assert!(is_bare_bash_name("bash"));
+        assert!(is_bare_bash_name("bash.exe"));
+        assert!(!is_bare_bash_name(r"C:\Windows\System32\bash.exe"));
+        assert!(!is_bare_bash_name("zsh"));
+    }
+
+    #[test]
+    fn git_bash_candidates_are_derived_from_git_cmd_shim() {
+        let candidates = git_bash_candidates_from_git_exe(std::path::Path::new(
+            r"C:\Program Files\Git\cmd\git.exe",
+        ));
+
+        assert!(
+            candidates.contains(&std::path::PathBuf::from(
+                r"C:\Program Files\Git\bin\bash.exe"
+            )),
+            "Git for Windows cmd shim should lead to the interactive Git Bash binary"
+        );
+        assert!(
+            candidates.contains(&std::path::PathBuf::from(
+                r"C:\Program Files\Git\usr\bin\bash.exe"
+            )),
+            "Git for Windows cmd shim should also probe the usr/bin bash fallback"
+        );
+    }
+
+    #[test]
+    fn configured_bare_bash_prefers_git_bash_when_installed() {
+        let Some(git_bash) = find_windows_git_bash() else {
+            eprintln!("skip: Git for Windows bash.exe not found");
+            return;
+        };
+
+        assert_eq!(
+            configured_shell_if_usable("bash.exe").map(|s| s.to_ascii_lowercase()),
+            Some(git_bash.to_ascii_lowercase()),
+            "bare bash.exe must resolve to Git Bash before Windows' WSL bash launcher"
+        );
     }
 }

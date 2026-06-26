@@ -76,18 +76,22 @@ impl PaneFlowApp {
         // still works via config; the trigger shows the raw value when it does
         // not match a preset, or "System default" when unset.
         #[cfg(target_os = "windows")]
-        let shells: &[(&str, &str)] = &[
-            ("PowerShell", "pwsh.exe"),
-            ("Windows PowerShell", "powershell.exe"),
-            ("Command Prompt", "cmd.exe"),
-            ("Git Bash", "bash.exe"),
+        let shells: Vec<(&str, String)> = vec![
+            ("PowerShell", "pwsh.exe".to_string()),
+            ("Windows PowerShell", "powershell.exe".to_string()),
+            ("Command Prompt", "cmd.exe".to_string()),
+            (
+                "Git Bash",
+                crate::terminal::shell::find_windows_git_bash()
+                    .unwrap_or_else(|| "bash.exe".to_string()),
+            ),
         ];
         #[cfg(not(target_os = "windows"))]
-        let shells: &[(&str, &str)] = &[
-            ("zsh", "/bin/zsh"),
-            ("bash", "/bin/bash"),
-            ("sh", "/bin/sh"),
-            ("fish", "/usr/bin/fish"),
+        let shells: Vec<(&str, String)> = vec![
+            ("zsh", "/bin/zsh".to_string()),
+            ("bash", "/bin/bash".to_string()),
+            ("sh", "/bin/sh".to_string()),
+            ("fish", "/usr/bin/fish".to_string()),
         ];
 
         let current_shell = config.default_shell.clone().unwrap_or_default();
@@ -97,8 +101,8 @@ impl PaneFlowApp {
                 (
                     (*label).to_string(),
                     None,
-                    Value::String((*val).to_string()),
-                    shell_basename_eq(&current_shell, val),
+                    Value::String(val.clone()),
+                    shell_preset_eq(&current_shell, val),
                 )
             })
             .collect();
@@ -268,11 +272,19 @@ pub(crate) fn editor_icon(value: &str) -> Option<Logo> {
     }
 }
 
-/// Case-insensitive basename comparison for the shell presets. Normalizes the
-/// same way `terminal::shell` resolves a shell (strip the directory, drop a
-/// trailing `.exe`, lowercase) so a stored full path matches its bare-name
-/// preset. An empty `stored` (unset `default_shell`) matches nothing.
-fn shell_basename_eq(stored: &str, chip: &str) -> bool {
+/// Case-insensitive comparison for shell presets. Bare configured names match
+/// by basename (`bash.exe` should still select Git Bash), while two explicit
+/// paths must point at the same executable (`C:\Windows\System32\bash.exe`
+/// should not be presented as Git Bash).
+fn shell_preset_eq(stored: &str, chip: &str) -> bool {
+    fn has_separator(s: &str) -> bool {
+        s.contains(['/', '\\'])
+    }
+
+    fn path_key(s: &str) -> String {
+        s.replace('/', "\\").to_ascii_lowercase()
+    }
+
     fn stem(s: &str) -> String {
         let base = s
             .rsplit(['/', '\\'])
@@ -281,5 +293,35 @@ fn shell_basename_eq(stored: &str, chip: &str) -> bool {
             .to_ascii_lowercase();
         base.trim_end_matches(".exe").to_string()
     }
-    !stored.is_empty() && stem(stored) == stem(chip)
+
+    if stored.is_empty() {
+        false
+    } else if has_separator(stored) && has_separator(chip) {
+        path_key(stored) == path_key(chip)
+    } else {
+        stem(stored) == stem(chip)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shell_preset_matches_bare_names_by_basename() {
+        assert!(super::shell_preset_eq(
+            "bash.exe",
+            r"C:\Program Files\Git\bin\bash.exe"
+        ));
+        assert!(super::shell_preset_eq(
+            r"C:\Program Files\Git\bin\bash.exe",
+            "bash.exe"
+        ));
+    }
+
+    #[test]
+    fn shell_preset_does_not_label_explicit_wsl_bash_as_git_bash() {
+        assert!(!super::shell_preset_eq(
+            r"C:\Windows\System32\bash.exe",
+            r"C:\Program Files\Git\bin\bash.exe"
+        ));
+    }
 }

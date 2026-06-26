@@ -93,9 +93,11 @@ upstream risks in §4 below.
   degraded in `cmd.exe` panes.** PaneFlow tracks each pane's current
   working directory by parsing the OSC 7 escape sequence the shell
   emits on every `cd`. Legacy `cmd.exe` does not emit OSC 7;
-  PowerShell 7 does when configured with the setup script
-  (`setup_shell_integration` branch added in US-012). Workaround:
-  use PowerShell 7 (`pwsh`) for any pane where you rely on
+  PowerShell 5.1, PowerShell 7, and Git Bash do when configured with
+  PaneFlow's setup scripts. The Git Bash preset resolves Git for
+  Windows before Windows' built-in WSL `bash.exe` launcher.
+  Workaround: use PowerShell (`pwsh` or `powershell.exe`) or Git Bash
+  for panes where you rely on
   split-from-same-cwd or workspace-directory hints.
 
 - **CJK IME input is fragile on some Windows / GPUI combinations.**
