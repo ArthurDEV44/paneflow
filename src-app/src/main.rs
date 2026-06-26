@@ -1286,6 +1286,9 @@ impl Render for PaneFlowApp {
                                     .flex_1()
                                     .min_h_0()
                                     .relative()
+                                    .flex()
+                                    .flex_col()
+                                    .overflow_hidden()
                                     .when(title_bar_spans_window, |d| {
                                         d.bg(panel_bg)
                                             .rounded_tl(px(16.))
@@ -2121,12 +2124,22 @@ fn main() {
                     crate::window_chrome::linux_backdrop::apply_subtle_chrome_material(window);
 
                     let view = cx.new(PaneFlowApp::new);
-                    #[cfg(target_os = "linux")]
                     view.update(cx, |_, cx| {
                         let subscription =
-                            cx.observe_window_bounds(window, |_, window, cx| {
+                            cx.observe_window_bounds(window, |this, window, cx| {
+                                #[cfg(target_os = "linux")]
                                 crate::window_chrome::linux_backdrop::refresh_blur_region(window);
-                                cx.notify();
+                                if this.settings_section.is_some() {
+                                    this.reset_settings_scroll();
+                                    cx.notify();
+                                    cx.on_next_frame(window, |this, _window, cx| {
+                                        if this.settings_section.is_some() {
+                                            cx.notify();
+                                        }
+                                    });
+                                } else {
+                                    cx.notify();
+                                }
                             });
                         subscription.detach();
                     });

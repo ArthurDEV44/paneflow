@@ -428,7 +428,6 @@ impl PaneFlowApp {
             .flex()
             .flex_col()
             .min_h_0()
-            .size_full()
             .bg(settings_chrome_bg())
             .child(self.render_settings_scroll(column, cx))
     }
@@ -444,7 +443,12 @@ impl PaneFlowApp {
     ) -> impl IntoElement {
         let inner = div()
             .id("settings-content")
-            .flex_1()
+            .absolute()
+            .top_0()
+            .right_0()
+            .bottom_0()
+            .left_0()
+            .min_h_0()
             .pr(scrollbar::SCROLLBAR_GUTTER)
             .bg(settings_chrome_bg())
             .overflow_y_scroll()
@@ -455,11 +459,14 @@ impl PaneFlowApp {
             .child(
                 div()
                     .w_full()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
                     .max_w(px(700.))
                     .mx_auto()
                     .px(px(28.))
                     .pt(px(28.))
-                    .pb(px(48.))
+                    .pb(px(72.))
                     .child(content),
             );
 
@@ -524,6 +531,7 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         self.settings_section = Some(section);
+        self.reset_settings_scroll();
         self.font_dropdown_open = false;
         self.font_search.clear();
         self.terminal_dropdown = None;

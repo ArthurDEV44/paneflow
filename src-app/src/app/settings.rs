@@ -11,7 +11,7 @@
 //!   [`PaneFlowApp::handle_shortcut_recording`] - key routing for the font-picker
 //!   typeahead, Escape handling, and shortcut capture.
 
-use gpui::{Context, KeyDownEvent, Window, prelude::*};
+use gpui::{Context, KeyDownEvent, ScrollHandle, Window, prelude::*};
 
 use crate::{PaneFlowApp, SettingsSection, config_writer, keybindings};
 
@@ -27,6 +27,7 @@ impl PaneFlowApp {
         self.agents_view.sidebar_actions_menu_open = false;
         self.agents_view.sidebar_mode_picker_open = false;
         self.settings_section = Some(SettingsSection::General);
+        self.reset_settings_scroll();
         self.terminal_dropdown = None;
         self.general_dropdown = None;
         self.font_dropdown_open = false;
@@ -55,6 +56,14 @@ impl PaneFlowApp {
             let config = paneflow_config::loader::load_config();
             keybindings::apply_keybindings(cx, &config.shortcuts);
         }
+    }
+
+    /// Drop stale scroll geometry when the settings surface is remounted,
+    /// changes page, or the window is resized. GPUI repopulates the handle from
+    /// the next `track_scroll` layout pass.
+    pub(crate) fn reset_settings_scroll(&mut self) {
+        self.settings_scroll = ScrollHandle::new();
+        self.settings_drag = None;
     }
 
     /// Reset the nav search box. Shared by open/close so a reopened settings
