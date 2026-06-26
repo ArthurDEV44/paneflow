@@ -27,7 +27,6 @@ impl DiffView {
     /// superseded by a newer load (US-007 last-write-wins).
     pub(super) fn start_loading_columns(&mut self, indices: &[usize], cx: &mut Context<Self>) {
         let shared_base = self.base_ref.clone();
-        let active_mode = self.last_effective_mode;
         // Snapshot the active theme on the main thread; `TerminalTheme` is `Copy`
         // so each column's background task gets its own copy to derive syntax
         // colors from, without touching the theme cache off-thread.
@@ -64,7 +63,6 @@ impl DiffView {
                 continue;
             }
             log::debug!("diff: col {i} ({branch}) task SPAWNED (gen={generation})");
-            let mode = active_mode;
             cx.spawn(async move |this, cx| {
                 // The whole pipeline - git diff, row building, AND the syntect
                 // pass - runs off the GPUI main thread; only the `Rc` wrap +
@@ -92,7 +90,7 @@ impl DiffView {
                     let t1 = Instant::now();
                     let syntax = SYNTAX_HIGHLIGHT_ENABLED
                         .then(|| super::super::syntax::DiffSyntax::from_theme(&theme));
-                    let rows = build_rows_for_mode(&diff.files, mode, syntax.as_ref());
+                    let rows = build_rows_for_all_modes(&diff.files, syntax.as_ref());
                     // US-008: lightweight per-file summary for the git panel,
                     // built here (off-thread) from the same FileDiffs.
                     let files = diff
@@ -111,12 +109,9 @@ impl DiffView {
                         })
                         .collect();
                     log::debug!(
-                        "diff: col {i} ({bc}) built {} rows for {} mode in {:?}",
-                        match &rows {
-                            BuiltModeRows::Unified { rows, .. } => rows.len(),
-                            BuiltModeRows::Split { rows, .. } => rows.len(),
-                        },
-                        rows.mode().label(),
+                        "diff: col {i} ({bc}) built {} unified rows + {} split rows in {:?}",
+                        rows.unified.len(),
+                        rows.split.len(),
                         t1.elapsed()
                     );
                     // EP-004 US-014: match local agent sessions to this worktree
@@ -157,7 +152,6 @@ impl DiffView {
                             );
                             return; // superseded by a newer load of this column
                         }
-                        let mut loaded_mode = None;
                         let new_state = match built {
                             Built::Failed(e) => {
                                 log::warn!("diff: col {i} ({branch}) FAILED: {e}");
@@ -180,29 +174,13 @@ impl DiffView {
                                 // column (re-fetched only on re-diff).
                                 col.attribution = attribution;
                                 col.loading_mode = None;
-                                let mode = rows.mode();
-                                loaded_mode = Some(mode);
-                                let (unified, split, anchors_unified, anchors_split) = match rows {
-                                    BuiltModeRows::Unified { rows, anchors } => (
-                                        Some(Rc::new(rows)),
-                                        None,
-                                        Some(Rc::new(anchors)),
-                                        None,
-                                    ),
-                                    BuiltModeRows::Split { rows, anchors } => (
-                                        None,
-                                        Some(Rc::new(rows)),
-                                        None,
-                                        Some(Rc::new(anchors)),
-                                    ),
-                                };
                                 ColumnState::Loaded {
-                                    unified,
-                                    split,
+                                    unified: Some(Rc::new(rows.unified)),
+                                    split: Some(Rc::new(rows.split)),
                                     file_count,
                                     files: Rc::new(files),
-                                    anchors_unified,
-                                    anchors_split,
+                                    anchors_unified: Some(Rc::new(rows.anchors_unified)),
+                                    anchors_split: Some(Rc::new(rows.anchors_split)),
                                     files_full: Arc::new(files_full),
                                 }
                             }
@@ -210,12 +188,7 @@ impl DiffView {
                         col.state = new_state;
                         // Rebuild the collapse-filtered views from the fresh rows
                         // (carries any per-file collapse across the reload).
-                        if let Some(mode) = loaded_mode {
-                            col.drop_rows_except(mode);
-                            col.recompute_display_for(mode);
-                        } else {
-                            col.reset_display_caches();
-                        }
+                        col.recompute_display();
                         // A reload can reorder or drop entries in this column's
                         // `files_full`, which an open body context menu indexes by
                         // position. Drop a menu targeting this column so a menu
@@ -247,9 +220,6 @@ impl DiffView {
             if col.has_rows_for_mode(mode) {
                 if col.loading_mode != Some(mode) {
                     col.loading_mode = None;
-                }
-                if col.has_rows_for_mode(mode.opposite()) {
-                    col.drop_rows_except(mode);
                 }
                 if !col.has_display_for_mode(mode) {
                     col.recompute_display_for(mode);
@@ -293,7 +263,6 @@ impl DiffView {
                         }
                         col.loading_mode = None;
                         col.insert_mode_rows(rows);
-                        col.drop_rows_except(mode);
                         col.recompute_display_for(mode);
                         cx.notify();
                     })

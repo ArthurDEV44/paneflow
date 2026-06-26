@@ -121,13 +121,6 @@ impl ViewMode {
             ViewMode::Unified => "unified",
         }
     }
-
-    fn opposite(self) -> Self {
-        match self {
-            ViewMode::Split => ViewMode::Unified,
-            ViewMode::Unified => ViewMode::Split,
-        }
-    }
 }
 
 enum BuiltModeRows {
@@ -141,13 +134,11 @@ enum BuiltModeRows {
     },
 }
 
-impl BuiltModeRows {
-    fn mode(&self) -> ViewMode {
-        match self {
-            BuiltModeRows::Unified { .. } => ViewMode::Unified,
-            BuiltModeRows::Split { .. } => ViewMode::Split,
-        }
-    }
+struct BuiltRows {
+    unified: Vec<DisplayRow>,
+    split: Vec<SplitRow>,
+    anchors_unified: Vec<(String, usize)>,
+    anchors_split: Vec<(String, usize)>,
 }
 
 fn build_rows_for_mode(
@@ -187,8 +178,29 @@ fn build_rows_for_mode(
     }
 }
 
+fn build_rows_for_all_modes(
+    files: &[super::git::FileDiff],
+    syntax: Option<&super::syntax::DiffSyntax>,
+) -> BuiltRows {
+    let (unified, anchors_unified) = match build_rows_for_mode(files, ViewMode::Unified, syntax) {
+        BuiltModeRows::Unified { rows, anchors } => (rows, anchors),
+        BuiltModeRows::Split { .. } => unreachable!("requested unified rows"),
+    };
+    let (split, anchors_split) = match build_rows_for_mode(files, ViewMode::Split, syntax) {
+        BuiltModeRows::Split { rows, anchors } => (rows, anchors),
+        BuiltModeRows::Unified { .. } => unreachable!("requested split rows"),
+    };
+    BuiltRows {
+        unified,
+        split,
+        anchors_unified,
+        anchors_split,
+    }
+}
+
 /// Async lifecycle of a single column's diff. Loaded keeps the raw per-file
-/// diffs plus only the row model currently needed by the active view mode.
+/// diffs plus prebuilt row models for both view modes, so toggling Unified/Split
+/// is a cache swap instead of a visible lazy rebuild.
 enum ColumnState {
     Loading,
     Loaded {
@@ -220,7 +232,7 @@ enum ColumnState {
 enum Built {
     Failed(String),
     Loaded {
-        rows: BuiltModeRows,
+        rows: BuiltRows,
         file_count: usize,
         files: Vec<FileEntry>,
         /// US-001/US-002: raw per-file diffs retained for copy/review, moved out
@@ -452,38 +464,9 @@ impl Column {
         }
     }
 
-    fn drop_rows_except(&mut self, keep: ViewMode) {
-        {
-            let ColumnState::Loaded {
-                unified,
-                split,
-                anchors_unified,
-                anchors_split,
-                ..
-            } = &mut self.state
-            else {
-                return;
-            };
-            match keep {
-                ViewMode::Unified => {
-                    *split = None;
-                    *anchors_split = None;
-                }
-                ViewMode::Split => {
-                    *unified = None;
-                    *anchors_unified = None;
-                }
-            }
-        }
-        match keep {
-            ViewMode::Unified => self.clear_display_mode(ViewMode::Split),
-            ViewMode::Split => self.clear_display_mode(ViewMode::Unified),
-        }
-    }
-
     /// Rebuild the collapse-filtered views from any loaded row sets +
-    /// `collapsed`. Missing modes stay empty; toggling to them schedules a lazy
-    /// rebuild from `files_full`.
+    /// `collapsed`. Both modes are normally loaded together so mode switches do
+    /// not show a transient "Preparing diff" state.
     fn recompute_display(&mut self) {
         self.recompute_display_for(ViewMode::Unified);
         self.recompute_display_for(ViewMode::Split);
@@ -1317,23 +1300,21 @@ mod tests {
     }
 
     #[test]
-    fn inactive_diff_mode_rows_are_not_retained() {
+    fn loaded_diff_mode_rows_are_retained() {
         let mut col = loaded_column_with_both_modes();
 
-        col.drop_rows_except(ViewMode::Unified);
         col.recompute_display_for(ViewMode::Unified);
         assert!(col.has_rows_for_mode(ViewMode::Unified));
-        assert!(!col.has_rows_for_mode(ViewMode::Split));
+        assert!(col.has_rows_for_mode(ViewMode::Split));
         assert!(!col.disp_unified.is_empty());
-        assert!(col.disp_split.is_empty());
+        assert!(!col.disp_split.is_empty());
 
         let files = vec![sample_file()];
         col.insert_mode_rows(build_rows_for_mode(&files, ViewMode::Split, None));
-        col.drop_rows_except(ViewMode::Split);
         col.recompute_display_for(ViewMode::Split);
-        assert!(!col.has_rows_for_mode(ViewMode::Unified));
+        assert!(col.has_rows_for_mode(ViewMode::Unified));
         assert!(col.has_rows_for_mode(ViewMode::Split));
-        assert!(col.disp_unified.is_empty());
+        assert!(!col.disp_unified.is_empty());
         assert!(!col.disp_split.is_empty());
     }
 }
