@@ -43,6 +43,8 @@ Any new code, refactor, or change that touches the codebase in any way **must** 
 - **macOS (Apple)** - Intel and Apple Silicon.
 - **Windows** - Windows 10 and 11 (x64, and ARM64 where applicable).
 
+Always verify every implementation decision against Windows, macOS, and Linux compatibility before considering the work done. For Linux, check the behavior against the major distro families and desktop stacks the project targets: Fedora, Ubuntu/Debian, Arch, openSUSE, Wayland, and X11.
+
 Concretely this means:
 
 - Never hardcode POSIX-only paths, shell commands, env vars, or separators. Use `std::path::PathBuf`, `std::env`, and the `dirs` crate (or equivalent) for all filesystem and environment access.
