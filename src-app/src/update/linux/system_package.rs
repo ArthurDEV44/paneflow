@@ -4,8 +4,8 @@
 //! This is the Linux-only counterpart to [`super::appimage`] /
 //! [`super::targz`] for users on the signed rpm/deb repo
 //! (`pkg.paneflow.dev`). It spawns a polkit-elevated
-//! `dnf install paneflow-<ver>` (Fedora/RHEL/openSUSE) or
-//! `apt-get install paneflow=<ver>` (Ubuntu/Debian) subprocess and
+//! `dnf install paneflow-<ver>` (Fedora/RHEL/Rocky) or
+//! `apt-get install paneflow=<ver>-1` (Ubuntu/Debian) subprocess and
 //! routes the outcome through the existing `UpdateError` taxonomy so
 //! the existing toast/pill renderer needs no new variants.
 //!
@@ -386,7 +386,13 @@ fn build_argv(manager: &PackageManager, version_stripped: &str) -> Vec<String> {
         // commands inside ONE `pkexec sh -c` so the user sees a
         // single polkit prompt (matching the Dnf UX) instead of two.
         //
-        // The shell body is a STATIC constant string: the version
+        // cargo-deb emits Debian package versions as `<upstream>-1`
+        // (`revision = "1"` in src-app/Cargo.toml), so the apt pin must
+        // include that Debian revision. The GitHub tag is only the upstream
+        // semver, validated by `validate_version`; the deterministic `-1`
+        // is appended here after validation.
+        //
+        // The shell body is a STATIC constant string: the Debian package version
         // flows in as the POSITIONAL parameter `$1`, double-quoted.
         // bash / dash POSIX shells do NOT re-interpret metacharacters
         // inside a double-quoted positional expansion - so even a
@@ -409,7 +415,7 @@ fn build_argv(manager: &PackageManager, version_stripped: &str) -> Vec<String> {
             "apt-get update -q && apt-get install -y --no-install-recommends \"paneflow=$1\""
                 .into(),
             "_".into(),
-            version_stripped.to_string(),
+            format!("{version_stripped}-1"),
         ],
         // Defensive sentinels - `run_update` guards Other / RpmOstree
         // up-front, so an empty argv is never actually spawned; if a
@@ -878,7 +884,7 @@ mod tests {
         // copy-paste from the Dnf arm. Since PRD v1.2 the apt path
         // is wrapped in `sh -c`, so the pin string lives INSIDE the
         // script body (arg 3) as the literal `"paneflow=$1"` - the
-        // version itself is the positional argv[5].
+        // Debian package version itself is the positional argv[5].
         let argv = build_argv(&PackageManager::Apt, "0.2.3");
         let script_body = argv
             .get(3)
@@ -892,8 +898,8 @@ mod tests {
             !script_body.contains("paneflow-"),
             "script body used rpm `-` pin form for apt: {script_body:?}"
         );
-        // And the runtime version must be the positional at argv[5].
-        assert_eq!(argv.get(5).map(String::as_str), Some("0.2.3"));
+        // And the runtime Debian package version must be the positional at argv[5].
+        assert_eq!(argv.get(5).map(String::as_str), Some("0.2.3-1"));
     }
 
     #[test]
@@ -920,7 +926,7 @@ mod tests {
         // - argv[2] = "-c"               (read script from next arg)
         // - argv[3] = script body        (constant - NO interpolation)
         // - argv[4] = "_"                (conventional $0 placeholder)
-        // - argv[5] = version            (the variable - positional $1)
+        // - argv[5] = Debian version    (the variable - positional $1)
         //
         // If a refactor moves the version into the script body (via
         // `format!`) or reorders any of these, this test fails.
@@ -932,7 +938,7 @@ mod tests {
             "apt-get update -q && apt-get install -y --no-install-recommends \"paneflow=$1\""
                 .to_string(),
             "_".to_string(),
-            "0.2.3".to_string(),
+            "0.2.3-1".to_string(),
         ];
         assert_eq!(argv, expected, "apt argv shape drifted from PRD v1.2 spec");
     }
@@ -958,8 +964,8 @@ mod tests {
         //    split, never merged into another argv slot.
         assert_eq!(
             argv.get(5).map(String::as_str),
-            Some(malicious),
-            "version must be argv[5] verbatim: {argv:?}"
+            Some("0.2.3\"; echo pwned; #-1"),
+            "version plus Debian revision must be argv[5] verbatim: {argv:?}"
         );
 
         // 2. The script body (argv[3]) MUST NOT contain any part of

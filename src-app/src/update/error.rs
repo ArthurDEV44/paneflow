@@ -69,6 +69,7 @@ pub enum UpdateError {
     /// is broken in a way PaneFlow can't self-fix. The wrapped
     /// `message` is user-visible verbatim so the toast can name the
     /// missing tool and suggest a reinstall / polkit-agent path.
+    #[allow(dead_code)]
     EnvironmentBroken { message: String },
     /// A bounded external subprocess in the update flow (the AppImage
     /// `appimageupdatetool` zsync download, or any other installer tool)

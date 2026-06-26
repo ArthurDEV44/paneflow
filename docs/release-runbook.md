@@ -409,7 +409,7 @@ Users on the signed `pkg.paneflow.dev` rpm or deb repo update PaneFlow
 by clicking the "Update available" pill in the title bar. The dispatcher
 in `src-app/src/app/self_update_flow.rs` routes the click through a
 `pkexec`-elevated `dnf install paneflow-<ver>` or `apt-get install
-paneflow=<ver>` subprocess. This section documents what the user sees,
+paneflow=<ver>-1` subprocess. This section documents what the user sees,
 the full fallback matrix, and the pre-release acceptance checklist
 (run only for releases that touch the self-update flow).
 
@@ -515,12 +515,13 @@ never fires twice.
   ```
 
 - **Keeping the tar.gz** - remove the system package. On
-  Fedora / RHEL / openSUSE: `sudo dnf remove paneflow`. On
-  Ubuntu / Debian / Mint: `sudo apt remove paneflow`. Either
-  command also removes `/usr/share/applications/paneflow.desktop`
-  and the hicolor icons under `/usr/share/icons/hicolor/*/apps/`,
-  so the tar.gz install becomes the only registered app again
-  after the next `gtk-update-icon-cache` run.
+  Fedora / RHEL / Rocky: `sudo dnf remove paneflow`. On openSUSE:
+  `sudo zypper remove paneflow`. On Ubuntu / Debian / Mint:
+  `sudo apt remove paneflow`. These commands also remove
+  `/usr/share/applications/paneflow.desktop` and the hicolor icons
+  under `/usr/share/icons/hicolor/*/apps/`, so the tar.gz install
+  becomes the only registered app again after the next
+  `gtk-update-icon-cache` run.
 
 ### Keeping both installs intentionally
 

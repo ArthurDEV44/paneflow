@@ -1,6 +1,7 @@
 //! In-app self-update dispatcher - routes clicks on the update pill to the
-//! right installer branch (SystemPackage / AppImage / TarGz+Unknown / legacy
-//! `.run`) based on the detected [`crate::update::install_method::InstallMethod`].
+//! right installer branch (SystemPackage / AppImage / TarGz+Linux Unknown /
+//! legacy `.run`) based on the detected
+//! [`crate::update::install_method::InstallMethod`].
 //!
 //! Extracted from `main.rs` per US-028 of the src-app refactor PRD.
 
@@ -35,6 +36,13 @@ fn install_method_label(method: &update::install_method::InstallMethod) -> &'sta
         update::install_method::InstallMethod::ExternallyManaged { .. } => "externally-managed",
         update::install_method::InstallMethod::Unknown => "unknown",
     }
+}
+
+/// `Unknown` is only a self-updatable tar.gz migration path on Linux. macOS
+/// `Unknown` means the binary is outside a `.app` bundle, while Windows uses
+/// MSI; both must avoid writing a Linux layout under `$HOME/.local`.
+fn unknown_install_uses_targz() -> bool {
+    cfg!(target_os = "linux")
 }
 
 /// Strict-semver guard for the release tag before it reaches any
@@ -265,11 +273,11 @@ impl PaneFlowApp {
             return;
         }
 
-        // System-package installs (.deb/.rpm). Fedora / Ubuntu / openSUSE
-        // / Debian users on the signed pkg.paneflow.dev repo get an
-        // in-app pkexec-elevated `dnf|apt-get install` (US-002). Solus /
-        // Void / NixOS et al. fall back to the clipboard-copy flow so
-        // they at least see a runnable upgrade command. `return`s
+        // System-package installs (.deb/.rpm). Fedora / RHEL / Rocky and
+        // Ubuntu / Debian users on the signed pkg.paneflow.dev repo get an
+        // in-app pkexec-elevated `dnf|apt-get install` (US-002). openSUSE,
+        // Solus, Void, NixOS et al. fall back to the clipboard-copy flow so
+        // they at least see a package-manager hint. `return`s
         // BEFORE reading `asset_url` below - the pkexec flow pulls its
         // payload from the system repo; no direct GitHub download.
         //
@@ -581,18 +589,16 @@ impl PaneFlowApp {
         }
 
         // `Unknown` (dev builds, legacy `.run` migrations) routes through the
-        // tar.gz updater only on Unix, where `$HOME` exists and
-        // `~/.local/paneflow.app/` is a real install target. On Windows
-        // `targz::run_update` reads an unset `$HOME` and fails with a cryptic
-        // "HOME environment variable is not set" - so an `Unknown` Windows
-        // install must fall through to the manual-download path below instead.
+        // tar.gz updater only on Linux, where `$HOME` exists and
+        // `~/.local/paneflow.app/` is the portable install target. macOS
+        // `Unknown` means the binary is outside a `.app` bundle, and Windows
+        // uses MSI, so both fall through instead of silently writing a
+        // Linux-style install elsewhere. On Windows, `targz::run_update` reads an unset
+        // `$HOME` and fails with a cryptic "HOME environment variable is not
+        // set", so `Unknown` falls through to the manual-download path too.
         // `TarGz` itself is only ever produced on Linux by `detect()`.
-        #[cfg(unix)]
-        const UNKNOWN_USES_TARGZ: bool = true;
-        #[cfg(not(unix))]
-        const UNKNOWN_USES_TARGZ: bool = false;
         let route_to_targz = matches!(&method, update::install_method::InstallMethod::TarGz { .. })
-            || (UNKNOWN_USES_TARGZ
+            || (unknown_install_uses_targz()
                 && matches!(&method, update::install_method::InstallMethod::Unknown));
         if route_to_targz {
             // Atomic directory swap under `$HOME/.local/paneflow.app/`.
@@ -647,35 +653,40 @@ impl PaneFlowApp {
             return;
         }
 
-        // US-010: Windows MSI install - download, SHA-verify, invoke
-        // msiexec, map exit codes. `InstallMethod::WindowsMsi` is only
-        // produced on Windows by install_method::detect(), so on
-        // Linux/macOS this branch is a runtime-dead `if let` - the
-        // `msiexec.exe` lookup inside `msi::install` would otherwise
-        // fail there, but the branch guard prevents ever reaching it.
-        if let update::install_method::InstallMethod::WindowsMsi { .. } = &method {
+        // US-010: Windows MSI install. Unlike AppImage/TarGz/DMG, the MSI
+        // cannot be fully pre-installed while Paneflow is still running:
+        // Windows Installer would detect the live `paneflow.exe`, show its
+        // native FilesInUse dialog, and may close the very process that owns
+        // the restart state. The GUI therefore only downloads + verifies the
+        // MSI, then spawns a breakaway relay, saves state, and exits. The relay
+        // runs msiexec after this PID is gone and relaunches the detected
+        // install path on success.
+        if let update::install_method::InstallMethod::WindowsMsi { install_path } = &method {
             let url = asset_url.clone();
-            // EP-002 AC2: `msi::install` spawns `msiexec` on the ALREADY-
-            // downloaded local `.msi` (the network fetch is separately bounded
-            // by `UPDATE_HTTP_TIMEOUT`). msiexec is a privileged, user-consented
-            // installer; a hard `kill()` mid-transaction risks a corrupt install,
-            // so it is NOT wrapped in `run_with_timeout`. The worker watchdog
-            // armed below is the bound for a wedged install.
+            let install_path = install_path.clone();
             self.enter_downloading("msi", cx);
 
             cx.spawn(async move |this, cx| {
-                let result = smol::unblock(move || update::windows::msi::install(&url)).await;
+                let result =
+                    smol::unblock(move || update::windows::msi::stage(&url, &install_path)).await;
                 match result {
-                    Ok(restart_path) => {
+                    Ok(staged) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.on_preinstall_success(cx);
-                        });
-                        cx.update(|cx| {
-                            log::info!(
-                                "self-update/msi: pre-installed - restart pending at {}",
-                                restart_path.display()
-                            );
-                            cx.set_restart_path(restart_path);
+                            app.save_session_blocking(cx);
+                            match update::windows::msi::spawn_relay(staged) {
+                                Ok(()) => {
+                                    log::info!(
+                                        "self-update/msi: relay spawned - quitting so msiexec can replace paneflow.exe"
+                                    );
+                                    app.self_update.self_update_status =
+                                        update::SelfUpdateStatus::Installing;
+                                    cx.notify();
+                                    cx.quit();
+                                }
+                                Err(err) => {
+                                    app.record_update_failure("msi-relay", &err, cx);
+                                }
+                            }
                         });
                     }
                     Err(err) => {
@@ -689,8 +700,8 @@ impl PaneFlowApp {
             return;
         }
 
-        // US-009: macOS `.app` bundle - mount the DMG, swap bundle
-        // atomically, restart into the new `Contents/MacOS/paneflow`.
+        // US-009: macOS `.app` bundle - mount the DMG, swap the bundle
+        // atomically, then restart through the promoted `.app` path.
         // Dispatch is an `if let` (not a cfg guard) so the code remains
         // a single compile-closure across all targets; the
         // `InstallMethod::AppBundle` variant is only produced on macOS
@@ -736,20 +747,20 @@ impl PaneFlowApp {
             return;
         }
 
-        // US-008: the legacy `.run` fall-through is Unix-only. On Linux,
+        // US-008: the legacy `.run` fall-through is Linux-only. On Linux,
         // this branch is runtime-dead for the already-handled install
         // methods above (AppImage / TarGz / SystemPackage) plus Unknown,
         // and reachable only for older dev builds that slipped past the
-        // `TarGz | Unknown` match. On Windows/macOS the branch is
-        // cfg-eliminated at compile time - those platforms route via
-        // `InstallMethod::WindowsMsi` (US-010) and `AppBundle` (US-009)
-        // respectively, and the fall-through below must never be reached.
+        // `TarGz | Unknown` match. On Windows/macOS the branch is cfg-eliminated
+        // at compile time - those platforms route via `InstallMethod::WindowsMsi`
+        // (US-010) and `AppBundle` (US-009) respectively, and the fall-through
+        // below must never be reached.
         //
         // If US-009/US-010 land before those dispatch arms are fully
-        // wired, the `#[cfg(not(unix))]` sibling below records a
+        // wired, the sibling below records a
         // deliberate error-toast rather than bubbling up a mysterious
         // "no updater wired" runtime failure.
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         {
             self.enter_downloading("legacy", cx);
 
@@ -818,15 +829,15 @@ impl PaneFlowApp {
             .detach();
         }
 
-        // US-008: non-Unix fall-through. Reached only when the caller is
-        // running on macOS (`InstallMethod::AppBundle`) or Windows
+        // US-008: non-legacy fall-through. Reached only when the caller is
+        // running on macOS (`InstallMethod::Unknown`) or Windows
         // (`InstallMethod::WindowsMsi`) AND the platform-specific updater
-        // story (US-009 / US-010) has not yet landed. Surfaces a toast
-        // instead of silently attempting the legacy `.run` flow, which on
-        // these platforms would download an MSI/DMG and attempt to
-        // `chmod +x`/execve it. The `asset_url` binding is consumed here
-        // via the error message so it's not flagged as unused.
-        #[cfg(not(unix))]
+        // branch did not handle the install method. Surfaces a toast instead
+        // of silently attempting the legacy `.run` flow, which on these
+        // platforms would download an MSI/DMG and attempt to `chmod +x`/execve
+        // it. The `asset_url` binding is consumed here via the error message so
+        // it's not flagged as unused.
+        #[cfg(any(not(unix), target_os = "macos"))]
         {
             let msg = anyhow::anyhow!(
                 "Self-update for this platform is not yet available. Download the new \
@@ -852,10 +863,13 @@ impl PaneFlowApp {
     /// - `update_attempt_count < 3` - reuse the 3-strikes circuit
     ///   breaker so a flaky mirror doesn't burn user bandwidth every
     ///   poll cycle.
-    /// - `install_method` is auto-installable (AppImage / TarGz /
-    ///   AppBundle / WindowsMsi / Unknown). SystemPackage needs
-    ///   pkexec (interactive auth - never auto), ExternallyManaged
-    ///   defers to the host package manager.
+    /// - `install_method` is auto-installable without exiting the app
+    ///   (AppImage / TarGz / AppBundle / Linux Unknown). WindowsMsi deliberately
+    ///   waits for an explicit click because it must quit Paneflow before
+    ///   invoking Windows Installer. macOS Unknown is a non-bundle launch and
+    ///   is intentionally not auto-kicked. SystemPackage needs pkexec
+    ///   (interactive auth - never auto), ExternallyManaged defers to the host
+    ///   package manager.
     pub(crate) fn try_auto_kickoff_install(&mut self, cx: &mut Context<Self>) {
         if !matches!(
             self.self_update.update_status,
@@ -877,9 +891,10 @@ impl PaneFlowApp {
             update::install_method::InstallMethod::AppImage { .. }
                 | update::install_method::InstallMethod::TarGz { .. }
                 | update::install_method::InstallMethod::AppBundle { .. }
-                | update::install_method::InstallMethod::WindowsMsi { .. }
-                | update::install_method::InstallMethod::Unknown
-        );
+        ) || (matches!(
+            self.self_update.install_method,
+            update::install_method::InstallMethod::Unknown
+        ) && unknown_install_uses_targz());
         if !auto_eligible {
             log::debug!(
                 "self-update/auto-kickoff: skipped (install_method={})",
@@ -893,5 +908,15 @@ impl PaneFlowApp {
             install_method_label(&self.self_update.install_method)
         );
         self.kickoff_self_update_install(cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_targz_fallback_excludes_macos() {
+        assert_eq!(unknown_install_uses_targz(), cfg!(target_os = "linux"));
     }
 }

@@ -8,15 +8,16 @@
 //!      `WinVerifyTrust` on the Authenticode chain (US-005) - both
 //!      **before** msiexec runs. A missing/invalid signature deletes the
 //!      partial and bails; replaces the old same-host `.sha256`.
-//!   3. Resolve `msiexec.exe` via PATH (PATHEXT-aware - the `which`
-//!      crate already handles this). If absent, bail with
-//!      [`EnvironmentBroken`] naming the tool.
-//!   4. Spawn `msiexec.exe /i <msi> /qb /norestart /l*v <log>` where
-//!      `<log>` is `%TEMP%\paneflow-msi-<pid>.log`. `/qb` keeps the UAC
-//!      elevation prompt visible (basic progress bar); `/norestart`
-//!      prevents an auto-reboot; `/l*v` writes the verbose log we name
-//!      in `InstallFailed { log_path }`.
-//!   5. Map msiexec exit codes:
+//!   3. Stage a detached PowerShell relay in `%TEMP%`.
+//!   4. The GUI saves state, spawns the relay with
+//!      `CREATE_BREAKAWAY_FROM_JOB`, and exits before the MSI runs.
+//!   5. The relay waits for the current PID to disappear, runs
+//!      `msiexec.exe /i <msi> /qb /norestart /l*v <log>`, deletes the
+//!      scratch MSI, and relaunches the installed `paneflow.exe` on success.
+//!
+//! The older synchronous path is still kept for testability and CLI-style
+//! callers: resolve `msiexec.exe` via PATH (PATHEXT-aware - the `which`
+//! crate already handles this), run it, and map exit codes:
 //!      - `0` → success, return the canonical installed binary path.
 //!      - `1602` → `InstallDeclined` ("Update cancelled - administrator
 //!        permission required") - the well-known "user declined UAC"
@@ -35,12 +36,12 @@
 //! so on Linux/macOS the function compiles but is runtime-unreachable.
 //!
 //! **The running-.exe-lock caveat.** Windows refuses to overwrite a
-//! running `paneflow.exe`. The MSI package author has to handle this
-//! (MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT, or a side-by-side
-//! install path). This module's job stops at invoking msiexec and
-//! classifying its exit code - the Windows-side "install landed on a
-//! running binary" case surfaces as `1603` → `InstallFailed` with the
-//! verbose log the user can hand to a maintainer.
+//! running `paneflow.exe`. The GUI flow therefore never runs `msiexec`
+//! while the app is alive: it stages the verified MSI, starts a relay
+//! outside Paneflow's kill-on-close Job Object, exits, then lets the
+//! relay install and relaunch. That avoids the native Restart Manager
+//! "applications should be closed" dialog and ensures restart ownership
+//! is outside the process being replaced.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -62,43 +63,55 @@ const MAX_MSI_BYTES: u64 = 500 * 1024 * 1024;
 // Well-known msiexec exit codes (see
 // https://learn.microsoft.com/en-us/windows/win32/msi/error-codes).
 /// ERROR_INSTALL_USEREXIT - user declined UAC or cancelled the dialog.
+#[allow(dead_code)]
 const MSIEXEC_EXIT_USER_CANCEL: i32 = 1602;
 /// ERROR_INSTALL_FAILURE - a fatal error occurred during installation.
+#[allow(dead_code)]
 const MSIEXEC_EXIT_FATAL: i32 = 1603;
+
+/// Verified MSI staged on disk, plus the path the relay should launch after
+/// `msiexec` succeeds.
+#[derive(Clone, Debug)]
+pub struct StagedMsiUpdate {
+    msi_path: PathBuf,
+    log_path: PathBuf,
+    restart_path: PathBuf,
+}
 
 /// Run the MSI self-update end-to-end. Returns the canonical installed
 /// binary path for `cx.set_restart_path()` on success.
+#[allow(dead_code)]
 pub fn install(asset_url: &str) -> Result<PathBuf> {
+    let restart_path = super::super::installed_binary_path()?;
+    let staged = stage_with_restart_path(asset_url, restart_path)?;
+    install_with(&staged.msi_path, &staged.log_path, &MsiexecProcessRunner)?;
+    // Success - tidy up the scratch MSI. Keep the log until the next
+    // run so a crash-later recovery can still examine it (msiexec
+    // already appends to `/l*v` on subsequent invocations).
+    let _ = std::fs::remove_file(&staged.msi_path);
+    Ok(staged.restart_path)
+}
+
+/// Download and verify the MSI, but do not run it yet. The GUI uses this
+/// while Paneflow is still alive, then hands the staged update to a relay
+/// process that runs after the GUI exits.
+pub fn stage(asset_url: &str, install_path: &Path) -> Result<StagedMsiUpdate> {
+    stage_with_restart_path(asset_url, binary_path_in_install_dir(install_path))
+}
+
+fn stage_with_restart_path(asset_url: &str, restart_path: PathBuf) -> Result<StagedMsiUpdate> {
     let temp = std::env::temp_dir();
     let pid = std::process::id();
     let msi_path = temp.join(format!("paneflow-update-{pid}.msi"));
     let log_path = temp.join(format!("paneflow-msi-{pid}.log"));
-    install_with(asset_url, &msi_path, &log_path, &MsiexecProcessRunner)?;
-    // Success - tidy up the scratch MSI. Keep the log until the next
-    // run so a crash-later recovery can still examine it (msiexec
-    // already appends to `/l*v` on subsequent invocations).
-    let _ = std::fs::remove_file(&msi_path);
-    super::super::installed_binary_path()
-}
 
-/// Testable core. Parameterised on:
-/// - `msi_path`: where the downloaded MSI lands.
-/// - `log_path`: the `/l*v` destination msiexec writes to.
-/// - `runner`: abstracts `msiexec` invocation so tests can inject exit
-///   codes without spawning the real tool.
-fn install_with(
-    asset_url: &str,
-    msi_path: &Path,
-    log_path: &Path,
-    runner: &dyn Msiexec,
-) -> Result<()> {
-    let download_result = download_with_verification(asset_url, msi_path);
+    let download_result = download_with_verification(asset_url, &msi_path);
     if let Err(e) = download_result {
         // AC4: the partial never survives a verification failure. The
         // verifier already tried to clean up its `.partial`, but the
         // main MSI path may also exist from a prior run - drop it too
         // so the next attempt starts clean.
-        let _ = std::fs::remove_file(msi_path);
+        let _ = std::fs::remove_file(&msi_path);
         return Err(e);
     }
 
@@ -109,11 +122,25 @@ fn install_with(
     // `WinVerifyTrust` chaining to a trusted root. Compiled out on non-Windows
     // (the MSI path is unreachable there).
     #[cfg(target_os = "windows")]
-    if let Err(e) = windows_verify_trust(msi_path) {
-        let _ = std::fs::remove_file(msi_path);
+    if let Err(e) = windows_verify_trust(&msi_path) {
+        let _ = std::fs::remove_file(&msi_path);
         return Err(e);
     }
 
+    Ok(StagedMsiUpdate {
+        msi_path,
+        log_path,
+        restart_path,
+    })
+}
+
+/// Testable core. Parameterised on:
+/// - `msi_path`: already-downloaded MSI.
+/// - `log_path`: the `/l*v` destination msiexec writes to.
+/// - `runner`: abstracts `msiexec` invocation so tests can inject exit
+///   codes without spawning the real tool.
+#[allow(dead_code)]
+fn install_with(msi_path: &Path, log_path: &Path, runner: &dyn Msiexec) -> Result<()> {
     match runner.run_installer(msi_path, log_path) {
         Ok(()) => Ok(()),
         Err(MsiexecError::NotFound) => Err(anyhow::Error::new(UpdateError::EnvironmentBroken {
@@ -126,6 +153,124 @@ fn install_with(
         }
         Err(MsiexecError::NonZeroExit { code }) => Err(map_exit_code(code, log_path)),
     }
+}
+
+/// Spawn a detached relay that waits for this GUI process to exit, runs the
+/// staged MSI, and relaunches Paneflow on success. This must be called only
+/// after the session is saved and immediately before `cx.quit()`.
+pub fn spawn_relay(staged: StagedMsiUpdate) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        use windows_sys::Win32::System::Threading::{
+            CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+        };
+
+        let script_path =
+            std::env::temp_dir().join(format!("paneflow-msi-relay-{}.ps1", std::process::id()));
+        let script = relay_script(&staged, std::process::id());
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(script.as_bytes());
+        std::fs::write(&script_path, bytes)
+            .with_context(|| format!("write {}", script_path.display()))?;
+
+        Command::new(powershell_exe())
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-WindowStyle")
+            .arg("Hidden")
+            .arg("-File")
+            .arg(&script_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+            .spawn()
+            .with_context(|| format!("spawn MSI relay {}", script_path.display()))?;
+
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = staged;
+        bail!("MSI relay is only available on Windows")
+    }
+}
+
+fn binary_path_in_install_dir(install_path: &Path) -> PathBuf {
+    let mut exe = install_path.join("paneflow");
+    if !std::env::consts::EXE_EXTENSION.is_empty() {
+        exe.set_extension(std::env::consts::EXE_EXTENSION);
+    }
+    exe
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_exe() -> PathBuf {
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        let candidate = PathBuf::from(system_root)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    which::which("powershell").unwrap_or_else(|_| PathBuf::from("powershell.exe"))
+}
+
+#[cfg(target_os = "windows")]
+fn relay_script(staged: &StagedMsiUpdate, parent_pid: u32) -> String {
+    format!(
+        r#"$ErrorActionPreference = 'Continue'
+$ProgressPreference = 'SilentlyContinue'
+$pidToWait = {parent_pid}
+$msi = {msi}
+$log = {log}
+$exe = {exe}
+
+try {{
+    Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue
+}} catch {{}}
+
+$msiexec = Join-Path $env:SystemRoot 'System32\msiexec.exe'
+if (-not (Test-Path -LiteralPath $msiexec)) {{
+    $msiexec = 'msiexec.exe'
+}}
+
+$exitCode = 1603
+try {{
+    $process = Start-Process -FilePath $msiexec -ArgumentList @('/i', $msi, '/qb', '/norestart', '/l*v', $log) -Wait -PassThru
+    if ($null -ne $process) {{
+        $exitCode = $process.ExitCode
+    }}
+}} catch {{
+    $exitCode = 1603
+}}
+
+Remove-Item -LiteralPath $msi -ErrorAction SilentlyContinue
+if ($exitCode -eq 0 -and (Test-Path -LiteralPath $exe)) {{
+    Start-Process -FilePath $exe
+}}
+
+Start-Sleep -Milliseconds 200
+Remove-Item -LiteralPath $PSCommandPath -ErrorAction SilentlyContinue
+exit $exitCode
+"#,
+        parent_pid = parent_pid,
+        msi = ps_single_quoted(&staged.msi_path),
+        log = ps_single_quoted(&staged.log_path),
+        exe = ps_single_quoted(&staged.restart_path),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn ps_single_quoted(path: &Path) -> String {
+    let value = path.as_os_str().to_string_lossy().replace('\'', "''");
+    format!("'{value}'")
 }
 
 /// Verify the Authenticode signature chain of `msi` with `WinVerifyTrust`
@@ -325,6 +470,7 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
 
 /// Map a non-zero msiexec exit code onto the right `UpdateError` variant.
 /// Pure - unit-tested without spawning.
+#[allow(dead_code)]
 fn map_exit_code(code: i32, log_path: &Path) -> anyhow::Error {
     match code {
         MSIEXEC_EXIT_USER_CANCEL => anyhow::Error::new(UpdateError::InstallDeclined {
@@ -354,6 +500,7 @@ fn append_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
 /// spawn error (PROCESS_CREATE_FAILED etc.) that isn't semantically
 /// distinct from a generic I/O failure.
 #[derive(Debug)]
+#[allow(dead_code)]
 enum MsiexecError {
     NotFound,
     SpawnFailed(anyhow::Error),
@@ -362,6 +509,7 @@ enum MsiexecError {
 
 /// Abstraction over `msiexec` invocation so tests can inject exit
 /// codes without spawning the real tool (it doesn't exist on Linux CI).
+#[allow(dead_code)]
 trait Msiexec {
     /// Run `msiexec /i <msi> /qb /norestart /l*v <log>` and block until
     /// it exits. Returns `Ok(())` on exit code 0 - every other outcome
@@ -369,6 +517,7 @@ trait Msiexec {
     fn run_installer(&self, msi: &Path, log: &Path) -> std::result::Result<(), MsiexecError>;
 }
 
+#[allow(dead_code)]
 struct MsiexecProcessRunner;
 
 impl Msiexec for MsiexecProcessRunner {

@@ -208,11 +208,10 @@ pub fn run_installer(path: &std::path::Path) -> Result<()> {
 /// - **Linux / BSD** (US-008): `~/.local/bin/paneflow` - the legacy
 ///   `.run` installer target. Reached only by the (runtime-dead on a
 ///   clean Linux install) fall-through in the dispatcher.
-/// - **macOS** (US-009 AC3): `/Applications/PaneFlow.app/Contents/MacOS/paneflow`
-///   the canonical bundle binary the DMG updater replaces. A
-///   user-dragged bundle in `$HOME/Applications/` isn't honoured here;
-///   the dispatcher passes `InstallMethod::AppBundle { bundle_path }`
-///   directly to the DMG install flow instead.
+/// - **macOS** (US-009 AC3): unused by the DMG updater. The dispatcher passes
+///   `InstallMethod::AppBundle { bundle_path }` directly to the macOS install
+///   flow, which returns the promoted `.app` bundle path for GPUI's `open`
+///   based restart.
 /// - **Windows** (US-010 AC3): `%ProgramFiles%\PaneFlow\paneflow.exe`.
 ///   Extension comes from `std::env::consts::EXE_EXTENSION` rather than
 ///   a literal `"exe"` so the helper is cross-target clean; the MSI
@@ -220,6 +219,7 @@ pub fn run_installer(path: &std::path::Path) -> Result<()> {
 ///   per-user installs under `%LocalAppData%\Programs\PaneFlow\` are
 ///   covered by `InstallMethod::WindowsMsi { install_path }` directly,
 ///   not by this helper).
+#[allow(dead_code)]
 pub fn installed_binary_path() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {

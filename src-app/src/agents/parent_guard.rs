@@ -12,9 +12,11 @@
 //! - **Windows (full)**. [`install_process_job`] creates a Job Object
 //!   with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assigns the running
 //!   Paneflow process to it on startup. Every process spawned by
-//!   Paneflow after that point inherits the job by default (unless it
-//!   explicitly sets `CREATE_BREAKAWAY_FROM_JOB`, which neither
-//!   `paneflow-acp` nor `portable-pty` do). When Paneflow exits, the
+//!   Paneflow after that point inherits the job by default. A narrowly
+//!   scoped exception exists for explicit `CREATE_BREAKAWAY_FROM_JOB`
+//!   children, used by the MSI self-update relay that must survive the
+//!   current GUI process exiting. Normal agent paths (`paneflow-acp`,
+//!   `portable-pty`) do not request breakaway. When Paneflow exits, the
 //!   last job handle is closed and Windows kills every member -- agent
 //!   CLI, ConPTY host, descendants.
 //!
@@ -47,7 +49,7 @@ mod windows_impl {
     /// Paneflow truly exits.
     pub(super) fn install() -> Result<(), Box<dyn std::error::Error>> {
         let mut info = ExtendedLimitInfo::default();
-        info.limit_kill_on_job_close();
+        info.limit_kill_on_job_close().limit_breakaway_ok();
         let job = Job::create_with_limit_info(&info)?;
         job.assign_current_process()?;
         std::mem::forget(job);
