@@ -554,6 +554,20 @@ pub(crate) fn resolve_hook_command(event: &str) -> String {
     }
 }
 
+#[cfg(windows)]
+pub(crate) fn resolve_hook_command_windows(event: &str) -> String {
+    let command = match locate_sibling_hook_binary() {
+        Some(path) => windows_cmd_hook_command(&path, event),
+        None => format!("\"{HOOK_COMMAND_PREFIX}{event}\""),
+    };
+    format!("cmd.exe /D /C {command}")
+}
+
+#[cfg(windows)]
+fn windows_cmd_hook_command(path: &Path, event: &str) -> String {
+    format!("\"\"{}\" {event}\"", display_hook_program(path))
+}
+
 /// Render the hook binary's absolute path for the `command` string the agent
 /// writes into its hook config and later executes through a shell.
 ///
@@ -783,21 +797,35 @@ fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str])
 
         // The `_paneflow_managed` marker sits on the OUTER matcher-group
         // wrapper - that's where `is_paneflow_matcher_group` checks it.
-        // The inner handler object carries only the Claude-Code-native
-        // fields so we don't send unexpected custom fields to Claude Code's
-        // command runner. Identification falls back to the `command`
-        // basename if the outer marker is stripped.
+        // The inner handler object carries the command-runner fields. On
+        // Windows, `commandWindows` keeps Codex off the bash/WSL path while
+        // `command` remains the cleanup/detection fallback shared with
+        // Claude-compatible runners.
         array.push(serde_json::json!({
             "_paneflow_managed": true,
             "hooks": [
-                {
-                    "type": "command",
-                    "command": resolve_hook_command(event),
-                    "timeout": 5,
-                }
+                hook_handler(event)
             ]
         }));
     }
+}
+
+fn hook_handler(event: &str) -> serde_json::Value {
+    let mut handler = serde_json::json!({
+        "type": "command",
+        "command": resolve_hook_command(event),
+        "timeout": 5,
+    });
+    #[cfg(windows)]
+    {
+        if let Some(obj) = handler.as_object_mut() {
+            obj.insert(
+                "commandWindows".into(),
+                serde_json::Value::String(resolve_hook_command_windows(event)),
+            );
+        }
+    }
+    handler
 }
 
 /// Remove PaneFlow's hook handlers from the parsed settings tree. Leaves
@@ -2320,8 +2348,18 @@ mod hooks_tests {
                 .unwrap_or_else(|| panic!("missing event {event}"));
             assert_eq!(arr.len(), 1, "{event}: exactly one paneflow entry");
             assert!(is_paneflow_matcher_group(&arr[0]), "{event}: detectable");
-            let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
+            let handler = &arr[0]["hooks"][0];
+            let cmd = handler["command"].as_str().unwrap();
             assert!(cmd.ends_with(&format!(" {event}")), "{event}: {cmd}");
+            let win_cmd = handler["commandWindows"].as_str().unwrap();
+            assert!(
+                win_cmd.starts_with("cmd.exe /D /C "),
+                "{event}: commandWindows must use native cmd.exe, got {win_cmd}"
+            );
+            assert!(
+                win_cmd.ends_with(&format!(" {event}\"")),
+                "{event}: commandWindows must preserve the event arg, got {win_cmd}"
+            );
         }
         assert!(
             root["hooks"].get("Notification").is_none(),
