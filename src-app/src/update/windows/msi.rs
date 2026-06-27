@@ -10,11 +10,11 @@
 //!      partial and bails; replaces the old same-host `.sha256`.
 //!   3. Copy the current `paneflow.exe` to `%TEMP%` as a tiny native relay.
 //!   4. The GUI saves state, spawns that copied relay with
-//!      `CREATE_BREAKAWAY_FROM_JOB` (or `runas` for `Program Files`
-//!      installs), and exits before the MSI runs.
+//!      `CREATE_BREAKAWAY_FROM_JOB`, and exits before the MSI runs.
 //!   5. The relay waits for the current PID to disappear, runs
-//!      `msiexec.exe /i <msi> /qb /norestart /l*v <log>`, deletes the
-//!      scratch MSI, and relaunches the installed `paneflow.exe` on success.
+//!      `msiexec.exe /i <msi> /qb /norestart /l*v <log>` (via `runas`
+//!      when the install lives under Program Files), deletes the scratch
+//!      MSI, and relaunches the installed `paneflow.exe` on success.
 //!
 //! The older synchronous path is still kept for testability and CLI-style
 //! callers: resolve `%SystemRoot%\System32\msiexec.exe` first, fall back to
@@ -199,21 +199,26 @@ pub fn spawn_relay(staged: StagedMsiUpdate) -> Result<()> {
             )
         })?;
 
+        append_relay_log(
+            &relay_log,
+            &format!(
+                "spawning relay parent={} relay={} msi={} elevated_msiexec={}",
+                parent_pid,
+                relay_exe.display(),
+                staged.msi_path.display(),
+                restart_path_requires_elevation(&staged.restart_path)
+            ),
+        );
+
         let args: Vec<OsString> = relay_args(parent_pid, &staged, &relay_log);
-        if restart_path_requires_elevation(&staged.restart_path) {
-            shell_execute_relay_elevated(&relay_exe, &args)?;
-        } else {
-            Command::new(&relay_exe)
-                .args(&args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(
-                    CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
-                )
-                .spawn()
-                .with_context(|| format!("spawn MSI relay {}", relay_exe.display()))?;
-        }
+        Command::new(&relay_exe)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+            .spawn()
+            .with_context(|| format!("spawn MSI relay {}", relay_exe.display()))?;
 
         Ok(())
     }
@@ -226,7 +231,7 @@ pub fn spawn_relay(staged: StagedMsiUpdate) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 pub fn is_relay_invocation(args: &[String]) -> bool {
-    args.get(1).map(String::as_str) == Some(MSI_RELAY_ARG)
+    relay_arg_index(args).is_some()
 }
 
 #[cfg(target_os = "windows")]
@@ -241,6 +246,9 @@ pub fn run_relay_from_args(args: &[String]) -> i32 {
         },
         Err(err) => {
             eprintln!("paneflow-msi-relay: {err:#}");
+            if let Some(path) = relay_log_path_from_args(args) {
+                append_relay_log(&path, &format!("relay argument parse failed: {err:#}"));
+            }
             2
         }
     }
@@ -281,9 +289,7 @@ fn relay_args(
 
 #[cfg(target_os = "windows")]
 fn parse_relay_invocation(args: &[String]) -> Result<RelayInvocation> {
-    if !is_relay_invocation(args) {
-        bail!("missing {MSI_RELAY_ARG}");
-    }
+    let relay_idx = relay_arg_index(args).context(format!("missing {MSI_RELAY_ARG}"))?;
 
     let mut parent_pid = None;
     let mut msi_path = None;
@@ -291,7 +297,7 @@ fn parse_relay_invocation(args: &[String]) -> Result<RelayInvocation> {
     let mut restart_path = None;
     let mut relay_log_path = None;
 
-    let mut idx = 2;
+    let mut idx = relay_idx + 1;
     while idx < args.len() {
         let key = args[idx].as_str();
         let value = args
@@ -324,6 +330,21 @@ fn parse_relay_invocation(args: &[String]) -> Result<RelayInvocation> {
 }
 
 #[cfg(target_os = "windows")]
+fn relay_arg_index(args: &[String]) -> Option<usize> {
+    args.iter()
+        .position(|arg| arg == MSI_RELAY_ARG)
+        .filter(|idx| *idx > 0)
+}
+
+#[cfg(target_os = "windows")]
+fn relay_log_path_from_args(args: &[String]) -> Option<PathBuf> {
+    args.windows(2)
+        .find(|pair| pair.first().map(String::as_str) == Some(RELAY_LOG_ARG))
+        .and_then(|pair| pair.get(1))
+        .map(PathBuf::from)
+}
+
+#[cfg(target_os = "windows")]
 fn run_native_relay(invocation: RelayInvocation) -> Result<i32> {
     append_relay_log(
         &invocation.relay_log_path,
@@ -343,18 +364,18 @@ fn run_native_relay(invocation: RelayInvocation) -> Result<i32> {
         &invocation.msi_path,
         &invocation.msi_log_path,
         &invocation.relay_log_path,
+        restart_path_requires_elevation(&invocation.restart_path),
     );
-    if result.msiexec_started {
-        let _ = std::fs::remove_file(&invocation.msi_path);
-    }
+    let _ = std::fs::remove_file(&invocation.msi_path);
 
     append_relay_log(
         &invocation.relay_log_path,
         &format!("msiexec exited with {}", result.exit_code),
     );
 
-    if result.exit_code == 0 {
-        relaunch_paneflow(&invocation.restart_path, &invocation.relay_log_path)?;
+    if relay_should_relaunch_after_msiexec(result.exit_code) {
+        relaunch_paneflow(&invocation.restart_path, &invocation.relay_log_path)
+            .with_context(|| format!("relaunch after msiexec exit {}", result.exit_code))?;
     }
 
     schedule_relay_cleanup(&invocation.relay_log_path);
@@ -364,7 +385,11 @@ fn run_native_relay(invocation: RelayInvocation) -> Result<i32> {
 #[cfg(target_os = "windows")]
 struct RelayInstallResult {
     exit_code: i32,
-    msiexec_started: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn relay_should_relaunch_after_msiexec(_exit_code: i32) -> bool {
+    true
 }
 
 #[cfg(target_os = "windows")]
@@ -372,39 +397,70 @@ fn run_msiexec_for_relay(
     msi_path: &Path,
     log_path: &Path,
     relay_log_path: &Path,
+    elevated: bool,
 ) -> RelayInstallResult {
     append_relay_log(
         relay_log_path,
         &format!(
-            "running msiexec msi={} log={}",
+            "running {}msiexec msi={} log={}",
+            if elevated { "elevated " } else { "" },
             msi_path.display(),
             log_path.display()
         ),
     );
 
+    if elevated {
+        return run_elevated_msiexec_for_relay(msi_path, log_path, relay_log_path);
+    }
+
     match MsiexecProcessRunner.run_installer(msi_path, log_path) {
-        Ok(()) => RelayInstallResult {
-            exit_code: 0,
-            msiexec_started: true,
-        },
+        Ok(()) => RelayInstallResult { exit_code: 0 },
         Err(MsiexecError::NotFound) => {
             append_relay_log(relay_log_path, "msiexec.exe not found");
-            RelayInstallResult {
-                exit_code: 127,
-                msiexec_started: false,
-            }
+            RelayInstallResult { exit_code: 127 }
         }
         Err(MsiexecError::SpawnFailed(err)) => {
             append_relay_log(relay_log_path, &format!("spawn msiexec failed: {err:#}"));
+            RelayInstallResult { exit_code: 1 }
+        }
+        Err(MsiexecError::NonZeroExit { code }) => RelayInstallResult { exit_code: code },
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_elevated_msiexec_for_relay(
+    msi_path: &Path,
+    log_path: &Path,
+    relay_log_path: &Path,
+) -> RelayInstallResult {
+    let Some(msiexec) = msiexec_exe() else {
+        append_relay_log(relay_log_path, "msiexec.exe not found");
+        return RelayInstallResult { exit_code: 127 };
+    };
+
+    let args = msiexec_args(msi_path, log_path);
+    match shell_execute_wait_elevated(&msiexec, &args) {
+        Ok(code) => RelayInstallResult { exit_code: code },
+        Err(ElevatedProcessError::Cancelled) => {
+            append_relay_log(relay_log_path, "elevated msiexec cancelled by user");
             RelayInstallResult {
-                exit_code: 1,
-                msiexec_started: false,
+                exit_code: MSIEXEC_EXIT_USER_CANCEL,
             }
         }
-        Err(MsiexecError::NonZeroExit { code }) => RelayInstallResult {
-            exit_code: code,
-            msiexec_started: true,
-        },
+        Err(ElevatedProcessError::LaunchFailed(err)) => {
+            append_relay_log(
+                relay_log_path,
+                &format!("launch elevated msiexec failed: {err:#}"),
+            );
+            RelayInstallResult { exit_code: 1 }
+        }
+        Err(ElevatedProcessError::WaitFailed(err)) => {
+            append_relay_log(
+                relay_log_path,
+                &format!("wait elevated msiexec failed: {err}"),
+            );
+            RelayInstallResult { exit_code: 1 }
+        }
     }
 }
 
@@ -522,12 +578,32 @@ fn normalize_windows_path(path: &Path) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn shell_execute_relay_elevated(relay_exe: &Path, args: &[std::ffi::OsString]) -> Result<()> {
+#[derive(Debug)]
+enum ElevatedProcessError {
+    Cancelled,
+    LaunchFailed(anyhow::Error),
+    WaitFailed(std::io::Error),
+}
+
+#[cfg(target_os = "windows")]
+fn shell_execute_wait_elevated(
+    exe: &Path,
+    args: &[std::ffi::OsString],
+) -> std::result::Result<i32, ElevatedProcessError> {
     use std::ffi::OsStr;
-    use windows_sys::Win32::UI::Shell::{SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW, ShellExecuteExW};
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, INFINITE, WaitForSingleObject,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NO_CONSOLE, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+        ShellExecuteExW,
+    };
+
+    const ERROR_CANCELLED: i32 = 1223;
 
     let verb = wide_null(OsStr::new("runas"));
-    let file = wide_null(relay_exe.as_os_str());
+    let file = wide_null(exe.as_os_str());
     let parameters = shell_execute_parameters(args);
     let parameters = wide_null(OsStr::new(&parameters));
 
@@ -535,7 +611,7 @@ fn shell_execute_relay_elevated(relay_exe: &Path, args: &[std::ffi::OsString]) -
     // either set to live NUL-terminated buffers or left null.
     let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NO_CONSOLE;
+    info.fMask = SEE_MASK_NO_CONSOLE | SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
     info.lpVerb = verb.as_ptr();
     info.lpFile = file.as_ptr();
     info.lpParameters = parameters.as_ptr();
@@ -545,11 +621,67 @@ fn shell_execute_relay_elevated(relay_exe: &Path, args: &[std::ffi::OsString]) -
     // the command line before returning.
     let ok = unsafe { ShellExecuteExW(&mut info) };
     if ok == 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("launch elevated MSI relay {}", relay_exe.display()));
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(ERROR_CANCELLED) {
+            return Err(ElevatedProcessError::Cancelled);
+        }
+        return Err(ElevatedProcessError::LaunchFailed(
+            anyhow::Error::new(err).context(format!("launch elevated {}", exe.display())),
+        ));
     }
 
-    Ok(())
+    if info.hProcess.is_null() {
+        return Err(ElevatedProcessError::LaunchFailed(anyhow::anyhow!(
+            "ShellExecuteExW returned no process handle for {}",
+            exe.display()
+        )));
+    }
+
+    // SAFETY: hProcess is owned by this SHELLEXECUTEINFOW result when
+    // SEE_MASK_NOCLOSEPROCESS succeeds. It is closed on every return path below.
+    let wait_result = unsafe { WaitForSingleObject(info.hProcess, INFINITE) };
+    if wait_result == WAIT_FAILED {
+        let err = std::io::Error::last_os_error();
+        unsafe {
+            let _ = CloseHandle(info.hProcess);
+        }
+        return Err(ElevatedProcessError::WaitFailed(err));
+    }
+    if wait_result != WAIT_OBJECT_0 {
+        unsafe {
+            let _ = CloseHandle(info.hProcess);
+        }
+        return Err(ElevatedProcessError::WaitFailed(std::io::Error::other(
+            format!("unexpected wait result {wait_result}"),
+        )));
+    }
+
+    let mut exit_code = 0u32;
+    let got_code = unsafe { GetExitCodeProcess(info.hProcess, &mut exit_code) };
+    unsafe {
+        let _ = CloseHandle(info.hProcess);
+    }
+    if got_code == 0 {
+        return Err(ElevatedProcessError::WaitFailed(
+            std::io::Error::last_os_error(),
+        ));
+    }
+
+    Ok(exit_code as i32)
+}
+
+#[cfg(target_os = "windows")]
+fn msiexec_args(msi: &Path, log: &Path) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+
+    vec![
+        OsString::from("/i"),
+        msi.as_os_str().to_os_string(),
+        OsString::from("/qb"),
+        OsString::from("/norestart"),
+        OsString::from("/l*v"),
+        log.as_os_str().to_os_string(),
+    ]
 }
 
 #[cfg(target_os = "windows")]
@@ -984,6 +1116,59 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn relay_invocation_parses_when_flag_is_not_argv1() {
+        let args = vec![
+            "paneflow".to_string(),
+            "--host-added-flag".to_string(),
+            MSI_RELAY_ARG.to_string(),
+            RELAY_PARENT_PID_ARG.to_string(),
+            "1234".to_string(),
+            RELAY_MSI_ARG.to_string(),
+            "C:\\Users\\Example\\AppData\\Local\\Temp\\paneflow-update.msi".to_string(),
+            RELAY_MSI_LOG_ARG.to_string(),
+            "C:\\Users\\Example\\AppData\\Local\\Temp\\paneflow-msi.log".to_string(),
+            RELAY_RESTART_ARG.to_string(),
+            "C:\\Program Files\\PaneFlow\\paneflow.exe".to_string(),
+            RELAY_LOG_ARG.to_string(),
+            "C:\\Users\\Example\\AppData\\Local\\Temp\\relay.log".to_string(),
+        ];
+
+        assert!(is_relay_invocation(&args));
+        let parsed = parse_relay_invocation(&args).expect("parse relay args");
+
+        assert_eq!(parsed.parent_pid, 1234);
+        assert_eq!(
+            parsed.msi_log_path,
+            PathBuf::from("C:\\Users\\Example\\AppData\\Local\\Temp\\paneflow-msi.log")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn relay_parse_error_writes_relay_log_when_log_arg_is_present() {
+        let log_path = std::env::temp_dir().join(format!(
+            "paneflow-relay-parse-test-{}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&log_path);
+        let args = vec![
+            "paneflow".to_string(),
+            MSI_RELAY_ARG.to_string(),
+            RELAY_LOG_ARG.to_string(),
+            log_path.display().to_string(),
+        ];
+
+        let code = run_relay_from_args(&args);
+        let contents = std::fs::read_to_string(&log_path).expect("relay parse log written");
+        let _ = std::fs::remove_file(&log_path);
+
+        assert_eq!(code, 2);
+        assert!(contents.contains("relay argument parse failed"));
+        assert!(contents.contains("missing relay parent PID"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn shell_execute_parameters_quote_windows_paths() {
         use std::ffi::OsString;
 
@@ -997,6 +1182,28 @@ mod tests {
             shell_execute_parameters(&args),
             "--flag \"C:\\Program Files\\PaneFlow\\paneflow.exe\" \"quote\\\"inside\""
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn msiexec_parameters_quote_windows_paths() {
+        assert_eq!(
+            shell_execute_parameters(&msiexec_args(
+                Path::new("C:\\Users\\Example\\AppData\\Local\\Temp\\paneflow update.msi"),
+                Path::new("C:\\Users\\Example\\AppData\\Local\\Temp\\paneflow msi.log"),
+            )),
+            "/i \"C:\\Users\\Example\\AppData\\Local\\Temp\\paneflow update.msi\" /qb /norestart /l*v \"C:\\Users\\Example\\AppData\\Local\\Temp\\paneflow msi.log\""
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn relay_relaunches_after_success_cancel_and_failure() {
+        assert!(relay_should_relaunch_after_msiexec(0));
+        assert!(relay_should_relaunch_after_msiexec(
+            MSIEXEC_EXIT_USER_CANCEL
+        ));
+        assert!(relay_should_relaunch_after_msiexec(MSIEXEC_EXIT_FATAL));
     }
 
     #[cfg(target_os = "windows")]
