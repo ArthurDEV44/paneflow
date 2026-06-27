@@ -509,7 +509,7 @@ impl PaneFlowApp {
         );
 
         let source_for_close = source.clone();
-        let target_tab_id_for_close = target_tab_id.clone();
+        let target_tab_id_for_close = target_tab_id;
         context_menu = context_menu.child(self.render_select_menu_item(
             "tab-context-close".into(),
             "Close Tab",

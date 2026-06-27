@@ -9,12 +9,34 @@ use gpui::{
     canvas, div, px,
 };
 
-use super::tree::{DIVIDER_PX, DragState, LayoutTree, MIN_PANE_SIZE, SplitDirection};
+use super::tree::{
+    DIVIDER_HIT_PX, DIVIDER_PX, DragState, LayoutTree, MIN_PANE_SIZE, SplitDirection,
+    resize_adjacent_ratios,
+};
+
+pub(crate) type ResizeEndCallback = Rc<dyn Fn(&mut App)>;
+
+fn finish_drag(
+    drag: &Cell<Option<DragState>>,
+    on_resize_end: Option<&ResizeEndCallback>,
+    cx: &mut App,
+) {
+    if drag.take().is_some()
+        && let Some(on_resize_end) = on_resize_end
+    {
+        on_resize_end(cx);
+    }
+}
 
 impl LayoutTree {
     /// Render the layout tree recursively as nested GPUI flex divs.
     #[allow(clippy::only_used_in_recursion)]
-    pub fn render(&self, window: &Window, cx: &App) -> AnyElement {
+    pub fn render(
+        &self,
+        window: &Window,
+        cx: &App,
+        on_resize_end: Option<ResizeEndCallback>,
+    ) -> AnyElement {
         match self {
             LayoutTree::Leaf(pane) => div().size_full().child(pane.clone()).into_any_element(),
 
@@ -33,10 +55,20 @@ impl LayoutTree {
                 let size_for_drag = container_size.clone();
                 let child_ratios: Vec<Rc<Cell<f32>>> =
                     children.iter().map(|c| c.ratio.clone()).collect();
+                let child_minimums: Vec<f32> = children
+                    .iter()
+                    .map(|child| child.node.min_main_axis_px(dir))
+                    .collect();
+                let resize_end_for_move = on_resize_end.clone();
 
                 let mut container = div().flex().size_full().overflow_hidden().on_mouse_move(
-                    move |e, window, _cx| {
+                    move |e, window, cx| {
                         if let Some(ds) = drag_move.get() {
+                            if e.pressed_button != Some(MouseButton::Left) {
+                                finish_drag(&drag_move, resize_end_for_move.as_ref(), cx);
+                                window.refresh();
+                                return;
+                            }
                             let csize = size_for_drag.get();
                             if csize <= 0.0 {
                                 return;
@@ -46,18 +78,25 @@ impl LayoutTree {
                                 SplitDirection::Vertical => e.position.x.as_f32(),
                             };
                             let delta = current_pos - ds.start_pos;
-                            let ratio_delta = delta / csize;
 
-                            // Clamp so neither child goes below MIN_PANE_SIZE pixels.
-                            // min_r is the minimum ratio a child can occupy given the
-                            // current container size.
-                            let pair_sum = ds.start_ratio_before + ds.start_ratio_after;
-                            let min_r = MIN_PANE_SIZE / csize;
-                            let lower = min_r;
-                            let upper = (pair_sum - min_r).max(lower);
-                            let new_before =
-                                (ds.start_ratio_before + ratio_delta).clamp(lower, upper);
-                            let new_after = pair_sum - new_before;
+                            let min_before = child_minimums
+                                .get(ds.divider_idx)
+                                .copied()
+                                .unwrap_or(MIN_PANE_SIZE);
+                            let min_after = child_minimums
+                                .get(ds.divider_idx + 1)
+                                .copied()
+                                .unwrap_or(MIN_PANE_SIZE);
+                            let Some((new_before, new_after)) = resize_adjacent_ratios(
+                                ds.start_ratio_before,
+                                ds.start_ratio_after,
+                                delta,
+                                csize,
+                                min_before,
+                                min_after,
+                            ) else {
+                                return;
+                            };
 
                             if let Some(r) = child_ratios.get(ds.divider_idx) {
                                 r.set(new_before);
@@ -76,15 +115,17 @@ impl LayoutTree {
                 );
 
                 let drag_up = drag.clone();
+                let resize_end_for_up = on_resize_end.clone();
                 container = container
                     .on_mouse_up(MouseButton::Left, {
                         let d = drag_up.clone();
-                        move |_e, _window, _cx| {
-                            d.set(None);
+                        let on_resize_end = resize_end_for_up.clone();
+                        move |_e, _window, cx| {
+                            finish_drag(&d, on_resize_end.as_ref(), cx);
                         }
                     })
-                    .on_mouse_up_out(MouseButton::Left, move |_e, _window, _cx| {
-                        drag_up.set(None);
+                    .on_mouse_up_out(MouseButton::Left, move |_e, _window, cx| {
+                        finish_drag(&drag_up, resize_end_for_up.as_ref(), cx);
                     });
 
                 container = match dir {
@@ -97,9 +138,10 @@ impl LayoutTree {
                 // receives the parent's bounds without affecting flex layout.
                 let size_capture = container_size.clone();
                 let drag_cancel = drag.clone();
+                let resize_end_for_cancel = on_resize_end.clone();
                 container = container.child(
                     canvas(
-                        move |bounds, _window, _cx| {
+                        move |bounds, _window, cx| {
                             let main_axis: f32 = match dir {
                                 SplitDirection::Horizontal => bounds.size.height.into(),
                                 SplitDirection::Vertical => bounds.size.width.into(),
@@ -108,7 +150,7 @@ impl LayoutTree {
                             size_capture.set(main_axis);
                             // Cancel drag if container was resized (window resize)
                             if prev > 0.0 && (prev - main_axis).abs() > 1.0 {
-                                drag_cancel.set(None);
+                                finish_drag(&drag_cancel, resize_end_for_cancel.as_ref(), cx);
                             }
                         },
                         |_, _, _, _| {},
@@ -126,19 +168,36 @@ impl LayoutTree {
                         let ratio_before = children[divider_idx].ratio.clone();
                         let ratio_after = child.ratio.clone();
 
+                        let divider_hit_margin = (DIVIDER_PX - DIVIDER_HIT_PX) / 2.0;
                         let divider = match dir {
                             SplitDirection::Horizontal => div()
-                                .h(px(DIVIDER_PX))
+                                .h(px(DIVIDER_HIT_PX))
                                 .w_full()
+                                .my(px(divider_hit_margin))
                                 .flex_shrink_0()
                                 .cursor_row_resize()
-                                .bg(crate::theme::ui_colors().border),
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .h(px(DIVIDER_PX))
+                                        .w_full()
+                                        .bg(crate::theme::ui_colors().border),
+                                ),
                             SplitDirection::Vertical => div()
-                                .w(px(DIVIDER_PX))
+                                .w(px(DIVIDER_HIT_PX))
                                 .h_full()
+                                .mx(px(divider_hit_margin))
                                 .flex_shrink_0()
                                 .cursor_col_resize()
-                                .bg(crate::theme::ui_colors().border),
+                                .flex()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .w(px(DIVIDER_PX))
+                                        .h_full()
+                                        .bg(crate::theme::ui_colors().border),
+                                ),
                         };
 
                         let divider =
@@ -158,7 +217,7 @@ impl LayoutTree {
                         container = container.child(divider);
                     }
 
-                    let elem = child.node.render(window, cx);
+                    let elem = child.node.render(window, cx, on_resize_end.clone());
                     container = container.child(
                         div()
                             .flex_basis(gpui::relative(child.ratio.get()))

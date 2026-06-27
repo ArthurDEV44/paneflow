@@ -951,7 +951,11 @@ impl Render for PaneFlowApp {
             self.render_diff_main(cx)
         } else if let Some(ws) = self.active_workspace() {
             if let Some(root) = &ws.root {
-                root.render(window, cx)
+                let app_weak = cx.weak_entity();
+                let on_resize_end = std::rc::Rc::new(move |cx: &mut App| {
+                    let _ = app_weak.update(cx, |app, cx| app.save_session(cx));
+                });
+                root.render(window, cx, Some(on_resize_end))
             } else {
                 div()
                     .flex()
