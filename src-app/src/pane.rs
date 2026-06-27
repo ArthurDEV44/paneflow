@@ -1499,42 +1499,33 @@ impl Pane {
                 .into_any_element()
         });
 
-        // EP-005 US-013/US-014 + EP-006 US-018 - identity pill, port badges
-        // and the transient fleet-match badge, governed by the FR-11 tab
+        // EP-005 US-013 + EP-006 US-018 - identity pill and the transient
+        // fleet-match badge, governed by the FR-11 tab
         // anatomy: at most 2 adornments per tab, in priority order state
-        // dot > queued chip > identity pill > port badges > match badge.
+        // dot > queued chip > identity pill > match badge.
         // The dot and chip claim their slots above; the pill degrades to
         // its icon alone ("point coloré") when it shares the tab with
-        // another adornment; the port badges only render while a slot
-        // remains (their own internal fallback is the "+N" fold); and the
-        // match badge - lowest priority, "s'efface en premier" - takes the
-        // last slot if any.
-        let (agent_pill, port_badges, match_badge) = {
+        // another adornment; and the match badge - lowest priority,
+        // "s'efface en premier" - takes the last slot if any.
+        let (agent_pill, match_badge) = {
             let term_meta = self.tabs.get(i).and_then(|t| t.as_terminal()).map(|t| {
                 let r = t.read(cx);
                 (
                     r.terminal.detected_agent,
                     r.terminal.agent_confirmed,
-                    r.terminal.detected_ports.clone(),
-                    r.terminal.port_conflicts.clone(),
                     self.search_hits.get(&t.entity_id()).copied(),
                 )
             });
             let mut slots_used: u8 =
                 u8::from(has_errored || has_attention || has_bell) + u8::from(has_pending);
             let mut pill = None;
-            let mut badges = None;
             let mut hits_badge = None;
-            if let Some((agent, confirmed, ports, conflicts, hits)) = term_meta {
+            if let Some((agent, confirmed, hits)) = term_meta {
                 if let Some(agent) = agent
                     && slots_used < 2
                 {
                     let compact = slots_used == 1;
                     pill = Some(Self::render_agent_pill(i, agent, confirmed, compact, ui));
-                    slots_used += 1;
-                }
-                if slots_used < 2 && (!ports.is_empty() || !conflicts.is_empty()) {
-                    badges = Some(Self::render_port_badges(i, &ports, &conflicts, ui));
                     slots_used += 1;
                 }
                 if slots_used < 2
@@ -1554,7 +1545,7 @@ impl Pane {
                     );
                 }
             }
-            (pill, badges, hits_badge)
+            (pill, hits_badge)
         };
 
         let tab_hover_group = SharedString::from(format!("pane-tab-hover-{i}"));
@@ -1765,7 +1756,6 @@ impl Pane {
             .child(leading_slot)
             .child(self.render_tab_title(i, cx))
             .children(agent_pill)
-            .children(port_badges)
             .children(match_badge);
 
         tab.child(content).into_any_element()
@@ -1839,117 +1829,6 @@ impl Pane {
                 .into()
         })
         .into_any_element()
-    }
-
-    /// EP-005 US-014: port badges for one tab - conflicted announcements
-    /// first (alert style + owner tooltip), then owned LISTEN ports
-    /// (clickable when a frontend URL is known, textual otherwise), at
-    /// most 2 badges with the overflow folded into "+N" (FR-11).
-    fn render_port_badges(
-        tab_idx: usize,
-        ports: &[(u16, Option<String>)],
-        conflicts: &[(u16, String)],
-        ui: crate::theme::UiColors,
-    ) -> gpui::AnyElement {
-        const MAX_BADGES: usize = 2;
-
-        struct Badge {
-            port: u16,
-            url: Option<String>,
-            conflict_owner: Option<String>,
-        }
-        let mut entries: Vec<Badge> = Vec::new();
-        for (p, owner) in conflicts {
-            entries.push(Badge {
-                port: *p,
-                url: None,
-                conflict_owner: Some(owner.clone()),
-            });
-        }
-        for (p, url) in ports {
-            if entries.iter().any(|b| b.port == *p) {
-                continue;
-            }
-            entries.push(Badge {
-                port: *p,
-                url: url.clone(),
-                conflict_owner: None,
-            });
-        }
-
-        let overflow = entries.len().saturating_sub(MAX_BADGES);
-        let mut row = div()
-            .flex()
-            .flex_none()
-            .flex_row()
-            .items_center()
-            .gap(px(2.))
-            .ml_1();
-        for (j, b) in entries.into_iter().take(MAX_BADGES).enumerate() {
-            let label = format!(":{}", b.port);
-            let badge_base = div()
-                .id(SharedString::from(format!("tab-port-{tab_idx}-{j}")))
-                .flex_none()
-                .px(px(3.))
-                .rounded(px(3.))
-                .text_size(px(9.));
-            let badge: gpui::AnyElement = if let Some(owner) = b.conflict_owner {
-                // Info-level heuristic, never blocking (US-014): the URL
-                // announced here resolves to a socket owned by another
-                // pane's subtree. Tooltip names the owner so the collision
-                // is not carried by color alone.
-                let tip: SharedString = format!("port {} is owned by \"{}\"", b.port, owner).into();
-                badge_base
-                    .bg(ui.vc_conflict.opacity(0.2))
-                    .text_color(ui.vc_conflict)
-                    .tooltip(move |_w, cx| {
-                        let label = tip.clone();
-                        cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
-                            .into()
-                    })
-                    .child(label)
-                    .into_any_element()
-            } else if let Some(url) = b.url {
-                // Frontend service: clickable, same `open::that` path as
-                // the sidebar chips. stop_propagation so the click never
-                // selects/activates the tab underneath.
-                let tip: SharedString = url.clone().into();
-                badge_base
-                    .bg(ui.subtle)
-                    .text_color(ui.accent)
-                    .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        if let Err(err) = open::that(&url) {
-                            log::warn!("tab port badge: open URL failed: {err}");
-                        }
-                        cx.stop_propagation();
-                    })
-                    .tooltip(move |_w, cx| {
-                        let label = tip.clone();
-                        cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
-                            .into()
-                    })
-                    .child(label)
-                    .into_any_element()
-            } else {
-                badge_base
-                    .bg(ui.subtle)
-                    .text_color(ui.muted)
-                    .child(label)
-                    .into_any_element()
-            };
-            row = row.child(badge);
-        }
-        if overflow > 0 {
-            row = row.child(
-                div()
-                    .flex_none()
-                    .text_size(px(9.))
-                    .text_color(ui.muted)
-                    .child(format!("+{overflow}")),
-            );
-        }
-        row.into_any_element()
     }
 
     /// Trailing action-button cluster of the tab bar (US-051: code-motion out

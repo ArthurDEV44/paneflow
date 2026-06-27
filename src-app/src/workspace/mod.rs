@@ -15,6 +15,8 @@ pub mod surface_naming;
 pub mod worktree;
 
 pub use git::{GitDiffStats, detect_branch, find_git_dir, resolve_repo_root};
+#[cfg(test)]
+pub(crate) use ports::PortEntry;
 pub use ports::{PaneScan, scan_panes};
 
 /// Hard cap on open workspaces (US-054: single source for the bound previously

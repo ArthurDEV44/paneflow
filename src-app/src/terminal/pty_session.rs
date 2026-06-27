@@ -272,9 +272,8 @@ pub struct TerminalState {
     pub agent_confirmed: bool,
     /// EP-005 US-014: LISTEN ports attributed to this terminal's PTY
     /// subtree by the per-pane scan, each with the clickable frontend URL
-    /// when the workspace's `service_labels` knows one (sidebar parity).
-    /// Sorted by port, deduplicated; drives the tab port badges. Not
-    /// persisted (live resource state).
+    /// when the workspace's `service_labels` knows one. Sorted by port,
+    /// deduplicated, and kept as live resource state rather than persisted.
     pub detected_ports: Vec<(u16, Option<String>)>,
     /// US-014: ports whose service URL was announced in THIS terminal
     /// while the LISTEN socket belongs to another pane's subtree -
@@ -3166,6 +3165,51 @@ mod tests {
         assert!(
             state.foreground_command().is_none(),
             "display-only terminal has no foreground process to resolve"
+        );
+    }
+
+    #[test]
+    fn scan_output_uses_multiline_framework_context() {
+        let mut state = TerminalState::new_display_only(24, 80);
+        state.restore_scrollback("▲ Next.js 16.1.6\n- Local: http://localhost:3000\n");
+
+        let services = state.scan_output();
+
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].port, 3000);
+        assert_eq!(services[0].label.as_deref(), Some("Next.js"));
+        assert!(services[0].is_frontend);
+    }
+
+    #[test]
+    fn scan_output_dedups_until_port_leaves_live_set() {
+        let mut state = TerminalState::new_display_only(24, 80);
+        state.restore_scrollback("Vite ready at http://localhost:5173\n");
+
+        assert_eq!(state.scan_output().len(), 1);
+        assert!(state.scan_output().is_empty());
+
+        state.retain_reported_ports(&[]);
+        let services = state.scan_output();
+
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].port, 5173);
+    }
+
+    #[test]
+    fn announced_ports_are_deduped_and_bounded() {
+        let mut state = TerminalState::new_display_only(24, 80);
+        state.note_announced_port(3000);
+        state.note_announced_port(3000);
+        for port in 3001..3025 {
+            state.note_announced_port(port);
+        }
+
+        assert_eq!(state.announced_ports.len(), 16);
+        assert_eq!(state.announced_ports[0], 3000);
+        assert_eq!(
+            state.announced_ports.iter().filter(|&&p| p == 3000).count(),
+            1
         );
     }
 

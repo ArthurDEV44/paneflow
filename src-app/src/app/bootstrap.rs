@@ -580,6 +580,24 @@ impl PaneFlowApp {
         // - TerminalEvent::ActivityBurst → schedule_port_scan()
         // - TerminalEvent::CwdChanged → handle_cwd_change()
         // See handle_terminal_event() for the push-based implementation.
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_secs(5)).await;
+                    if cx
+                        .update(|cx| {
+                            this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                                app.schedule_active_port_rescans(cx);
+                            })
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            },
+        )
+        .detach();
 
         // US-008 - classify the install source once, then hand off to the
         // install-method hygiene migrations. Migrations are Linux-only and

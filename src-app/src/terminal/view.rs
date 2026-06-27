@@ -900,7 +900,7 @@ pub enum TerminalEvent {
     /// The shell's working directory changed (detected via OSC 7 escape sequence).
     CwdChanged(String),
     /// Terminal output activity detected - triggers an OS port scan
-    /// (`workspace::ports`; Linux `/proc/net/tcp`, macOS libproc, Windows stub).
+    /// (`workspace::ports`; Linux `/proc/net/tcp`, macOS libproc, Windows IP Helper).
     /// Emitted alongside `ServiceDetected` during output scan ticks.
     ActivityBurst,
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").

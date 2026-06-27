@@ -9,7 +9,7 @@
 
 /// Metadata about a detected service (server listening on a port).
 /// Enriches the bare port number from the OS port scan (`workspace::ports`;
-/// Linux `/proc/net/tcp`, macOS libproc, Windows stub) with human-readable info.
+/// Linux `/proc/net/tcp`, macOS libproc, Windows IP Helper) with human-readable info.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServiceInfo {
     pub port: u16,
@@ -145,11 +145,32 @@ pub(super) fn detect_framework(line: &str) -> (Option<String>, bool) {
     ];
     let lower = line.to_lowercase();
     for (key, label, frontend) in FRAMEWORKS {
-        if lower.contains(key) {
+        if contains_keyword(&lower, key) {
             return (Some(label.to_string()), *frontend);
         }
     }
     (None, false)
+}
+
+fn contains_keyword(haystack: &str, needle: &str) -> bool {
+    let mut offset = 0;
+    while let Some(found) = haystack[offset..].find(needle) {
+        let start = offset + found;
+        let end = start + needle.len();
+        let before_ok = haystack[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after_ok = haystack[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        offset = end;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -180,6 +201,40 @@ mod tests {
         let info = parse_service_line("Serving HTTP on 127.0.0.1 port 8000").unwrap();
         assert_eq!(info.port, 8000);
         assert_eq!(info.url.as_deref(), Some("http://localhost:8000"));
+    }
+
+    #[test]
+    fn frontend_frameworks_are_labeled_clickable() {
+        let info = parse_service_line("VITE v7 ready at http://localhost:5173/").unwrap();
+        assert_eq!(info.label.as_deref(), Some("Vite"));
+        assert!(info.is_frontend);
+
+        let info = parse_service_line("Next.js dev server http://localhost:3000").unwrap();
+        assert_eq!(info.label.as_deref(), Some("Next.js"));
+        assert!(info.is_frontend);
+    }
+
+    #[test]
+    fn backend_frameworks_are_labeled_not_clickable_by_text_alone() {
+        let info = parse_service_line("Fastify listening at http://127.0.0.1:3001").unwrap();
+        assert_eq!(info.label.as_deref(), Some("Fastify"));
+        assert!(!info.is_frontend);
+    }
+
+    #[test]
+    fn framework_detection_rejects_substring_lookalikes() {
+        assert_eq!(
+            detect_framework("origin: http://localhost:3000"),
+            (None, false)
+        );
+        assert_eq!(
+            detect_framework("invite users at localhost:5173"),
+            (None, false)
+        );
+        assert_eq!(
+            detect_framework("fibers listening on localhost:3002"),
+            (None, false)
+        );
     }
 
     #[test]

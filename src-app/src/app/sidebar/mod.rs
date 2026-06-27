@@ -50,6 +50,17 @@ fn collapse_home(cwd: &str, home: &str) -> String {
     }
 }
 
+fn visible_service_ports(
+    active_ports: &[u16],
+    service_labels: &std::collections::HashMap<u16, crate::terminal::ServiceInfo>,
+) -> Vec<u16> {
+    active_ports
+        .iter()
+        .copied()
+        .filter(|port| service_labels.contains_key(port))
+        .collect()
+}
+
 impl PaneFlowApp {
     /// Cheap content signature for the sidebar display order (US-048). Hashes
     /// the workspace count plus each `(id, repo_root)` in positional order, so
@@ -425,7 +436,7 @@ impl PaneFlowApp {
 
             card = card.child(title_row);
 
-            // ── Meta line - branch, diff stats, and active ports, all on a
+            // ── Meta line - branch, diff stats, and detected services, all on a
             // single compact muted line (Codex quiet-card: one airy meta row,
             // not a stack of three). `flex_wrap()` lets a long branch or extra
             // ports drop gracefully instead of truncating; the branch keeps its
@@ -433,7 +444,8 @@ impl PaneFlowApp {
             // collapses the label to "…" even with room to spare).
             let has_branch = !ws.git_branch.is_empty();
             let has_stats = !ws.git_stats.is_empty();
-            let has_ports = !ws.active_ports.is_empty();
+            let display_ports = visible_service_ports(&ws.active_ports, &ws.service_labels);
+            let has_ports = !display_ports.is_empty();
             if has_branch || has_stats || has_ports {
                 let mut meta_row = div()
                     .flex()
@@ -490,14 +502,14 @@ impl PaneFlowApp {
                     meta_row = meta_row.child(div().flex_none().text_color(ui.muted).child("·"));
                 }
 
-                // Active ports. Frontend ports are clickable tinted chips;
+                // Detected services. Frontend services are clickable tinted chips;
                 // non-frontend ports render as plain muted `:port` text so the
                 // chip ink stays meaningful (= clickable). Capped at 3 visible
                 // to keep the card height predictable; overflow condenses to a
                 // `+N` muted counter.
                 if has_ports {
                     const PORTS_VISIBLE: usize = 3;
-                    for (pi, port) in ws.active_ports.iter().take(PORTS_VISIBLE).enumerate() {
+                    for (pi, port) in display_ports.iter().take(PORTS_VISIBLE).enumerate() {
                         let info = ws.service_labels.get(port);
                         let is_frontend = info.is_some_and(|i| i.is_frontend);
                         let label = if let Some(i) = info
@@ -557,13 +569,13 @@ impl PaneFlowApp {
                         }
                     }
 
-                    if ws.active_ports.len() > PORTS_VISIBLE {
+                    if display_ports.len() > PORTS_VISIBLE {
                         meta_row = meta_row.child(
                             div()
                                 .px(px(4.))
                                 .text_size(px(10.))
                                 .text_color(ui.muted)
-                                .child(format!("+{}", ws.active_ports.len() - PORTS_VISIBLE)),
+                                .child(format!("+{}", display_ports.len() - PORTS_VISIBLE)),
                         );
                     }
                 }
@@ -875,8 +887,8 @@ fn capitalize_agent(key: &str) -> &'static str {
 /// Lightweight tooltip body reused by sidebar affordances that just
 /// need to show one short label. Mirrors the `WorkspaceCwdTooltip`
 /// style minus the monospace font so prose reads naturally.
-/// `pub(crate)`: the tab identity pill + port badges (EP-005, pane.rs)
-/// reuse it rather than duplicating a fourth one-label tooltip body.
+/// `pub(crate)`: the tab identity pill (EP-005, pane.rs) reuses it rather
+/// than duplicating a fourth one-label tooltip body.
 pub(crate) struct SidebarTooltip {
     pub(crate) label: SharedString,
 }
@@ -927,7 +939,9 @@ impl Render for WorkspaceCwdTooltip {
 
 #[cfg(test)]
 mod tests {
-    use super::collapse_home;
+    use super::{collapse_home, visible_service_ports};
+    use crate::terminal::ServiceInfo;
+    use std::collections::HashMap;
 
     #[cfg(not(target_os = "windows"))]
     #[test]
@@ -958,6 +972,35 @@ mod tests {
     #[test]
     fn empty_home_returns_cwd_verbatim() {
         assert_eq!(collapse_home("/some/path", ""), "/some/path");
+    }
+
+    #[test]
+    fn visible_service_ports_hide_unlabeled_ephemeral_ports() {
+        let labels = HashMap::from([
+            (
+                3000,
+                ServiceInfo {
+                    port: 3000,
+                    url: Some("http://localhost:3000".to_string()),
+                    label: Some("Next.js".to_string()),
+                    is_frontend: true,
+                },
+            ),
+            (
+                8000,
+                ServiceInfo {
+                    port: 8000,
+                    url: Some("http://localhost:8000".to_string()),
+                    label: Some("Fastify".to_string()),
+                    is_frontend: false,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            visible_service_ports(&[3000, 53154, 8000, 53155], &labels),
+            vec![3000, 8000]
+        );
     }
 
     #[cfg(not(target_os = "windows"))]

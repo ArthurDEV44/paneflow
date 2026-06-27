@@ -175,6 +175,157 @@ fn pid_matches(pid: u32, pinned_start: Option<u64>) -> bool {
     }
 }
 
+fn merge_service_label(
+    labels: &mut std::collections::HashMap<u16, crate::terminal::ServiceInfo>,
+    info: crate::terminal::ServiceInfo,
+) -> bool {
+    if let Some(existing) = labels.get(&info.port)
+        && existing.is_frontend
+        && !info.is_frontend
+    {
+        return false;
+    }
+    if labels.get(&info.port) == Some(&info) {
+        return false;
+    }
+    labels.insert(info.port, info);
+    true
+}
+
+fn scan_workspace_ports(
+    scan: &std::collections::HashMap<u64, crate::workspace::PaneScan>,
+) -> Vec<u16> {
+    let mut ports: Vec<u16> = scan
+        .values()
+        .flat_map(|s| s.ports.iter().map(|e| e.port))
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+fn scan_detected_agents(
+    scan: &std::collections::HashMap<u64, crate::workspace::PaneScan>,
+) -> std::collections::HashSet<String> {
+    scan.values()
+        .flat_map(|s| s.agents.iter().cloned())
+        .collect()
+}
+
+fn merge_frontend_scan_labels(
+    labels: &mut std::collections::HashMap<u16, crate::terminal::ServiceInfo>,
+    scan: &std::collections::HashMap<u64, crate::workspace::PaneScan>,
+) -> bool {
+    let mut changed = false;
+    for entry in scan.values().flat_map(|s| s.ports.iter()) {
+        let Some(label) = entry.frontend else {
+            continue;
+        };
+        let fallback_url = || format!("http://localhost:{}", entry.port);
+        match labels.entry(entry.port) {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let info = e.get_mut();
+                if !info.is_frontend {
+                    info.is_frontend = true;
+                    info.label = Some(label.to_string());
+                    if info.url.is_none() {
+                        info.url = Some(fallback_url());
+                    }
+                    changed = true;
+                    continue;
+                }
+                if info.label.is_none() {
+                    info.label = Some(label.to_string());
+                    changed = true;
+                }
+                if info.url.is_none() {
+                    info.url = Some(fallback_url());
+                    changed = true;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(crate::terminal::ServiceInfo {
+                    port: entry.port,
+                    url: Some(fallback_url()),
+                    label: Some(label.to_string()),
+                    is_frontend: true,
+                });
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn merge_scan_workspace_state(
+    active_ports: &mut Vec<u16>,
+    service_labels: &mut std::collections::HashMap<u16, crate::terminal::ServiceInfo>,
+    detected_agents: &mut std::collections::HashSet<String>,
+    scan: &std::collections::HashMap<u64, crate::workspace::PaneScan>,
+) -> bool {
+    let ports = scan_workspace_ports(scan);
+    let next_agents = scan_detected_agents(scan);
+    let mut changed = false;
+
+    if *active_ports != ports {
+        *active_ports = ports;
+        changed = true;
+    }
+    let before = service_labels.len();
+    service_labels.retain(|port, _| active_ports.contains(port));
+    if service_labels.len() != before {
+        changed = true;
+    }
+    if *detected_agents != next_agents {
+        *detected_agents = next_agents;
+        changed = true;
+    }
+    merge_frontend_scan_labels(service_labels, scan) || changed
+}
+
+fn port_ownership(
+    scan: &std::collections::HashMap<u64, crate::workspace::PaneScan>,
+) -> (
+    std::collections::HashMap<u16, u64>,
+    std::collections::HashSet<u16>,
+) {
+    let mut owner = std::collections::HashMap::new();
+    let mut shared = std::collections::HashSet::new();
+    for (tid, s) in scan {
+        for e in &s.ports {
+            match owner.entry(e.port) {
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    if *o.get() != *tid {
+                        shared.insert(e.port);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(*tid);
+                }
+            }
+        }
+    }
+    (owner, shared)
+}
+
+fn announced_port_conflicts(
+    announced_ports: &[u16],
+    tid: u64,
+    owner: &std::collections::HashMap<u16, u64>,
+    shared: &std::collections::HashSet<u16>,
+    display_names: &std::collections::HashMap<u64, String>,
+) -> Vec<(u16, String)> {
+    announced_ports
+        .iter()
+        .filter_map(|p| match owner.get(p) {
+            Some(&o) if o != tid && !shared.contains(p) => {
+                Some((*p, display_names.get(&o).cloned().unwrap_or_default()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl PaneFlowApp {
     pub(crate) fn handle_title_bar_event(
         &mut self,
@@ -709,17 +860,9 @@ impl PaneFlowApp {
                 terminal.update(cx, |view, _| view.terminal.note_announced_port(info.port));
                 if let Some(ws_idx) = self.workspace_idx_for_terminal(&terminal, cx) {
                     let ws = &mut self.workspaces[ws_idx];
-                    // Don't overwrite a frontend label with a non-frontend one.
-                    // A backend terminal might reference "localhost:3000" in CORS
-                    // config, but the frontend terminal already claimed that port.
-                    if let Some(existing) = ws.service_labels.get(&info.port)
-                        && existing.is_frontend
-                        && !info.is_frontend
+                    if merge_service_label(&mut ws.service_labels, info.clone())
+                        && self.settings_section.is_none()
                     {
-                        return;
-                    }
-                    ws.service_labels.insert(info.port, info.clone());
-                    if self.settings_section.is_none() {
                         cx.notify();
                     }
                 }
@@ -1039,6 +1182,21 @@ impl PaneFlowApp {
         .detach();
     }
 
+    pub(crate) fn schedule_active_port_rescans(&mut self, cx: &mut Context<Self>) {
+        let workspace_ids: Vec<u64> = self
+            .workspaces
+            .iter()
+            .filter(|ws| !ws.active_ports.is_empty() && !ws.port_scan_pending)
+            .map(|ws| ws.id)
+            .collect();
+
+        for ws_id in workspace_ids {
+            if let Some(ws_idx) = self.workspaces.iter().position(|ws| ws.id == ws_id) {
+                self.schedule_port_scan(ws_idx, cx);
+            }
+        }
+    }
+
     /// Execute a single per-pane scan for a workspace (EP-005 US-012).
     /// Returns `false` if the scan should be aborted (generation superseded
     /// or workspace removed).
@@ -1113,8 +1271,6 @@ impl PaneFlowApp {
         scan: std::collections::HashMap<u64, crate::workspace::PaneScan>,
         cx: &mut Context<Self>,
     ) {
-        use std::collections::hash_map::Entry;
-
         let Some(ws) = self
             .workspaces
             .iter_mut()
@@ -1124,69 +1280,18 @@ impl PaneFlowApp {
         };
 
         // Workspace aggregates (sidebar contract).
-        let mut ports: Vec<u16> = scan
-            .values()
-            .flat_map(|s| s.ports.iter().map(|e| e.port))
-            .collect();
-        ports.sort_unstable();
-        ports.dedup();
-        let detected_agents: std::collections::HashSet<String> = scan
-            .values()
-            .flat_map(|s| s.agents.iter().cloned())
-            .collect();
-
-        let mut changed = false;
-        if ws.active_ports != ports {
-            ws.active_ports = ports;
-            ws.service_labels
-                .retain(|port, _| ws.active_ports.contains(port));
-            changed = true;
-        }
-        if ws.detected_agents != detected_agents {
-            ws.detected_agents = detected_agents;
-            changed = true;
-        }
-
-        // OS-side classification → service_labels. The argv classifier is
-        // the AUTHORITATIVE clickability signal (it sees the actual socket
-        // owner); the PTY-text path stays as enrichment (exact URL with
-        // path, backend labels). Without this merge, clickability required
-        // the text scrape to have caught the announcement line - a
-        // timing-dependent AND of two detectors that made chips appear
-        // "sometimes".
-        for entry in scan.values().flat_map(|s| s.ports.iter()) {
-            let Some(label) = entry.frontend else {
-                continue;
-            };
-            match ws.service_labels.entry(entry.port) {
-                Entry::Occupied(mut e) => {
-                    let info = e.get_mut();
-                    if !info.is_frontend {
-                        info.is_frontend = true;
-                        info.label = Some(label.to_string());
-                        if info.url.is_none() {
-                            info.url = Some(format!("http://localhost:{}", entry.port));
-                        }
-                        changed = true;
-                    }
-                }
-                Entry::Vacant(v) => {
-                    v.insert(crate::terminal::ServiceInfo {
-                        port: entry.port,
-                        url: Some(format!("http://localhost:{}", entry.port)),
-                        label: Some(label.to_string()),
-                        is_frontend: true,
-                    });
-                    changed = true;
-                }
-            }
-        }
+        let mut changed = merge_scan_workspace_state(
+            &mut ws.active_ports,
+            &mut ws.service_labels,
+            &mut ws.detected_agents,
+            &scan,
+        );
 
         // Snapshot for the per-terminal announce-dedup purge below (ends the
         // mutable borrow region cleanly before the pane loop).
         let live_ports: Vec<u16> = ws.active_ports.clone();
 
-        // Frontend URLs for clickable port badges (US-014, sidebar parity:
+        // Frontend URLs for live per-terminal service state (sidebar parity:
         // only frontend services get a link, backend ports stay textual).
         let frontend_urls: std::collections::HashMap<u16, String> = ws
             .service_labels
@@ -1207,22 +1312,7 @@ impl PaneFlowApp {
         // balancing, not a collision. Other known false positives (proxies,
         // port-forwards, re-announcements after a restart) are tolerated in
         // v1 - the badge is an info-level heuristic, never blocking.
-        let mut owner: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
-        let mut shared: std::collections::HashSet<u16> = std::collections::HashSet::new();
-        for (tid, s) in &scan {
-            for e in &s.ports {
-                match owner.entry(e.port) {
-                    Entry::Occupied(o) => {
-                        if *o.get() != *tid {
-                            shared.insert(e.port);
-                        }
-                    }
-                    Entry::Vacant(v) => {
-                        v.insert(*tid);
-                    }
-                }
-            }
-        }
+        let (owner, shared) = port_ownership(&scan);
 
         // Owner display names for the conflict tooltip (custom name, else
         // OSC title, else a stable surface reference). The OSC title is
@@ -1297,16 +1387,13 @@ impl PaneFlowApp {
                         t.detected_ports = ports_with_links;
                         pane_changed = true;
                     }
-                    let conflicts: Vec<(u16, String)> = t
-                        .announced_ports
-                        .iter()
-                        .filter_map(|p| match owner.get(p) {
-                            Some(&o) if o != tid && !shared.contains(p) => {
-                                Some((*p, display_names.get(&o).cloned().unwrap_or_default()))
-                            }
-                            _ => None,
-                        })
-                        .collect();
+                    let conflicts = announced_port_conflicts(
+                        &t.announced_ports,
+                        tid,
+                        &owner,
+                        &shared,
+                        &display_names,
+                    );
                     if t.port_conflicts != conflicts {
                         t.port_conflicts = conflicts;
                         pane_changed = true;
@@ -1450,7 +1537,13 @@ impl PaneFlowApp {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_proc_stat_starttime;
+    use super::{
+        announced_port_conflicts, merge_scan_workspace_state, merge_service_label,
+        parse_proc_stat_starttime, port_ownership,
+    };
+    use crate::terminal::ServiceInfo;
+    use crate::workspace::{PaneScan, PortEntry};
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn proc_stat_starttime_survives_hostile_comm_names() {
@@ -1463,5 +1556,158 @@ mod tests {
         // Truncated content (fewer than 22 fields) yields None, not a panic.
         assert_eq!(parse_proc_stat_starttime("1234 (zsh) S 1 1234"), None);
         assert_eq!(parse_proc_stat_starttime(""), None);
+    }
+
+    #[test]
+    fn merge_service_label_keeps_frontend_when_backend_mentions_same_port() {
+        let mut labels = HashMap::new();
+        assert!(merge_service_label(
+            &mut labels,
+            ServiceInfo {
+                port: 3000,
+                url: Some("http://localhost:3000/app".to_string()),
+                label: Some("Next.js".to_string()),
+                is_frontend: true,
+            },
+        ));
+
+        assert!(!merge_service_label(
+            &mut labels,
+            ServiceInfo {
+                port: 3000,
+                url: Some("http://localhost:3000".to_string()),
+                label: Some("Fastify".to_string()),
+                is_frontend: false,
+            },
+        ));
+
+        let info = labels.get(&3000).unwrap();
+        assert_eq!(info.label.as_deref(), Some("Next.js"));
+        assert_eq!(info.url.as_deref(), Some("http://localhost:3000/app"));
+        assert!(info.is_frontend);
+    }
+
+    #[test]
+    fn merge_scan_workspace_state_adds_frontend_fallback_and_prunes_stale_labels() {
+        let mut active_ports = vec![9999];
+        let mut service_labels = HashMap::from([(
+            9999,
+            ServiceInfo {
+                port: 9999,
+                url: Some("http://localhost:9999".to_string()),
+                label: Some("Vite".to_string()),
+                is_frontend: true,
+            },
+        )]);
+        let mut detected_agents = HashSet::new();
+        let scan = HashMap::from([(
+            7,
+            PaneScan {
+                ports: vec![PortEntry {
+                    port: 5173,
+                    frontend: Some("Vite"),
+                }],
+                agents: vec!["codex".to_string()],
+            },
+        )]);
+
+        assert!(merge_scan_workspace_state(
+            &mut active_ports,
+            &mut service_labels,
+            &mut detected_agents,
+            &scan,
+        ));
+
+        assert_eq!(active_ports, vec![5173]);
+        assert!(!service_labels.contains_key(&9999));
+        let info = service_labels.get(&5173).unwrap();
+        assert_eq!(info.url.as_deref(), Some("http://localhost:5173"));
+        assert_eq!(info.label.as_deref(), Some("Vite"));
+        assert!(info.is_frontend);
+        assert!(detected_agents.contains("codex"));
+    }
+
+    #[test]
+    fn merge_scan_workspace_state_preserves_exact_frontend_url() {
+        let mut active_ports = vec![5173];
+        let mut service_labels = HashMap::from([(
+            5173,
+            ServiceInfo {
+                port: 5173,
+                url: Some("http://localhost:5173/app".to_string()),
+                label: Some("Vite".to_string()),
+                is_frontend: true,
+            },
+        )]);
+        let mut detected_agents = HashSet::new();
+        let scan = HashMap::from([(
+            7,
+            PaneScan {
+                ports: vec![PortEntry {
+                    port: 5173,
+                    frontend: Some("Vite"),
+                }],
+                agents: Vec::new(),
+            },
+        )]);
+
+        assert!(!merge_scan_workspace_state(
+            &mut active_ports,
+            &mut service_labels,
+            &mut detected_agents,
+            &scan,
+        ));
+        assert_eq!(
+            service_labels.get(&5173).unwrap().url.as_deref(),
+            Some("http://localhost:5173/app")
+        );
+    }
+
+    #[test]
+    fn announced_port_conflicts_ignore_shared_ports() {
+        let shared_scan = HashMap::from([
+            (
+                1,
+                PaneScan {
+                    ports: vec![PortEntry {
+                        port: 3000,
+                        frontend: None,
+                    }],
+                    agents: Vec::new(),
+                },
+            ),
+            (
+                2,
+                PaneScan {
+                    ports: vec![PortEntry {
+                        port: 3000,
+                        frontend: None,
+                    }],
+                    agents: Vec::new(),
+                },
+            ),
+        ]);
+        let (owner, shared) = port_ownership(&shared_scan);
+        let display_names = HashMap::from([(1, "frontend".to_string())]);
+
+        assert!(announced_port_conflicts(&[3000], 2, &owner, &shared, &display_names).is_empty());
+
+        let single_owner_scan = HashMap::from([(
+            1,
+            PaneScan {
+                ports: vec![PortEntry {
+                    port: 5173,
+                    frontend: Some("Vite"),
+                }],
+                agents: Vec::new(),
+            },
+        )]);
+        let (owner, shared) = port_ownership(&single_owner_scan);
+        let display_names = HashMap::from([(1, "vite pane".to_string())]);
+
+        assert_eq!(
+            announced_port_conflicts(&[5173], 2, &owner, &shared, &display_names),
+            vec![(5173, "vite pane".to_string())]
+        );
     }
 }
