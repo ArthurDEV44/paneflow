@@ -165,6 +165,7 @@ fn classify_frontend_argv<'a>(args: impl Iterator<Item = &'a str>) -> Option<&'s
     None
 }
 
+#[cfg(any(windows, test))]
 fn normalize_process_basename(name: &str) -> &str {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
     for suffix in [".exe", ".cmd", ".bat", ".ps1"] {
