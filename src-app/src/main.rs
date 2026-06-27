@@ -218,6 +218,31 @@ struct SelfUpdateState {
     download_generation: u64,
 }
 
+const PRIMARY_SIDEBAR_ANIMATION_MS: u64 = 280;
+const PRIMARY_SIDEBAR_MIN_ANIMATION_DELTA: f32 = 0.5;
+
+#[derive(Clone, Copy)]
+struct PrimarySidebarAnimation {
+    from_width: f32,
+    to_width: f32,
+    started_at: std::time::Instant,
+}
+
+impl PrimarySidebarAnimation {
+    fn width_at(self, now: std::time::Instant) -> f32 {
+        let duration = std::time::Duration::from_millis(PRIMARY_SIDEBAR_ANIMATION_MS);
+        let progress = (now.duration_since(self.started_at).as_secs_f32() / duration.as_secs_f32())
+            .clamp(0., 1.);
+        let eased = 1. - (1. - progress).powi(3);
+        self.from_width + (self.to_width - self.from_width) * eased
+    }
+
+    fn is_finished(self, now: std::time::Instant) -> bool {
+        now.duration_since(self.started_at)
+            >= std::time::Duration::from_millis(PRIMARY_SIDEBAR_ANIMATION_MS)
+    }
+}
+
 /// US-053: docked agent-sessions sidebar state (visibility, per-agent
 /// scanned session lists, the originating pane/cwd, and group UI flags),
 /// extracted from the `PaneFlowApp` god-struct.
@@ -533,6 +558,10 @@ struct PaneFlowApp {
     /// Visibility of the primary left rail shared by CLI, Agents, and Diff.
     /// Ephemeral by design: each launch starts with navigation visible.
     primary_sidebar_visible: bool,
+    /// Transient width interpolation for the primary rail. The boolean above is
+    /// the target state; this keeps the rail mounted while its layout width
+    /// eases open or closed.
+    primary_sidebar_animation: Option<PrimarySidebarAnimation>,
     /// Anchor for the `Files` menu in the custom title bar.
     title_bar_files_menu_open: Option<Point<Pixels>>,
     /// Anchor for the `Help` menu in the custom title bar.
@@ -768,6 +797,87 @@ struct PaneFlowApp {
 pub static SWAP_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl PaneFlowApp {
+    fn primary_sidebar_expanded_width(&self) -> f32 {
+        if self.settings_section.is_some() {
+            crate::settings::chrome::SETTINGS_NAV_WIDTH
+        } else {
+            match self.mode {
+                paneflow_config::schema::AppMode::Agents => {
+                    crate::app::agents_view_actions::AGENTS_SIDEBAR_WIDTH
+                }
+                paneflow_config::schema::AppMode::Diff => {
+                    crate::app::diff_view_actions::DIFF_SIDEBAR_WIDTH
+                }
+                paneflow_config::schema::AppMode::Cli => SIDEBAR_WIDTH,
+            }
+        }
+    }
+
+    fn primary_sidebar_width_at(&self, now: std::time::Instant) -> f32 {
+        if self.settings_section.is_some() {
+            return crate::settings::chrome::SETTINGS_NAV_WIDTH;
+        }
+        if let Some(animation) = self.primary_sidebar_animation {
+            animation.width_at(now)
+        } else if self.primary_sidebar_visible {
+            self.primary_sidebar_expanded_width()
+        } else {
+            0.
+        }
+    }
+
+    fn rendered_primary_sidebar_width(&mut self, window: &mut Window) -> f32 {
+        if self.settings_section.is_some() {
+            self.primary_sidebar_animation = None;
+            return crate::settings::chrome::SETTINGS_NAV_WIDTH;
+        }
+
+        let now = std::time::Instant::now();
+        if let Some(animation) = self.primary_sidebar_animation {
+            if animation.is_finished(now) {
+                self.primary_sidebar_animation = None;
+                animation.to_width
+            } else {
+                window.request_animation_frame();
+                animation.width_at(now)
+            }
+        } else if self.primary_sidebar_visible {
+            self.primary_sidebar_expanded_width()
+        } else {
+            0.
+        }
+    }
+
+    pub(crate) fn toggle_primary_sidebar(&mut self, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        let from_width = self.primary_sidebar_width_at(now);
+        self.primary_sidebar_visible = !self.primary_sidebar_visible;
+
+        if self.settings_section.is_some() {
+            self.primary_sidebar_animation = None;
+            cx.notify();
+            return;
+        }
+
+        let to_width = if self.primary_sidebar_visible {
+            self.primary_sidebar_expanded_width()
+        } else {
+            0.
+        };
+
+        self.primary_sidebar_animation =
+            if (from_width - to_width).abs() > PRIMARY_SIDEBAR_MIN_ANIMATION_DELTA {
+                Some(PrimarySidebarAnimation {
+                    from_width,
+                    to_width,
+                    started_at: now,
+                })
+            } else {
+                None
+            };
+        cx.notify();
+    }
+
     /// Add a workspace's `.git` directory to the file watcher.
     /// Uses refcounting so multiple workspaces sharing a repo don't conflict.
     /// Silently skipped if the workspace is not in a git repo or watcher is unavailable.
@@ -925,6 +1035,15 @@ impl Render for PaneFlowApp {
                 | paneflow_config::schema::AppMode::Agents => ui.base,
             }
         };
+        let primary_sidebar_width = self.rendered_primary_sidebar_width(window);
+        let primary_sidebar_mounted = self.settings_section.is_some()
+            || self.primary_sidebar_visible
+            || self.primary_sidebar_animation.is_some();
+        let primary_sidebar_opacity = if self.settings_section.is_some() {
+            1.
+        } else {
+            (primary_sidebar_width / self.primary_sidebar_expanded_width().max(1.)).clamp(0., 1.)
+        };
 
         // EP-003 US-009: focus the pane created by a drop-to-split. Deferred
         // here from the `DropSplit` subscription handler (no `Window` there).
@@ -1033,24 +1152,9 @@ impl Render for PaneFlowApp {
         // Update CTA state - extracted to `update_pill_info()` so the Cli/
         // Agents sidebar banner and the Diff title-bar pill share one source.
         let update_info = self.update_pill_info();
-        // Push the matching sidebar width (220 px CLI / 280 px Agents)
-        // so the title bar's brand slot stays aligned with the sidebar
-        // edge across mode swaps.
-        let sidebar_px = if self.settings_section.is_some() {
-            // Settings nav rail width, so the title-bar brand slot stays aligned
-            // with the settings nav edge while settings is open.
-            crate::settings::chrome::SETTINGS_NAV_WIDTH
-        } else {
-            match self.mode {
-                paneflow_config::schema::AppMode::Agents => {
-                    crate::app::agents_view_actions::AGENTS_SIDEBAR_WIDTH
-                }
-                paneflow_config::schema::AppMode::Diff => {
-                    crate::app::diff_view_actions::DIFF_SIDEBAR_WIDTH
-                }
-                paneflow_config::schema::AppMode::Cli => SIDEBAR_WIDTH,
-            }
-        };
+        // Push the current sidebar width so a confined title bar follows the
+        // animated rail edge instead of snapping to the final target width.
+        let sidebar_px = primary_sidebar_width;
         self.title_bar.update(cx, |tb, _| {
             tb.workspace_name = ws_name;
             tb.sidebar_visible = self.primary_sidebar_visible;
@@ -1209,59 +1313,67 @@ impl Render for PaneFlowApp {
                     // While settings is open the left rail becomes the Codex
                     // settings nav (kept visible even if the user had hidden the
                     // primary rail, so the back button is always reachable).
-                    .when(
-                        self.primary_sidebar_visible || self.settings_section.is_some(),
-                        |row| {
-                            if self.settings_section.is_some() {
-                                return row.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .h_full()
-                                        .flex_shrink_0()
-                                        // Clear the transparent title-bar overlay so the
-                                        // back button sits below the floating controls.
-                                        .pt(title_bar_h)
-                                        .child(self.render_settings_nav(window, cx))
-                                        .into_any_element(),
-                                );
-                            }
-                            row.child(match self.mode {
-                                paneflow_config::schema::AppMode::Agents => div()
+                    .when(primary_sidebar_mounted, |row| {
+                        if self.settings_section.is_some() {
+                            return row.child(
+                                div()
                                     .flex()
                                     .flex_col()
                                     .h_full()
+                                    .w(px(primary_sidebar_width))
                                     .flex_shrink_0()
+                                    .overflow_hidden()
                                     // Clear the transparent title-bar overlay so the
-                                    // first rail row sits below the floating controls.
+                                    // back button sits below the floating controls.
                                     .pt(title_bar_h)
-                                    .child(self.render_agents_sidebar(window, cx))
+                                    .child(self.render_settings_nav(window, cx))
                                     .into_any_element(),
-                                paneflow_config::schema::AppMode::Diff => div()
-                                    .flex()
-                                    .flex_col()
-                                    .h_full()
-                                    .flex_shrink_0()
-                                    // Clear the transparent title-bar overlay so the
-                                    // first sidebar row sits below the floating
-                                    // window controls (mirrors the other rails).
-                                    .pt(title_bar_h)
-                                    .child(self.render_diff_sidebar(window, cx))
-                                    .into_any_element(),
-                                paneflow_config::schema::AppMode::Cli => div()
-                                    .flex()
-                                    .flex_col()
-                                    .h_full()
-                                    .flex_shrink_0()
-                                    // Clear the transparent title-bar overlay so the
-                                    // first workspace card sits below the floating
-                                    // window controls (mirrors the Agents rail).
-                                    .pt(title_bar_h)
-                                    .child(self.render_sidebar(window, cx))
-                                    .into_any_element(),
-                            })
-                        },
-                    )
+                            );
+                        }
+                        row.child(match self.mode {
+                            paneflow_config::schema::AppMode::Agents => div()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .w(px(primary_sidebar_width))
+                                .flex_shrink_0()
+                                .overflow_hidden()
+                                .opacity(primary_sidebar_opacity)
+                                // Clear the transparent title-bar overlay so the
+                                // first rail row sits below the floating controls.
+                                .pt(title_bar_h)
+                                .child(self.render_agents_sidebar(window, cx))
+                                .into_any_element(),
+                            paneflow_config::schema::AppMode::Diff => div()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .w(px(primary_sidebar_width))
+                                .flex_shrink_0()
+                                .overflow_hidden()
+                                .opacity(primary_sidebar_opacity)
+                                // Clear the transparent title-bar overlay so the
+                                // first sidebar row sits below the floating
+                                // window controls (mirrors the other rails).
+                                .pt(title_bar_h)
+                                .child(self.render_diff_sidebar(window, cx))
+                                .into_any_element(),
+                            paneflow_config::schema::AppMode::Cli => div()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .w(px(primary_sidebar_width))
+                                .flex_shrink_0()
+                                .overflow_hidden()
+                                .opacity(primary_sidebar_opacity)
+                                // Clear the transparent title-bar overlay so the
+                                // first workspace card sits below the floating
+                                // window controls (mirrors the Agents rail).
+                                .pt(title_bar_h)
+                                .child(self.render_sidebar(window, cx))
+                                .into_any_element(),
+                        })
+                    })
                     .child(
                         div()
                             .flex_1()

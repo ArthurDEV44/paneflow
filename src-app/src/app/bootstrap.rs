@@ -741,6 +741,7 @@ impl PaneFlowApp {
             last_broadcast_gen: std::collections::HashMap::new(),
             title_bar,
             primary_sidebar_visible: true,
+            primary_sidebar_animation: None,
             title_bar_files_menu_open: None,
             title_bar_help_menu_open: None,
             git_watcher,

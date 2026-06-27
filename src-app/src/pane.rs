@@ -123,7 +123,7 @@ const ACTION_BUTTON_SIZE: f32 = 22.0;
 /// Approximate width of the compact zoom badge in the action cluster.
 const ZOOM_BADGE_WIDTH: f32 = 18.0;
 /// Duration for folding/unfolding the tab-bar action cluster.
-const ACTION_CLUSTER_ANIMATION_MS: u64 = 160;
+const ACTION_CLUSTER_ANIMATION_MS: u64 = 280;
 /// Uniform gap (px) between the drop-to-split preview overlay and its region's
 /// edges, so the blue box floats inside the target half/pane (EP-003 US-008).
 const OVERLAY_MARGIN: f32 = 8.0;

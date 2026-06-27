@@ -192,7 +192,7 @@ impl PaneFlowApp {
                 cx.quit();
             }
             title_bar::TitleBarEvent::ToggleSidebar => {
-                self.primary_sidebar_visible = !self.primary_sidebar_visible;
+                self.toggle_primary_sidebar(cx);
                 self.title_bar_files_menu_open = None;
                 self.title_bar_help_menu_open = None;
                 if !self.primary_sidebar_visible {
@@ -202,7 +202,6 @@ impl PaneFlowApp {
                     self.agents_view.sidebar_actions_menu_open = false;
                     self.agents_view.sidebar_mode_picker_open = false;
                 }
-                cx.notify();
             }
             title_bar::TitleBarEvent::ToggleFilesMenu(anchor) => {
                 self.title_bar_files_menu_open =
