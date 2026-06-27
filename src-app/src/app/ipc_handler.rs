@@ -18,9 +18,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{App, AppContext, Context, Entity, Focusable};
-use paneflow_config::schema::{LayoutNode, TerminalSurfaceProfile};
+use paneflow_config::schema::{AppMode, LayoutNode, TerminalSurfaceProfile};
 
 use crate::agent_launcher::TerminalAgent;
+use crate::agents::notifications::{self as desktop_notifications, DesktopNotification};
 use crate::ai_types::AgentSession;
 use crate::layout::LayoutTree;
 use crate::layout::{MAX_PANES, SplitDirection};
@@ -122,35 +123,37 @@ fn build_up_layout(preset: &str, panes: Vec<Entity<Pane>>, focus_idx: usize) -> 
     }
 }
 
-/// EP-004 US-020 - fire a best-effort OS desktop notification on agent turn-end,
-/// but only when Paneflow is NOT the focused window (the repositioning intent is
-/// "notify on turn-end, not while you're watching"). Runs the platform notifier
-/// as a bounded subprocess on the background executor: no new crate dependency,
-/// never blocks the render thread, and a missing notifier just fails silently.
-fn fire_turn_end_notification(workspace_title: &str, executor: gpui::BackgroundExecutor) {
-    fire_desktop_notification(format!("{workspace_title}: agent finished"), executor);
+fn fire_turn_end_notification(
+    workspace_title: &str,
+    config: &paneflow_config::schema::PaneFlowConfig,
+    source_visible: bool,
+    executor: gpui::BackgroundExecutor,
+) {
+    desktop_notifications::fire_desktop_notification(
+        DesktopNotification::turn_finished(workspace_title),
+        config,
+        source_visible,
+        executor,
+    );
 }
 
-/// US-016 (orchestration-v2): the WaitingForInput desktop notification
-/// carries the agent's actual question, not a generic "needs input" - the
-/// user decides from the notification whether it's worth coming back.
 fn fire_attention_notification(
     workspace_title: &str,
     message: Option<&str>,
+    config: &paneflow_config::schema::PaneFlowConfig,
+    source_visible: bool,
     executor: gpui::BackgroundExecutor,
 ) {
-    let body = attention_notification_body(workspace_title, message);
-    fire_desktop_notification(body, executor);
+    desktop_notifications::fire_desktop_notification(
+        DesktopNotification::needs_input(workspace_title, message),
+        config,
+        source_visible,
+        executor,
+    );
 }
 
-/// US-016/US-020: bound + sanitize an agent question before it is stored on
-/// the session (single choke point - peek badge, expanded panel and desktop
-/// notification all read the stored value). 512-char truncation, then the
-/// shared markdown bidi/zero-width strip: an RLO in untrusted hook text could
-/// otherwise visually reverse the displayed question ("texte brut sanitizé",
-/// US-020 AC5 - same precedent as the markdown viewer). Pure → unit-tested.
 fn sanitize_notification_message(raw: &str) -> String {
-    crate::markdown::strip_bidi_zero_width(raw.chars().take(512).collect())
+    desktop_notifications::sanitize_notification_message(raw)
 }
 
 /// EP-004 US-015 (agent-control-plane): best-effort extraction of a last-turn
@@ -424,33 +427,19 @@ fn stage_context_file(
     env
 }
 
-/// Pure body composition (unit-tested): "title: question", falling back to
-/// the legacy generic body when the hook carried no message - never an
-/// empty body (US-016 AC3).
-fn attention_notification_body(workspace_title: &str, message: Option<&str>) -> String {
-    match message.filter(|m| !m.trim().is_empty()) {
-        Some(m) => format!("{workspace_title}: {m}"),
-        None => format!("{workspace_title}: agent needs input"),
-    }
-}
-
-/// EP-004 US-010: the `Errored` desktop notification - distinct body so a
-/// crash never reads as "agent finished". Same choke point + window-focus
-/// gate as the other two notification kinds.
 fn fire_agent_exit_notification(
     workspace_title: &str,
     exit_code: i32,
+    config: &paneflow_config::schema::PaneFlowConfig,
+    source_visible: bool,
     executor: gpui::BackgroundExecutor,
 ) {
-    fire_desktop_notification(
-        agent_exit_notification_body(workspace_title, exit_code),
+    desktop_notifications::fire_desktop_notification(
+        DesktopNotification::agent_exited(workspace_title, exit_code),
+        config,
+        source_visible,
         executor,
     );
-}
-
-/// Pure body composition (unit-tested) - PRD US-010 AC #6.
-fn agent_exit_notification_body(workspace_title: &str, exit_code: i32) -> String {
-    format!("{workspace_title}: agent exited (exit {exit_code})")
 }
 
 /// EP-004 US-011: the `Stalled` desktop notification. Called by the
@@ -461,85 +450,16 @@ fn agent_exit_notification_body(workspace_title: &str, exit_code: i32) -> String
 pub(crate) fn fire_stalled_notification(
     workspace_title: &str,
     silent_secs: u64,
+    config: &paneflow_config::schema::PaneFlowConfig,
+    source_visible: bool,
     executor: gpui::BackgroundExecutor,
 ) {
-    fire_desktop_notification(
-        stalled_notification_body(workspace_title, silent_secs),
+    desktop_notifications::fire_desktop_notification(
+        DesktopNotification::stalled(workspace_title, silent_secs),
+        config,
+        source_visible,
         executor,
     );
-}
-
-/// Pure body composition (unit-tested) - PRD US-011 AC #4.
-fn stalled_notification_body(workspace_title: &str, silent_secs: u64) -> String {
-    format!("{workspace_title}: agent silent for {silent_secs} s")
-}
-
-/// Shared desktop-notification path (turn-end + attention): fires only when
-/// the Paneflow window is NOT focused; body sanitization stays in the per-OS
-/// command builders (`--` on Linux, AppleScript strip on macOS, Windows
-/// stub).
-fn fire_desktop_notification(body: String, executor: gpui::BackgroundExecutor) {
-    if crate::agents::notifications::window_active() {
-        return;
-    }
-    let Some(command) = turn_end_notify_command(&body) else {
-        return;
-    };
-    executor
-        .spawn(async move {
-            let _ = paneflow_process::run_with_timeout(command, Duration::from_secs(10), 64 * 1024);
-        })
-        .detach();
-}
-
-/// Strip control characters from an untrusted notification body before it is
-/// embedded in an AppleScript string literal. AppleScript literals have no
-/// `\n`/`\r` escape and cannot span a raw newline, so an un-stripped control
-/// char in a crafted workspace title would break the literal (CWE-78 - a parse
-/// error, not RCE, but the brittleness is removed at the source). Pure and not
-/// `cfg`-gated so it is unit-testable on every host; only the macOS notifier
-/// consumes it, hence the off-macOS dead-code allow.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn sanitize_applescript_body(body: &str) -> String {
-    body.chars().filter(|c| !c.is_control()).collect()
-}
-
-#[cfg(target_os = "linux")]
-fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
-    let mut command = std::process::Command::new("notify-send");
-    // `--` terminates GLib option parsing: a workspace title beginning with `-`
-    // must be taken as the summary/body, never mis-parsed as a notify-send flag.
-    // `--icon` (before `--`) gives the notification PaneFlow's icon instead of a
-    // generic glyph; the `paneflow` icon name matches the `.desktop` Icon= key.
-    command
-        .arg("--app-name=Paneflow")
-        .arg("--icon=paneflow")
-        .arg("--")
-        .arg("Paneflow")
-        .arg(body);
-    Some(command)
-}
-
-#[cfg(target_os = "macos")]
-fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
-    // `body` is embedded in an AppleScript string literal. Strip control chars
-    // FIRST (a raw newline cannot live in the literal - no `\n` escape - so a
-    // crafted title would break it, CWE-78), then escape backslash and
-    // double-quote. Args are passed directly (no shell), so this is sufficient.
-    let escaped = sanitize_applescript_body(body)
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    let script = format!("display notification \"{escaped}\" with title \"Paneflow\"");
-    let mut command = std::process::Command::new("osascript");
-    command.arg("-e").arg(script);
-    Some(command)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn turn_end_notify_command(_body: &str) -> Option<std::process::Command> {
-    // Windows: no dependency-free toast path yet (BurntToast / WinRT both add
-    // weight). Documented stub - no notification fired (US-020 AC allows this).
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -2951,6 +2871,11 @@ impl PaneFlowApp {
                         .or_else(|| params.get("message").and_then(|v| v.as_str()))
                         .unwrap_or("Needs input"),
                 );
+                let notify_config = self.cached_config.clone();
+                let active_workspace_id = self.workspaces.get(self.active_idx).map(|ws| ws.id);
+                let workspace_source_visible =
+                    matches!(self.mode, AppMode::Cli) && active_workspace_id == Some(workspace_id);
+                let agents_source_visible = matches!(self.mode, AppMode::Agents);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     let key = upsert_session_state(
@@ -2971,6 +2896,8 @@ impl PaneFlowApp {
                     fire_attention_notification(
                         &ws_title,
                         Some(&message),
+                        &notify_config,
+                        workspace_source_visible,
                         cx.background_executor().clone(),
                     );
                     self.bind_or_resolve_session_surface(
@@ -2996,6 +2923,8 @@ impl PaneFlowApp {
                     fire_attention_notification(
                         &title,
                         Some(&message),
+                        &notify_config,
+                        agents_source_visible,
                         cx.background_executor().clone(),
                     );
                     serde_json::json!({"status": "waiting"})
@@ -3015,6 +2944,11 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Unknown tool"});
                 };
                 let explicit_surface_id = self.validated_frame_surface_id(params, cx);
+                let notify_config = self.cached_config.clone();
+                let active_workspace_id = self.workspaces.get(self.active_idx).map(|ws| ws.id);
+                let workspace_source_visible =
+                    matches!(self.mode, AppMode::Cli) && active_workspace_id == Some(workspace_id);
+                let agents_source_visible = matches!(self.mode, AppMode::Agents);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // U-014: key the auto-clear on the RESOLVED session key, not
@@ -3051,7 +2985,12 @@ impl PaneFlowApp {
                     // looking elsewhere. Read the title before the borrow ends.
                     let ws_title = ws.title.clone();
                     cx.notify();
-                    fire_turn_end_notification(&ws_title, cx.background_executor().clone());
+                    fire_turn_end_notification(
+                        &ws_title,
+                        &notify_config,
+                        workspace_source_visible,
+                        cx.background_executor().clone(),
+                    );
                     self.bind_or_resolve_session_surface(
                         workspace_id,
                         session_key,
@@ -3115,7 +3054,12 @@ impl PaneFlowApp {
                     let bound_session = t.session_id.clone();
                     let title_locked = t.title_user_set;
                     cx.notify();
-                    fire_turn_end_notification(&title, cx.background_executor().clone());
+                    fire_turn_end_notification(
+                        &title,
+                        &notify_config,
+                        agents_source_visible,
+                        cx.background_executor().clone(),
+                    );
                     // Parity with `/resume`: at turn end the session's LLM
                     // `ai-title` exists on disk - adopt it as the sidebar
                     // label, unless the user pinned the name via a rename.
@@ -3150,6 +3094,11 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Unknown tool"});
                 };
                 let explicit_surface_id = self.validated_frame_surface_id(params, cx);
+                let notify_config = self.cached_config.clone();
+                let active_workspace_id = self.workspaces.get(self.active_idx).map(|ws| ws.id);
+                let workspace_source_visible =
+                    matches!(self.mode, AppMode::Cli) && active_workspace_id == Some(workspace_id);
+                let agents_source_visible = matches!(self.mode, AppMode::Agents);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // 0 / SIGINT-and-friends → Finished (a human interrupt is
@@ -3169,6 +3118,8 @@ impl PaneFlowApp {
                         fire_agent_exit_notification(
                             &ws_title,
                             exit_code,
+                            &notify_config,
+                            workspace_source_visible,
                             cx.background_executor().clone(),
                         );
                         // A crash-on-launch session may have had no prior
@@ -3196,6 +3147,17 @@ impl PaneFlowApp {
                     let state = ai_types::state_for_exit(exit_code);
                     let errored = state == ai_types::AgentState::Errored;
                     apply_agents_thread_state(t, state, pid);
+                    if errored {
+                        let title = crate::project::clean_sidebar_title(&t.title)
+                            .unwrap_or_else(|| t.title.clone());
+                        fire_agent_exit_notification(
+                            &title,
+                            exit_code,
+                            &notify_config,
+                            agents_source_visible,
+                            cx.background_executor().clone(),
+                        );
+                    }
                     cx.notify();
                     serde_json::json!({"status": if errored { "errored" } else { "finished" }})
                 } else {
@@ -3744,18 +3706,6 @@ mod tests {
         );
     }
 
-    // US-020 / CWE-78: a control char (newline) cannot survive into the macOS
-    // AppleScript literal - it is stripped at the source - while quotes are
-    // preserved for the downstream backslash/quote escape.
-    #[test]
-    fn sanitize_applescript_body_strips_control_chars_keeps_quotes() {
-        assert_eq!(sanitize_applescript_body("a\r\nb\tc"), "abc");
-        let with_quote = sanitize_applescript_body("title\"\n");
-        assert_eq!(with_quote, "title\"");
-        assert!(!with_quote.contains('\n'));
-        assert_eq!(sanitize_applescript_body("plain title"), "plain title");
-    }
-
     // EP-004 security hardening: client-supplied PIDs above i32::MAX are
     // rejected - that band is server-reserved (synthetic keys) AND immune to
     // the stale-PID sweep, so accepting it would allow unbounded permanent
@@ -3823,20 +3773,20 @@ mod tests {
     #[test]
     fn agent_exit_body_carries_workspace_and_code() {
         assert_eq!(
-            agent_exit_notification_body("api", 1),
-            "api: agent exited (exit 1)"
+            crate::agents::notifications::agent_exit_notification_body("api", 1),
+            "api: agent exited with code 1"
         );
         assert_eq!(
-            agent_exit_notification_body("ws", -1073741510),
-            "ws: agent exited (exit -1073741510)"
+            crate::agents::notifications::agent_exit_notification_body("ws", -1073741510),
+            "ws: agent exited with code -1073741510"
         );
     }
 
     #[test]
     fn stalled_body_carries_workspace_and_silence() {
         assert_eq!(
-            stalled_notification_body("api", 300),
-            "api: agent silent for 300 s"
+            crate::agents::notifications::stalled_notification_body("api", 300),
+            "api: no agent activity for 300 s"
         );
     }
 
@@ -4025,50 +3975,6 @@ mod tests {
         assert!(resp.get("result").is_none());
         assert_eq!(resp["error"]["code"], -32602);
         assert_eq!(resp["error"]["message"], "bad layout");
-    }
-
-    // -----------------------------------------------------------------
-    // US-016 (orchestration-v2) - contextual attention notification
-    // -----------------------------------------------------------------
-
-    /// US-020 AC5: the stored question is bounded (512 chars) and stripped
-    /// of bidi/zero-width controls at the storage choke point - an RLO in
-    /// hook text must not visually reverse the peek badge or the desktop
-    /// notification (same sanitizer as the markdown viewer).
-    #[test]
-    fn notification_message_is_bounded_and_bidi_stripped() {
-        let spoofed = "Allow \u{202E}?fr- mr\u{202C} ?";
-        let clean = super::sanitize_notification_message(spoofed);
-        assert!(!clean.contains('\u{202E}'), "RLO stripped");
-        assert!(!clean.contains('\u{202C}'), "PDF stripped");
-        assert!(clean.contains("Allow"), "visible text kept: {clean}");
-
-        let long = "é".repeat(600);
-        assert_eq!(
-            super::sanitize_notification_message(&long).chars().count(),
-            512,
-            "char-bounded, multibyte-safe"
-        );
-    }
-
-    /// AC2/AC3: the WaitingForInput desktop notification carries the
-    /// agent's question; an empty/absent message falls back to the generic
-    /// body - never an empty notification.
-    #[test]
-    fn attention_body_carries_the_question_with_fallback() {
-        assert_eq!(
-            super::attention_notification_body("backend", Some("Allow `cargo test`?")),
-            "backend: Allow `cargo test`?"
-        );
-        assert_eq!(
-            super::attention_notification_body("backend", None),
-            "backend: agent needs input"
-        );
-        assert_eq!(
-            super::attention_notification_body("backend", Some("   ")),
-            "backend: agent needs input",
-            "whitespace-only message falls back too"
-        );
     }
 
     // -----------------------------------------------------------------

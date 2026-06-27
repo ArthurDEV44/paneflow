@@ -45,7 +45,7 @@
             Keywords='Installer'
             Description='PaneFlow - native terminal workspace for running coding agents in parallel.'
             Manufacturer='Strivex'
-            InstallerVersion='450'
+            InstallerVersion='500'
             Languages='1033'
             Compressed='yes'
             InstallScope='perMachine'
@@ -136,7 +136,9 @@
                                   Target='[APPLICATIONFOLDER]paneflow.exe'
                                   WorkingDirectory='APPLICATIONFOLDER'
                                   Icon='PaneflowICO'
-                                  IconIndex='0'/>
+                                  IconIndex='0'>
+                            <ShortcutProperty Key='System.AppUserModel.ID' Value='Strivex.PaneFlow'/>
+                        </Shortcut>
                         <!-- RemoveFolder keeps the uninstall clean; the
                              ApplicationProgramsFolder is dropped when
                              the component is removed. -->

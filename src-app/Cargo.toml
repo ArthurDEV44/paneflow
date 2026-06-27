@@ -247,15 +247,17 @@ unicode-segmentation = "1"
 ignore = "0.4"
 base64 = "0.22"
 
-# US-116 (prd-agent-ui-refactor-2026-Q3.md): cross-platform desktop
-# notifications fired by the agents runtime when a turn ends, refuses,
-# or errors out while the panel is not visible+focused. `notify-rust`
-# 4.x default feature (`z`/zbus) is pure-Rust on Linux and routes
-# through the freedesktop DBus daemon (Wayland + X11). macOS uses the
-# Cocoa `NSUserNotificationCenter` (notarized .app required per
-# `project_macos_signing`). Windows uses the toast API (Win10/11).
-# Keeping the default features avoids the `libdbus-1-dev` system
-# build dep that the legacy `d` feature pulls in.
+# Cross-platform desktop notifications fired by the agents runtime when a
+# turn ends, needs input, stalls, or exits unexpectedly while the user is not
+# already looking at the Agents panel. `notify-rust` 4.x default features use
+# freedesktop DBus on Linux, NSUserNotificationCenter on macOS, and WinRT
+# toasts on Windows. Release Windows attribution depends on the Start Menu
+# shortcut's AppUserModelID in `packaging/wix/main.wxs` matching the runtime
+# app_id. Unpackaged/dev builds make a best-effort HKCU AppUserModelID
+# registration immediately before sending the toast, but Windows may still
+# require a Start Menu shortcut for visible banners.
+# Keeping the default features avoids the `libdbus-1-dev` system build dep
+# that the legacy `d` feature pulls in.
 notify-rust = "4"
 
 # US-001 (prd-audit-remediation): detached minisign (Ed25519) signature
@@ -336,6 +338,9 @@ windows-sys = { version = "0.59", features = [
     # while hiding the one-process console Windows creates for Explorer /
     # Start Menu GUI launches.
     "Win32_System_Console",
+    # Windows toast attribution: bind the process identity to the same
+    # AppUserModelID used by the Start Menu shortcut and WinRT toast sender.
+    "Win32_UI_Shell",
     # EP-006 US-013 (agent-control-plane-hardening): PeekNamedPipe gates every
     # events.subscribe push on the named pipe's liveness, so a disconnected
     # `paneflow watch` evicts the subscription (RAII) instead of tripping
@@ -360,6 +365,10 @@ windows-sys = { version = "0.59", features = [
 # windows-sys handles would mean ~80 lines of unsafe glue for the same
 # result. Kept Windows-only via the target.cfg gate.
 win32job = "2.0.3"
+# Windows toast attribution for unpackaged/dev runs uses a best-effort
+# per-user AppUserModelID registration under
+# HKCU\Software\Classes\AppUserModelId.
+windows-registry = "0.5"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.31"

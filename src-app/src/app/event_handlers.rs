@@ -1057,7 +1057,12 @@ impl PaneFlowApp {
         let stall_threshold = std::time::Duration::from_secs(
             self.cached_config.resolved_agent_stall_threshold_secs(),
         );
-        let mut stalled_notifs: Vec<(String, u64)> = Vec::new();
+        let active_workspace_id = if matches!(self.mode, paneflow_config::schema::AppMode::Cli) {
+            self.workspaces.get(self.active_idx).map(|ws| ws.id)
+        } else {
+            None
+        };
+        let mut stalled_notifs: Vec<(String, u64, bool)> = Vec::new();
         for ws in &mut self.workspaces {
             if ws.agent_sessions.is_empty() {
                 continue;
@@ -1094,8 +1099,11 @@ impl PaneFlowApp {
                         // a wait stamp. A Thinking row is already None, but
                         // clear defensively rather than rely on that.
                         session.waiting_since = None;
-                        stalled_notifs
-                            .push((ws.title.clone(), session.last_activity.elapsed().as_secs()));
+                        stalled_notifs.push((
+                            ws.title.clone(),
+                            session.last_activity.elapsed().as_secs(),
+                            active_workspace_id == Some(ws.id),
+                        ));
                         changed = true;
                     }
                 }
@@ -1132,13 +1140,15 @@ impl PaneFlowApp {
             self.agent_sessions_changed(cx);
             cx.notify();
         }
-        // EP-004 US-011: fire AFTER the state writes so the toast and the UI
-        // agree. One entry per Thinking→Stalled transition == one
+        // EP-004 US-011: fire AFTER the state writes so the notification and
+        // the UI agree. One entry per Thinking→Stalled transition == one
         // notification per stall episode (PRD dedup AC).
-        for (title, silent_secs) in stalled_notifs {
+        for (title, silent_secs, source_visible) in stalled_notifs {
             super::ipc_handler::fire_stalled_notification(
                 &title,
                 silent_secs,
+                &self.cached_config,
+                source_visible,
                 cx.background_executor().clone(),
             );
         }

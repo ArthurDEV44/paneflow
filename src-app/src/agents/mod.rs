@@ -6,7 +6,7 @@
 //! in a PTY - see [`crate::agent_launcher`]).
 //!
 //! What remains:
-//! - [`notifications`] - window/panel visibility flags.
+//! - [`notifications`] - desktop-notification routing and visibility gates.
 //! - [`parent_guard`] - Windows Job Object that kills PTY children with
 //!   the parent process.
 

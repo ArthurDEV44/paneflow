@@ -729,9 +729,8 @@ pub struct AgentPanelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
     /// US-116: gates OS notifications fired when a turn ends, refuses,
-    /// or errors out and the panel is not visible+focused. `None`
-    /// resolves to [`NotifyWhenAgentWaiting::PrimaryScreen`] -- the
-    /// safe default that fires on the user's primary display only.
+    /// or errors out while Paneflow is not the foreground window.
+    /// `None` resolves to [`NotifyWhenAgentWaiting::PrimaryScreen`].
     /// An unknown string deserialises to that same default via the
     /// custom [`NotifyWhenAgentWaiting`] deserialiser (AC #2 / unhappy
     /// path: invalid value never silently disables notifications).
@@ -797,26 +796,25 @@ pub enum ThinkingDisplayMode {
 }
 
 /// US-116: where OS notifications are surfaced when an agent turn
-/// completes (or refuses / errors) while the panel is not focused.
+/// completes (or refuses / errors) while Paneflow is not foregrounded.
 ///
 /// Mirrors Zed's `NotifyWhenAgentWaiting` setting cited in §23 of
 /// `docs/ZED_AGENT_REFERENCE.md`. Default is
-/// [`NotifyWhenAgentWaiting::PrimaryScreen`] -- the user's primary
-/// monitor only, which matches the macOS NSUserNotificationCenter +
-/// Linux freedesktop daemon defaults.
+/// [`NotifyWhenAgentWaiting::PrimaryScreen`]. PaneFlow currently routes
+/// through native OS notification APIs, which do not expose reliable
+/// per-display fan-out on every platform; `PrimaryScreen` and
+/// `AllScreens` therefore share the same foreground-window gate.
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum NotifyWhenAgentWaiting {
-    /// Fire a notification only when Paneflow is not the focused window
-    /// AND the user's primary display has no Paneflow window in front.
-    /// Falls back to "any screen" in production -- the per-screen filter
-    /// is OS-managed for the legacy `NSUserNotification` path on macOS
-    /// and the freedesktop spec on Linux; we surface the toggle for
-    /// parity but cannot enforce it ourselves.
+    /// Fire a notification only when Paneflow is not the focused window.
+    /// Kept as the default Zed-compatible spelling; native OS backends
+    /// do not guarantee a Paneflow-controlled primary-display filter.
     #[default]
     PrimaryScreen,
-    /// Fire a notification on every display that is not currently
-    /// hosting a focused Paneflow window.
+    /// Zed-compatible spelling for every-display popups. The native OS
+    /// toast path currently treats this like `PrimaryScreen` because the
+    /// per-display placement is owned by the notification server.
     AllScreens,
     /// Never fire a notification. Disables the entire US-116 surface;
     /// no DBus / NSNotification / WinRT toast call is issued.
