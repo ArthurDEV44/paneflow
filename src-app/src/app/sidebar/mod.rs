@@ -31,6 +31,37 @@ pub(crate) struct SidebarOrderCache {
     order: Vec<usize>,
 }
 
+/// Debug-only render budget guard for the CLI sidebar. Mirrors the Agents
+/// sidebar canary so projection or card regressions show up during profiling
+/// without adding user-facing log noise.
+struct SidebarRenderTimeCanary {
+    start: std::time::Instant,
+    workspace_count: usize,
+}
+
+impl SidebarRenderTimeCanary {
+    fn new(workspace_count: usize) -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            workspace_count,
+        }
+    }
+}
+
+impl Drop for SidebarRenderTimeCanary {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        if elapsed > std::time::Duration::from_millis(16) {
+            tracing::debug!(
+                target: "paneflow_app::sidebar",
+                "render_sidebar exceeded 16ms frame budget: {:.2}ms across {} workspaces",
+                elapsed.as_secs_f64() * 1000.0,
+                self.workspace_count
+            );
+        }
+    }
+}
+
 /// Collapse a `home`-rooted absolute path to a `~`-prefixed display string.
 ///
 /// US-040: uses [`std::path::Path::strip_prefix`] (component-boundary match,
@@ -119,6 +150,7 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let _render_canary = SidebarRenderTimeCanary::new(self.workspaces.len());
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
         let mut sidebar = div()
@@ -381,30 +413,14 @@ impl PaneFlowApp {
                     .child(title)
             };
 
-            // Active AI session pastille - one blue dot to the right
-            // of the title as soon as the workspace holds at least
-            // one live `claude` or `codex` process. Source of truth is
-            // `Workspace::detected_agents`, populated by walking the
-            // PTY descendants (`detect_ai_processes`) so the signal
-            // works even when Claude Code is launched without the
-            // Paneflow IPC shim that would otherwise register the PID.
-            let active_agents: Vec<&str> = {
-                let mut keys: Vec<&str> = ws.detected_agents.iter().map(|s| s.as_str()).collect();
-                keys.sort_unstable();
-                keys
-            };
-            let has_active_session = !active_agents.is_empty();
-            let session_tooltip: SharedString = match active_agents.as_slice() {
-                [] => SharedString::default(),
-                [one] => format!("{} session active", capitalize_agent(one)).into(),
-                [a, b] => format!(
-                    "{} + {} sessions active",
-                    capitalize_agent(a),
-                    capitalize_agent(b)
-                )
-                .into(),
-                many => format!("{} active sessions", many.len()).into(),
-            };
+            // Shared projection for hook-backed rows and detected-but-unhooked
+            // fallbacks. `Workspace::detected_agents` covers every known
+            // `TerminalAgent`, so the title dot tooltip uses the real display
+            // names instead of the old Claude/Codex-only helper.
+            let agent_status =
+                ai_types::workspace_agent_status(ws.agent_sessions.values(), &ws.detected_agents);
+            let has_active_session = !agent_status.active_labels.is_empty();
+            let session_tooltip = agent_session_tooltip(&agent_status.active_labels);
 
             let title_row = div()
                 .flex()
@@ -583,173 +599,11 @@ impl PaneFlowApp {
                 card = card.child(meta_row);
             }
 
-            // ── Row 4: AI tool status (one row per active tool). Aggregate
-            // the per-PID sessions stored on the workspace into one
-            // ToolAggregate per AiTool (Claude > Codex), pick the most
-            // salient state per tool (Waiting > Thinking > Finished),
-            // and render the matching badge. The "+N" suffix appears
-            // whenever a tool has more than one concurrent session.
-            let rows = ai_types::aggregate_by_tool(ws.agent_sessions.values());
-            for agg in rows {
-                let extra = agg.extra_suffix();
-                match agg.dominant {
-                    ai_types::AgentState::Thinking => {
-                        // Arthur: Claude Code keeps its salmon-orange identity
-                        // colour and its unique glyph spinner; every other agent
-                        // reads a soft light grey with the rotating SVG arc from
-                        // the Agents sidebar.
-                        let is_claude =
-                            matches!(agg.tool, crate::agent_launcher::TerminalAgent::ClaudeCode);
-                        let thinking_color: gpui::Hsla = if is_claude {
-                            ui.agent_claude
-                        } else {
-                            rgb(0xc4c4c4).into()
-                        };
-                        let glyph: AnyElement = svg()
-                            .size(px(11.))
-                            .flex_none()
-                            .path("icons/loader-circle.svg")
-                            .text_color(thinking_color)
-                            .with_animation(
-                                SharedString::from(format!(
-                                    "sidebar-spinner-{}-{}",
-                                    ws.id,
-                                    agg.tool.display_name()
-                                )),
-                                Animation::new(std::time::Duration::from_secs(1)).repeat(),
-                                |svg, delta| {
-                                    svg.with_transformation(Transformation::rotate(percentage(
-                                        delta,
-                                    )))
-                                },
-                            )
-                            .into_any_element();
-                        card = card.child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.))
-                                .text_xs()
-                                .text_color(thinking_color)
-                                .child(glyph)
-                                .child(div().child(format!(
-                                    "{} thinking…{}",
-                                    agg.tool.display_name(),
-                                    extra
-                                ))),
-                        );
-                    }
-                    ai_types::AgentState::WaitingForInput => {
-                        card = card.child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.))
-                                .self_start()
-                                .px(px(6.))
-                                .py(px(1.))
-                                .rounded(px(4.))
-                                .bg(rgb(0xFBBF24)) // amber warning
-                                .child(
-                                    svg()
-                                        .size(px(11.))
-                                        .flex_none()
-                                        .path("icons/bell.svg")
-                                        .text_color(ui.base),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(ui.base)
-                                        .child(format!(
-                                            "{} needs input{}",
-                                            agg.tool.display_name(),
-                                            extra
-                                        )),
-                                ),
-                        );
-                    }
-                    ai_types::AgentState::Finished => {
-                        let done_color = rgb(0x00E08A); // neon mint
-                        card = card.child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.))
-                                .text_xs()
-                                .text_color(done_color)
-                                .child(
-                                    svg()
-                                        .size(px(11.))
-                                        .flex_none()
-                                        .path("icons/check.svg")
-                                        .text_color(done_color),
-                                )
-                                .child(div().child(format!(
-                                    "{} done{}",
-                                    agg.tool.display_name(),
-                                    extra
-                                ))),
-                        );
-                    }
-                    // EP-004 US-010: a crashed agent reads in red, never as
-                    // "done". Color from the dedicated `agent_error` slot
-                    // (FR-08 - distinct from the attention amber above).
-                    ai_types::AgentState::Errored => {
-                        card = card.child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.))
-                                .text_xs()
-                                .text_color(ui.agent_error)
-                                .child(
-                                    svg()
-                                        .size(px(11.))
-                                        .flex_none()
-                                        .path("icons/x_circle.svg")
-                                        .text_color(ui.agent_error),
-                                )
-                                .child(div().child(format!(
-                                    "{} errored{}",
-                                    agg.tool.display_name(),
-                                    extra
-                                ))),
-                        );
-                    }
-                    // EP-004 US-011: a silent agent is a suspicion, not a
-                    // failure - muted grey-blue from the `agent_stalled`
-                    // slot, alert-triangle icon (information also carried by
-                    // the label, never by color alone).
-                    ai_types::AgentState::Stalled => {
-                        card = card.child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.))
-                                .text_xs()
-                                .text_color(ui.agent_stalled)
-                                .child(
-                                    svg()
-                                        .size(px(11.))
-                                        .flex_none()
-                                        .path("icons/triangle-alert.svg")
-                                        .text_color(ui.agent_stalled),
-                                )
-                                .child(div().child(format!(
-                                    "{} stalled{}",
-                                    agg.tool.display_name(),
-                                    extra
-                                ))),
-                        );
-                    }
-                }
+            // ── Row 4: AI tool status (one row per active tool). The projection
+            // is shared with `fleet.list`; this render layer only maps status
+            // specs to GPUI elements.
+            for agg in &agent_status.hooked {
+                card = card.child(render_workspace_agent_status_row(agg, ws.id, ui));
             }
 
             // Agents detected in the process tree (per-pane /proc scan) with
@@ -758,18 +612,8 @@ impl PaneFlowApp {
             // support at all. Show an honest static "running" row instead of
             // nothing: the user sees the agent is alive without a fabricated
             // lifecycle state (no spinner - we genuinely don't know).
-            let hooked_tools: std::collections::HashSet<crate::agent_launcher::TerminalAgent> =
-                ws.agent_sessions.values().map(|s| s.tool).collect();
-            let mut unhooked: Vec<&'static str> = ws
-                .detected_agents
-                .iter()
-                .filter_map(|bin| crate::agent_launcher::TerminalAgent::from_binary(bin))
-                .filter(|agent| !hooked_tools.contains(agent))
-                .map(|agent| agent.display_name())
-                .collect();
-            unhooked.sort_unstable();
-            unhooked.dedup();
-            for name in unhooked {
+            for tool in agent_status.unhooked {
+                let name = tool.display_name();
                 card = card.child(
                     div()
                         .flex()
@@ -871,16 +715,131 @@ impl PaneFlowApp {
     }
 }
 
-/// Pretty-print the agent key stored in `Workspace::agent_pids`
-/// (always lower-case: `"claude"`, `"codex"`) for human display in
-/// tooltips. Anything unknown is rendered verbatim so a future agent
-/// kind shows up readable even if we forget to add a branch here.
-fn capitalize_agent(key: &str) -> &'static str {
-    match key {
-        "claude" => "Claude",
-        "codex" => "Codex",
-        "opencode" => "OpenCode",
-        _ => "AI",
+fn agent_session_tooltip(labels: &[String]) -> SharedString {
+    match labels {
+        [] => SharedString::default(),
+        [one] => format!("{one} session active").into(),
+        [a, b] => format!("{a} + {b} sessions active").into(),
+        many => format!("{} active sessions", many.len()).into(),
+    }
+}
+
+fn render_workspace_agent_status_row(
+    agg: &ai_types::ToolAggregate,
+    workspace_id: u64,
+    ui: crate::theme::UiColors,
+) -> AnyElement {
+    let extra = agg.extra_suffix();
+    match &agg.dominant {
+        ai_types::AgentState::Thinking => {
+            let is_claude = matches!(agg.tool, crate::agent_launcher::TerminalAgent::ClaudeCode);
+            let thinking_color: gpui::Hsla = if is_claude {
+                ui.agent_claude
+            } else {
+                rgb(0xc4c4c4).into()
+            };
+            let glyph: AnyElement = svg()
+                .size(px(11.))
+                .flex_none()
+                .path("icons/loader-circle.svg")
+                .text_color(thinking_color)
+                .with_animation(
+                    SharedString::from(format!(
+                        "sidebar-spinner-{}-{}",
+                        workspace_id,
+                        agg.tool.display_name()
+                    )),
+                    Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element();
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .text_xs()
+                .text_color(thinking_color)
+                .child(glyph)
+                .child(div().child(format!("{} thinking…{}", agg.tool.display_name(), extra)))
+                .into_any_element()
+        }
+        ai_types::AgentState::WaitingForInput => div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .self_start()
+            .px(px(6.))
+            .py(px(1.))
+            .rounded(px(4.))
+            .bg(rgb(0xFBBF24))
+            .child(
+                svg()
+                    .size(px(11.))
+                    .flex_none()
+                    .path("icons/bell.svg")
+                    .text_color(ui.base),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ui.base)
+                    .child(format!("{} needs input{}", agg.tool.display_name(), extra)),
+            )
+            .into_any_element(),
+        ai_types::AgentState::Finished => {
+            let done_color = rgb(0x00E08A);
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .text_xs()
+                .text_color(done_color)
+                .child(
+                    svg()
+                        .size(px(11.))
+                        .flex_none()
+                        .path("icons/check.svg")
+                        .text_color(done_color),
+                )
+                .child(div().child(format!("{} done{}", agg.tool.display_name(), extra)))
+                .into_any_element()
+        }
+        ai_types::AgentState::Errored => div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .text_xs()
+            .text_color(ui.agent_error)
+            .child(
+                svg()
+                    .size(px(11.))
+                    .flex_none()
+                    .path("icons/x_circle.svg")
+                    .text_color(ui.agent_error),
+            )
+            .child(div().child(format!("{} errored{}", agg.tool.display_name(), extra)))
+            .into_any_element(),
+        ai_types::AgentState::Stalled => div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .text_xs()
+            .text_color(ui.agent_stalled)
+            .child(
+                svg()
+                    .size(px(11.))
+                    .flex_none()
+                    .path("icons/triangle-alert.svg")
+                    .text_color(ui.agent_stalled),
+            )
+            .child(div().child(format!("{} stalled{}", agg.tool.display_name(), extra)))
+            .into_any_element(),
     }
 }
 

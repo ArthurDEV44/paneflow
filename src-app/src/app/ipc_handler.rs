@@ -946,9 +946,10 @@ struct WsFleet<'a> {
 
 /// EP-001 US-001: build the sorted `fleet.list` agent rows. Pure.
 ///
-/// Hooked sessions are emitted with full state (`hooked: true`); then every
-/// detected binary whose tool has NO hook session is appended once as
-/// `unknown_running` (`hooked: false`) so the 6 hookless agents stay visible.
+/// Hooked sessions are emitted with full state (`hooked: true`); unhooked rows
+/// come from `ai_types::workspace_agent_status`, the same projection the CLI
+/// sidebar renders. That keeps the human and machine surfaces aligned on what
+/// "detected but no hook" means.
 /// Sorted by `(workspace, tool display_rank, pid)` for a stable order across the
 /// `HashMap`'s nondeterministic iteration.
 fn build_fleet_rows(
@@ -958,9 +959,8 @@ fn build_fleet_rows(
 ) -> Vec<serde_json::Value> {
     let mut rows: Vec<(usize, usize, u32, serde_json::Value)> = Vec::new();
     for ws in workspaces {
-        let mut tools_seen: HashSet<TerminalAgent> = HashSet::new();
+        let status = ai_types::workspace_agent_status(ws.sessions.values(), ws.detected);
         for (pid, s) in ws.sessions {
-            tools_seen.insert(s.tool);
             let surface_name = s
                 .surface_id
                 .and_then(|sid| name_by_sid.get(&sid).map(String::as_str));
@@ -992,14 +992,7 @@ fn build_fleet_rows(
         }
         // Detected-but-unhooked: a binary the /proc scan saw whose tool has no
         // hook session. Appended last within the workspace (pid sentinel).
-        let mut unhooked: Vec<TerminalAgent> = ws
-            .detected
-            .iter()
-            .filter_map(|b| TerminalAgent::from_binary(b))
-            .filter(|t| !tools_seen.contains(t))
-            .collect();
-        unhooked.sort_by_key(|t| t.display_rank());
-        for tool in unhooked {
+        for tool in status.unhooked {
             rows.push((
                 ws.idx,
                 tool.display_rank(),
@@ -2881,10 +2874,7 @@ impl PaneFlowApp {
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // The row spinner self-animates (declarative GPUI
                     // Animation in `thread_row`) - no loader-loop start here.
-                    t.status = crate::project::ThreadStatus::Thinking;
-                    if pid.is_some() {
-                        t.agent_pid = pid;
-                    }
+                    apply_agents_thread_state(t, ai_types::AgentState::Thinking, pid);
                     cx.notify();
                     serde_json::json!({"status": "running"})
                 } else {
@@ -2935,10 +2925,7 @@ impl PaneFlowApp {
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // tool_use keeps (or promotes) the thread spinner -
                     // same Finished-revival rationale as the workspace arm.
-                    t.status = crate::project::ThreadStatus::Thinking;
-                    if pid.is_some() {
-                        t.agent_pid = pid;
-                    }
+                    apply_agents_thread_state(t, ai_types::AgentState::Thinking, pid);
                     cx.notify();
                     serde_json::json!({"status": "running"})
                 } else {
@@ -2999,10 +2986,7 @@ impl PaneFlowApp {
                     self.agent_sessions_changed(cx);
                     serde_json::json!({"status": "waiting"})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
-                    t.status = crate::project::ThreadStatus::WaitingForInput;
-                    if pid.is_some() {
-                        t.agent_pid = pid;
-                    }
+                    apply_agents_thread_state(t, ai_types::AgentState::WaitingForInput, pid);
                     // Notification body uses the cleaned title so a CLI
                     // spinner glyph baked into the OSC title never leaks
                     // into the desktop notification.
@@ -3120,8 +3104,7 @@ impl PaneFlowApp {
                     // ends and the relative timestamp returns. No Finished
                     // hold state - `ThreadStatus` has no such variant and
                     // the row's timestamp is the natural rest indicator.
-                    t.status = crate::project::ThreadStatus::Idle;
-                    t.agent_pid = None;
+                    apply_agents_thread_state(t, ai_types::AgentState::Finished, pid);
                     let title = crate::project::clean_sidebar_title(&t.title)
                         .unwrap_or_else(|| t.title.clone());
                     // Snapshot what the off-thread ai-title backfill needs
@@ -3207,13 +3190,14 @@ impl PaneFlowApp {
                     self.agent_sessions_changed(cx);
                     serde_json::json!({"status": if errored { "errored" } else { "finished" }})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
-                    // Agents view (out of this PRD's cockpit scope): the
-                    // thread model has no Errored status - treat like
-                    // `ai.session_end` so the spinner never sticks.
-                    t.status = crate::project::ThreadStatus::Idle;
-                    t.agent_pid = None;
+                    // Agents view mirrors the workspace exit classifier but
+                    // keeps the row compact: success returns to timestamp,
+                    // crashes become a red indicator (no status text).
+                    let state = ai_types::state_for_exit(exit_code);
+                    let errored = state == ai_types::AgentState::Errored;
+                    apply_agents_thread_state(t, state, pid);
                     cx.notify();
-                    serde_json::json!({"status": "idle"})
+                    serde_json::json!({"status": if errored { "errored" } else { "finished" }})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
                 }
@@ -3288,9 +3272,7 @@ impl PaneFlowApp {
                     }
                     serde_json::json!({"cleared": removed})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
-                    let was_active = t.status != crate::project::ThreadStatus::Idle;
-                    t.status = crate::project::ThreadStatus::Idle;
-                    t.agent_pid = None;
+                    let was_active = clear_agents_thread_on_session_end(t);
                     if was_active {
                         cx.notify();
                     }
@@ -3315,6 +3297,37 @@ impl PaneFlowApp {
         let thread_id = crate::project::thread_id_from_env_id(env_id)?;
         self.agents_thread_mut_by_id(thread_id)
     }
+}
+
+fn apply_agents_thread_state(
+    thread: &mut crate::project::Thread,
+    state: ai_types::AgentState,
+    pid: Option<u32>,
+) {
+    thread.status = crate::project::ThreadStatus::from_agent_state(state);
+    match thread.status {
+        crate::project::ThreadStatus::Idle | crate::project::ThreadStatus::Failed => {
+            thread.agent_pid = None;
+            thread.agent_proc_start = None;
+        }
+        _ => {
+            if let Some(pid) = pid {
+                thread.agent_pid = Some(pid);
+                thread.agent_proc_start = super::event_handlers::pid_start_time(pid);
+            }
+        }
+    }
+}
+
+fn clear_agents_thread_on_session_end(thread: &mut crate::project::Thread) -> bool {
+    if thread.status == crate::project::ThreadStatus::Failed {
+        return false;
+    }
+    let was_active = thread.status != crate::project::ThreadStatus::Idle;
+    thread.status = crate::project::ThreadStatus::Idle;
+    thread.agent_pid = None;
+    thread.agent_proc_start = None;
+    was_active
 }
 
 // ---------------------------------------------------------------------------
@@ -4488,6 +4501,58 @@ mod tests {
             key >= super::SYNTHETIC_SESSION_PID_BASE,
             "synthetic key lands in the reserved band"
         );
+    }
+
+    #[test]
+    fn agents_thread_state_maps_hook_lifecycle_compactly() {
+        use crate::ai_types::AgentState;
+        use crate::project::{Thread, ThreadStatus};
+
+        let self_pid = std::process::id();
+        let mut thread = Thread::new_terminal("Codex", "/tmp", None);
+
+        super::apply_agents_thread_state(&mut thread, AgentState::Thinking, Some(self_pid));
+        assert_eq!(thread.status, ThreadStatus::Thinking);
+        assert_eq!(thread.agent_pid, Some(self_pid));
+
+        super::apply_agents_thread_state(&mut thread, AgentState::WaitingForInput, None);
+        assert_eq!(thread.status, ThreadStatus::WaitingForInput);
+        assert_eq!(
+            thread.agent_pid,
+            Some(self_pid),
+            "no-pid frames preserve the last known PID for stale sweeping"
+        );
+
+        super::apply_agents_thread_state(&mut thread, AgentState::Finished, None);
+        assert_eq!(thread.status, ThreadStatus::Idle);
+        assert!(thread.agent_pid.is_none());
+        assert!(thread.agent_proc_start.is_none());
+
+        super::apply_agents_thread_state(&mut thread, AgentState::Errored, Some(self_pid));
+        assert_eq!(thread.status, ThreadStatus::Failed);
+        assert!(
+            thread.agent_pid.is_none(),
+            "Failed is a durable compact crash signal, not a sweep target"
+        );
+    }
+
+    #[test]
+    fn agents_session_end_preserves_failed_indicator() {
+        use crate::project::{Thread, ThreadStatus};
+
+        let mut failed = Thread::new_terminal("Codex", "/tmp", None);
+        failed.status = ThreadStatus::Failed;
+        failed.agent_pid = Some(std::process::id());
+        assert!(!super::clear_agents_thread_on_session_end(&mut failed));
+        assert_eq!(failed.status, ThreadStatus::Failed);
+
+        let mut active = Thread::new_terminal("Codex", "/tmp", None);
+        active.status = ThreadStatus::Thinking;
+        active.agent_pid = Some(std::process::id());
+        assert!(super::clear_agents_thread_on_session_end(&mut active));
+        assert_eq!(active.status, ThreadStatus::Idle);
+        assert!(active.agent_pid.is_none());
+        assert!(active.agent_proc_start.is_none());
     }
 
     // -----------------------------------------------------------------

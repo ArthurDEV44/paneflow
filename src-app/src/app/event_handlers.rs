@@ -175,6 +175,29 @@ fn pid_matches(pid: u32, pinned_start: Option<u64>) -> bool {
     }
 }
 
+fn keep_session_after_surface_purge(
+    dying_surface_id: u64,
+    pid: u32,
+    session: &ai_types::AgentSession,
+) -> bool {
+    if session.surface_id == Some(dying_surface_id) {
+        return false;
+    }
+    session.surface_id.is_some() || pid > i32::MAX as u32 || pid_matches(pid, session.proc_start)
+}
+
+fn stale_sweep_keeps_without_pid_probe(
+    pid: u32,
+    session: &ai_types::AgentSession,
+    live_surfaces: &std::collections::HashSet<u64>,
+) -> bool {
+    pid > i32::MAX as u32
+        || (session.state == ai_types::AgentState::Errored
+            && session
+                .surface_id
+                .is_some_and(|sid| live_surfaces.contains(&sid)))
+}
+
 fn merge_service_label(
     labels: &mut std::collections::HashMap<u16, crate::terminal::ServiceInfo>,
     info: crate::terminal::ServiceInfo,
@@ -982,15 +1005,10 @@ impl PaneFlowApp {
             }
             let before = ws.agent_sessions.len();
             ws.agent_sessions.retain(|&pid, session| {
-                if session.surface_id == Some(surface_id) {
-                    return false;
-                }
                 // Opportunistic: a session never resolved to a surface can
                 // only be reaped through its PID - probe it now (the dying
                 // shell may have taken the agent with it via SIGHUP).
-                session.surface_id.is_some()
-                    || pid > i32::MAX as u32
-                    || pid_matches(pid, session.proc_start)
+                keep_session_after_surface_purge(surface_id, pid, session)
             });
             if ws.agent_sessions.len() < before {
                 changed = true;
@@ -1053,12 +1071,8 @@ impl PaneFlowApp {
             // session. Keep them around: they'll be cleared by
             // `ai.session_end` or by the next state transition.
             ws.agent_sessions.retain(|&pid, session| {
-                pid > i32::MAX as u32
+                stale_sweep_keeps_without_pid_probe(pid, session, &live_surfaces)
                     || pid_matches(pid, session.proc_start)
-                    || (session.state == ai_types::AgentState::Errored
-                        && session
-                            .surface_id
-                            .is_some_and(|sid| live_surfaces.contains(&sid)))
             });
             if ws.agent_sessions.len() < before {
                 changed = true;
@@ -1099,10 +1113,11 @@ impl PaneFlowApp {
         {
             if t.status != crate::project::ThreadStatus::Idle
                 && let Some(pid) = t.agent_pid
-                && !pid_is_alive(pid)
+                && !pid_matches(pid, t.agent_proc_start)
             {
                 t.status = crate::project::ThreadStatus::Idle;
                 t.agent_pid = None;
+                t.agent_proc_start = None;
                 changed = true;
             }
         }
@@ -1538,9 +1553,12 @@ impl PaneFlowApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        announced_port_conflicts, merge_scan_workspace_state, merge_service_label,
-        parse_proc_stat_starttime, port_ownership,
+        announced_port_conflicts, keep_session_after_surface_purge, merge_scan_workspace_state,
+        merge_service_label, parse_proc_stat_starttime, port_ownership,
+        stale_sweep_keeps_without_pid_probe,
     };
+    use crate::agent_launcher::TerminalAgent;
+    use crate::ai_types::{AgentSession, AgentState};
     use crate::terminal::ServiceInfo;
     use crate::workspace::{PaneScan, PortEntry};
     use std::collections::{HashMap, HashSet};
@@ -1556,6 +1574,47 @@ mod tests {
         // Truncated content (fewer than 22 fields) yields None, not a panic.
         assert_eq!(parse_proc_stat_starttime("1234 (zsh) S 1 1234"), None);
         assert_eq!(parse_proc_stat_starttime(""), None);
+    }
+
+    #[test]
+    fn surface_purge_drops_sessions_bound_to_dying_surface() {
+        let mut session = AgentSession::new(TerminalAgent::ClaudeCode, AgentState::Errored);
+        session.surface_id = Some(7);
+
+        assert!(!keep_session_after_surface_purge(7, u32::MAX, &session));
+        assert!(keep_session_after_surface_purge(8, u32::MAX, &session));
+    }
+
+    #[test]
+    fn stale_sweep_keeps_synthetic_pid_without_os_probe() {
+        let session = AgentSession::new(TerminalAgent::ClaudeCode, AgentState::Thinking);
+        let live_surfaces = HashSet::new();
+
+        assert!(stale_sweep_keeps_without_pid_probe(
+            u32::MAX,
+            &session,
+            &live_surfaces
+        ));
+    }
+
+    #[test]
+    fn stale_sweep_keeps_errored_session_while_surface_is_live() {
+        let mut session = AgentSession::new(TerminalAgent::Codex, AgentState::Errored);
+        session.surface_id = Some(42);
+        let live_surfaces = HashSet::from([42]);
+
+        assert!(stale_sweep_keeps_without_pid_probe(
+            1234,
+            &session,
+            &live_surfaces
+        ));
+
+        let live_surfaces = HashSet::new();
+        assert!(!stale_sweep_keeps_without_pid_probe(
+            1234,
+            &session,
+            &live_surfaces
+        ));
     }
 
     #[test]

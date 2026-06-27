@@ -144,21 +144,32 @@ fn bump_counter(counter: &AtomicU64, target: u64) {
     }
 }
 
-/// Per-thread state machine (US-007 AC). Drives the sidebar status
-/// dot animation: `Thinking` = pulsing, `WaitingForInput` = amber,
-/// `Failed` = red, `Streaming` = blue, `Spawning` = ramping. `Idle` is
-/// the rest state. The streaming pipeline (US-013/US-015) and the
-/// permission flow (US-018) write into this field; the sidebar (US-010)
-/// reads from it.
+/// Per-thread state machine for the Agents sidebar. It stays deliberately
+/// small: the row renders compact visual indicators only, never status text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThreadStatus {
     #[default]
     Idle,
-    Spawning,
     Thinking,
     WaitingForInput,
-    Streaming,
     Failed,
+}
+
+impl ThreadStatus {
+    /// Derive the Agents sidebar state from the hook-backed agent lifecycle.
+    ///
+    /// The Agents rail intentionally stays compact: active states render as
+    /// visual indicators, not status text.
+    pub fn from_agent_state(state: crate::ai_types::AgentState) -> Self {
+        match state {
+            crate::ai_types::AgentState::Thinking | crate::ai_types::AgentState::Stalled => {
+                ThreadStatus::Thinking
+            }
+            crate::ai_types::AgentState::WaitingForInput => ThreadStatus::WaitingForInput,
+            crate::ai_types::AgentState::Finished => ThreadStatus::Idle,
+            crate::ai_types::AgentState::Errored => ThreadStatus::Failed,
+        }
+    }
 }
 
 /// What kind of surface a thread row drives in the main area. The
@@ -216,6 +227,10 @@ pub struct Thread {
     /// `None` for legacy hook shims that omit `pid`; the sweep then keeps
     /// the state conservatively (same policy as workspace sessions).
     pub agent_pid: Option<u32>,
+    /// Opaque OS process start fingerprint for [`Self::agent_pid`].
+    /// Transient and best-effort: when present, stale sweeping can detect PID
+    /// reuse instead of treating a recycled PID as the original live agent.
+    pub agent_proc_start: Option<u64>,
     /// Forced agent session UUID for a Claude Terminal Thread. Generated
     /// at creation for agents that support `--session-id`
     /// ([`crate::agent_launcher::TerminalAgent::supports_forced_session_id`])
@@ -250,6 +265,7 @@ impl Thread {
             terminal_agent: None,
             pinned: false,
             agent_pid: None,
+            agent_proc_start: None,
             session_id: None,
             title_user_set: false,
         }
@@ -286,6 +302,7 @@ impl Thread {
             terminal_agent,
             pinned: false,
             agent_pid: None,
+            agent_proc_start: None,
             session_id,
             title_user_set: false,
         }
@@ -425,6 +442,7 @@ pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
         // via `#[serde(default)]`, so this restores cleanly.
         pinned: s.pinned,
         agent_pid: None,
+        agent_proc_start: None,
         // Re-gate the restored session id through the same allow-list the
         // PTY-injection path uses: a tampered session.json must never
         // smuggle a flag-shaped value into `claude --session-id`. An
@@ -561,6 +579,30 @@ mod tests {
         assert_eq!(thread_id_from_env_id(0), None);
         assert_eq!(thread_id_from_env_id(1), None);
         assert_eq!(thread_id_from_env_id(AGENTS_THREAD_ENV_ID_BASE - 1), None);
+    }
+
+    #[test]
+    fn thread_status_maps_from_agent_state_without_text_labels() {
+        assert_eq!(
+            ThreadStatus::from_agent_state(crate::ai_types::AgentState::Thinking),
+            ThreadStatus::Thinking
+        );
+        assert_eq!(
+            ThreadStatus::from_agent_state(crate::ai_types::AgentState::Stalled),
+            ThreadStatus::Thinking
+        );
+        assert_eq!(
+            ThreadStatus::from_agent_state(crate::ai_types::AgentState::WaitingForInput),
+            ThreadStatus::WaitingForInput
+        );
+        assert_eq!(
+            ThreadStatus::from_agent_state(crate::ai_types::AgentState::Finished),
+            ThreadStatus::Idle
+        );
+        assert_eq!(
+            ThreadStatus::from_agent_state(crate::ai_types::AgentState::Errored),
+            ThreadStatus::Failed
+        );
     }
 
     // AC: monotonic ID atomicity across 1000 calls. We probe both

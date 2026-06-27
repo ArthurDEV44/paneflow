@@ -22,6 +22,7 @@
 //! first PID in a `HashMap<String, u32>`).
 
 use crate::agent_launcher::TerminalAgent;
+use std::collections::{HashMap, HashSet};
 
 /// Lifecycle state for one agent session (one PID).
 ///
@@ -216,6 +217,65 @@ impl ToolAggregate {
     }
 }
 
+/// Shared per-workspace agent-status projection for the CLI sidebar and
+/// `fleet.list`.
+///
+/// `agent_sessions` is the hook-derived truth. `detected_agents` is the
+/// process-scan fallback that tells us an agent is running even when no hook
+/// lifecycle frames are available. Keeping the merge here prevents the UI and
+/// IPC surfaces from drifting on what "hooked" vs "running without hook" means.
+#[derive(Debug, Clone)]
+pub struct WorkspaceAgentStatus {
+    /// One row per hook-backed tool, collapsed from per-PID sessions.
+    pub hooked: Vec<ToolAggregate>,
+    /// Known agent tools detected in the process tree but absent from hooks.
+    pub unhooked: Vec<TerminalAgent>,
+    /// Human labels for the title-dot tooltip. Unknown strings are preserved so
+    /// a future detector never collapses to a vague "AI" label.
+    pub active_labels: Vec<String>,
+}
+
+/// Build the shared workspace agent-status projection.
+pub fn workspace_agent_status<'a, I>(
+    sessions: I,
+    detected_agents: &HashSet<String>,
+) -> WorkspaceAgentStatus
+where
+    I: IntoIterator<Item = &'a AgentSession>,
+{
+    let hooked = aggregate_by_tool(sessions);
+    let hooked_tools: HashSet<TerminalAgent> = hooked.iter().map(|row| row.tool).collect();
+
+    let mut detected_tools: Vec<TerminalAgent> = detected_agents
+        .iter()
+        .filter_map(|binary| TerminalAgent::from_binary(binary))
+        .collect();
+    detected_tools.sort_by_key(|tool| tool.display_rank());
+    detected_tools.dedup();
+
+    let mut active_labels: Vec<String> = detected_agents
+        .iter()
+        .map(|binary| {
+            TerminalAgent::from_binary(binary)
+                .map(|tool| tool.display_name().to_string())
+                .unwrap_or_else(|| binary.clone())
+        })
+        .collect();
+    active_labels.sort();
+    active_labels.dedup();
+
+    let unhooked = detected_tools
+        .into_iter()
+        .filter(|tool| !hooked_tools.contains(tool))
+        .collect();
+
+    WorkspaceAgentStatus {
+        hooked,
+        unhooked,
+        active_labels,
+    }
+}
+
 /// Salience ranking used to pick the dominant state when a tool has
 /// multiple sessions in different states. `Errored` outranks everything
 /// (a crash must never hide behind a sibling's spinner); `Stalled` sits
@@ -236,8 +296,7 @@ pub fn aggregate_by_tool<'a, I>(sessions: I) -> Vec<ToolAggregate>
 where
     I: IntoIterator<Item = &'a AgentSession>,
 {
-    let mut by_tool: std::collections::HashMap<TerminalAgent, ToolAggregate> =
-        std::collections::HashMap::new();
+    let mut by_tool: HashMap<TerminalAgent, ToolAggregate> = HashMap::new();
 
     for s in sessions {
         by_tool
@@ -459,5 +518,36 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].tool, TerminalAgent::ClaudeCode);
         assert_eq!(rows[1].tool, TerminalAgent::Codex);
+    }
+
+    #[test]
+    fn workspace_agent_status_splits_hooked_from_unhooked() {
+        let sessions = [s(TerminalAgent::ClaudeCode, AgentState::Thinking)];
+        let mut detected = HashSet::new();
+        detected.insert(TerminalAgent::ClaudeCode.binary().to_string());
+        detected.insert(TerminalAgent::Copilot.binary().to_string());
+
+        let status = workspace_agent_status(sessions.iter(), &detected);
+
+        assert_eq!(status.hooked.len(), 1);
+        assert_eq!(status.hooked[0].tool, TerminalAgent::ClaudeCode);
+        assert_eq!(status.unhooked, vec![TerminalAgent::Copilot]);
+        assert_eq!(
+            status.active_labels,
+            vec!["Claude Code".to_string(), "Copilot".to_string()]
+        );
+    }
+
+    #[test]
+    fn workspace_agent_status_preserves_unknown_detection_labels() {
+        let sessions: [AgentSession; 0] = [];
+        let mut detected = HashSet::new();
+        detected.insert("future-agent".to_string());
+
+        let status = workspace_agent_status(sessions.iter(), &detected);
+
+        assert!(status.hooked.is_empty());
+        assert!(status.unhooked.is_empty());
+        assert_eq!(status.active_labels, vec!["future-agent".to_string()]);
     }
 }

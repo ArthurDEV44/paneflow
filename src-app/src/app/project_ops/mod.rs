@@ -232,6 +232,7 @@ impl PaneFlowApp {
             terminal_agent: None,
             pinned: false,
             agent_pid: None,
+            agent_proc_start: None,
             // Legacy Agent-kind row (not a Terminal Thread): no forced
             // session id, no manual-rename lock.
             session_id: None,

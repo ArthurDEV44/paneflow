@@ -629,15 +629,12 @@ impl PaneFlowApp {
         // flight the relative timestamp gives way to a rotating arc -
         // the SAME muted `loader-circle.svg` for every agent (Arthur:
         // no per-agent branding here, match the Codex app's sidebar) -
-        // or a static amber attention dot (WaitingForInput, same amber
-        // as the CLI sidebar badge). Idle restores the timestamp. The
-        // arc self-animates via the declarative Animation+Transformation
-        // API (same pattern as the title-bar update pill), so no shared
-        // loader-loop state is involved.
+        // or a static compact dot for attention/error. Idle restores the
+        // timestamp. The arc self-animates via the declarative
+        // Animation+Transformation API (same pattern as the title-bar update
+        // pill), so no shared loader-loop state is involved.
         let right_slot: gpui::AnyElement = match status {
-            crate::project::ThreadStatus::Thinking
-            | crate::project::ThreadStatus::Spawning
-            | crate::project::ThreadStatus::Streaming => svg()
+            crate::project::ThreadStatus::Thinking => svg()
                 .size(px(11.))
                 .flex_none()
                 .path("icons/loader-circle.svg")
@@ -652,9 +649,11 @@ impl PaneFlowApp {
                 .text_color(rgb(0xFBBF24))
                 .child("●")
                 .into_any_element(),
-            crate::project::ThreadStatus::Idle | crate::project::ThreadStatus::Failed => {
-                div().child(timestamp).into_any_element()
-            }
+            crate::project::ThreadStatus::Failed => div()
+                .text_color(ui.agent_error)
+                .child("●")
+                .into_any_element(),
+            crate::project::ThreadStatus::Idle => div().child(timestamp).into_any_element(),
         };
         let title_color = ui.text;
         let title_weight = FontWeight::NORMAL;
