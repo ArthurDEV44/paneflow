@@ -1413,11 +1413,10 @@ jobs:
   # after ALL legs finish, downloads every artifact, and creates the
   # GitHub Release exactly once with the merged file set.
   #
-  # Atomic-release guarantee (PRD AC6): `needs: [build]` waits for
-  # every matrix leg to finish. `fail-fast: true` plus hard-required
-  # Linux x64, Linux aarch64, macOS aarch64, and Windows x64 legs means
-  # any failed build leg fails `build`, so this job never publishes from
-  # a broken platform matrix.
+  # Atomic-release guarantee (PRD AC6): the publish job `needs:` list
+  # waits for the full build matrix plus every release smoke gate. A
+  # failed Linux x64, Linux aarch64, macOS aarch64, Windows x64, package
+  # smoke, MSI smoke, or auto-update E2E blocks publishing.
   release:
     name: Publish GitHub Release
     # US-003: skip the entire publish chain in dry-run mode. The
@@ -1439,43 +1438,28 @@ jobs:
     # canonical pattern used by rust-lang/rust, tokio-rs/tokio, and Zed
     # (zed-industries/zed .github/workflows/release.yml).
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    # US-002: Publish is gated on every smoke test, not just `build`.
-    # US-005: also gated on `auto-update-e2e` so a tag cut never ships
-    # a binary that can't actually self-update v(N-1) → v(N).
+    # US-002: Publish is gated on every release validation job, not just
+    # `build`. If any smoke test fails, the GitHub Release must not publish.
+    # US-005: also gated on `auto-update-e2e` so a tag cut never ships a
+    # binary that can't actually self-update v(N-1) → v(N).
     # Pre-US-002 the smoke jobs ran in parallel with publish (rationale:
     # the .deb/.rpm hadn't been signed yet, so a hot-fix re-publish was
     # cheaper than blocking the tag). Post-v0.2.11 the macOS DMG is
     # notarized and the Windows MSI is in the Azure-signing pipeline,
     # so a botched-postinst hot-fix means re-running the entire signing
-    # chain. Blocking publish on the 5-distro smoke matrix is the
-    # cheaper failure mode now.
-    # NOTE (v0.2.12 release): the new smoke gates added by commit 1884237
-    # (debian / arch / opensuse) and the auto-update e2e harness were
-    # never exercised end-to-end before v0.2.12 because the dry-run
-    # dispatch they were validated against was itself broken (the
-    # `env.RELEASE_MODE` job-level if expression that we fixed in commit
-    # 735a094). v0.2.12 became the first release to exercise the full
-    # matrix and surfaced 9 cumulative layers of latent bugs. Each
-    # individual fix (cycles 1-9) has been merged and is correct. They
-    # remain as gates ON the matrix (so we still get CI signal) but are
-    # NOT in `needs:` of the publish job until each is independently
-    # validated in a follow-up dry-run dispatch.
-    #
-    # KEPT (validated on v0.2.11 release path):
-    #   - build (hard-required four-platform matrix)
-    #   - smoke-test-ubuntu
-    #   - smoke-test-fedora
-    #
-    # MOVED OUT (will be reinstated one-by-one once each is proven
-    # stable in dry-run + a real release):
-    #   - smoke-test-debian
-    #   - smoke-test-arch
-    #   - smoke-test-opensuse
-    #   - auto-update-e2e
+    # chain. Blocking publish on every smoke gate is the cheaper and more
+    # honest failure mode now. `dry-run-summary` is intentionally excluded:
+    # it only runs for workflow_dispatch dry-runs, never for tag-push
+    # release publishing.
     needs:
       - build
       - smoke-test-ubuntu
       - smoke-test-fedora
+      - smoke-test-debian
+      - smoke-test-opensuse
+      - smoke-test-arch
+      - smoke-test-windows-msi
+      - auto-update-e2e
     runs-on: ubuntu-22.04
     # US-002 (prd-audit-remediation): gate the publish job (which holds the
     # minisign signing key) behind the `release` environment, so the private
@@ -1587,10 +1571,10 @@ jobs:
   # GHA pulls the container before the first step and has no native
   # retry knob).
   #
-  # Publish gating (US-002 AC4): all 5 smoke jobs sit in the
-  # `release.needs:` list above, so a smoke failure on any distro
-  # blocks the GitHub Release publish and the Homebrew / winget
-  # update jobs that fan out from it.
+  # Publish gating (US-002 AC4): all release smokes sit in the
+  # `release.needs:` list above, so a smoke failure on any distro or on
+  # Windows blocks the GitHub Release publish and the downstream
+  # package-manager update jobs that fan out from it.
   #
   # Smoke tests are intentionally x86_64-only even after US-019 adds
   # the aarch64 build matrix leg. The tests exercise postinst scripts
@@ -1992,6 +1976,215 @@ jobs:
             echo "::error::paneflow --version returned '${actual}', expected '${expected}'"
             exit 1
           fi
+
+  # ─── Windows MSI smoke: signed installer + update relay ──────────────
+  # This is the Windows counterpart to the Linux package smokes above.
+  # CI cannot click through a real UAC consent prompt, so the job keeps
+  # the elevated path for manual release smoke. What it does gate here is
+  # the release artifact that users receive: signed MSI integrity, silent
+  # Windows Installer install/uninstall, the installed `paneflow --version`,
+  # and the detached `--msi-relay` path that waits, invokes msiexec, writes
+  # diagnostics, removes its staged MSI, and requests a relaunch.
+  smoke-test-windows-msi:
+    name: Smoke test - Windows MSI install + relay
+    needs: build
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download signed Windows MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Windows
+          path: ./release-assets
+
+      - name: Install MSI, verify binary, and exercise update relay
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          SMOKE_DIR: ${{ runner.temp }}\paneflow-msi-smoke
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          New-Item -ItemType Directory -Force -Path $env:SMOKE_DIR | Out-Null
+          $version = $env:TAG.TrimStart('v')
+          $msis = @(Get-ChildItem -LiteralPath 'release-assets' -Filter 'paneflow-*-x86_64-pc-windows-msvc.msi' -File)
+
+          if ($msis.Count -ne 1) {
+              $found = $msis | Sort-Object Name | ForEach-Object { $_.Name }
+              throw "Expected exactly one Windows MSI, found $($msis.Count): $($found -join ', ')"
+          }
+
+          $msi = $msis[0]
+          if ($msi.Length -le 0) {
+              throw "MSI is empty: $($msi.FullName)"
+          }
+
+          $shaPath = "$($msi.FullName).sha256"
+          if (-not (Test-Path -LiteralPath $shaPath)) {
+              throw "Missing SHA-256 sidecar: $shaPath"
+          }
+
+          $expectedHash = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
+              throw "Invalid SHA-256 sidecar content in $shaPath"
+          }
+
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $msi.FullName).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+              throw "MSI SHA-256 mismatch: expected $expectedHash, got $actualHash"
+          }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $msi.FullName
+          if ($signature.Status -ne 'Valid') {
+              throw "MSI Authenticode signature is $($signature.Status): $($signature.StatusMessage)"
+          }
+
+          if ($signature.SignerCertificate) {
+              Write-Host "MSI signed by $($signature.SignerCertificate.Subject)"
+          }
+
+          function Show-LogTail {
+              param([Parameter(Mandatory = $true)][string] $Path)
+
+              if (Test-Path -LiteralPath $Path) {
+                  Write-Host "--- tail of $Path ---"
+                  Get-Content -LiteralPath $Path -Tail 160 | ForEach-Object { Write-Host $_ }
+              }
+          }
+
+          function Invoke-SmokeProcess {
+              param(
+                  [Parameter(Mandatory = $true)][string] $FilePath,
+                  [Parameter(Mandatory = $true)][string[]] $Arguments,
+                  [Parameter(Mandatory = $true)][string] $Label,
+                  [int] $TimeoutSeconds = 300,
+                  [int[]] $AllowedExitCodes = @(0)
+              )
+
+              $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+              $startInfo.FileName = $FilePath
+              $startInfo.UseShellExecute = $false
+              foreach ($argument in $Arguments) {
+                  [void] $startInfo.ArgumentList.Add($argument)
+              }
+
+              $process = [System.Diagnostics.Process]::Start($startInfo)
+              if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                  try {
+                      $process.Kill($true)
+                  } catch {
+                      Write-Warning "Could not kill timed-out process $($process.Id): $_"
+                  }
+                  throw "$Label timed out after $TimeoutSeconds seconds"
+              }
+
+              if ($AllowedExitCodes -notcontains $process.ExitCode) {
+                  throw "$Label exited with $($process.ExitCode)"
+              }
+
+              return $process.ExitCode
+          }
+
+          $msiexec = Join-Path $env:WINDIR 'System32\msiexec.exe'
+          $installLog = Join-Path $env:SMOKE_DIR 'install.log'
+          $uninstallLog = Join-Path $env:SMOKE_DIR 'uninstall.log'
+          $installed = $false
+
+          try {
+              try {
+                  Invoke-SmokeProcess `
+                      -FilePath $msiexec `
+                      -Arguments @('/i', $msi.FullName, '/qn', '/norestart', '/l*v', $installLog) `
+                      -Label 'msiexec install'
+              } catch {
+                  Show-LogTail -Path $installLog
+                  throw
+              }
+
+              $installed = $true
+              $installDir = Join-Path $env:ProgramFiles 'PaneFlow'
+              $exe = Join-Path $installDir 'paneflow.exe'
+              if (-not (Test-Path -LiteralPath $exe)) {
+                  throw "Installed paneflow.exe not found at $exe"
+              }
+
+              $actualVersion = (& $exe --version).Trim()
+              if ($LASTEXITCODE -ne 0) {
+                  throw "paneflow --version exited with $LASTEXITCODE"
+              }
+
+              $expectedVersion = "paneflow $version"
+              if ($actualVersion -ne $expectedVersion) {
+                  throw "paneflow --version returned '$actualVersion', expected '$expectedVersion'"
+              }
+
+              $relayExe = Join-Path $env:SMOKE_DIR 'paneflow-msi-relay.exe'
+              $relayMsi = Join-Path $env:SMOKE_DIR $msi.Name
+              $relayLog = Join-Path $env:SMOKE_DIR 'relay.log'
+              $relayMsiLog = Join-Path $env:SMOKE_DIR 'relay-msiexec.log'
+              $restartProbe = Join-Path $env:WINDIR 'System32\whoami.exe'
+              $missingParentPid = '4294967295'
+
+              Copy-Item -LiteralPath $exe -Destination $relayExe -Force
+              Copy-Item -LiteralPath $msi.FullName -Destination $relayMsi -Force
+
+              try {
+                  Invoke-SmokeProcess `
+                      -FilePath $relayExe `
+                      -Arguments @(
+                          '--msi-relay',
+                          '--parent-pid', $missingParentPid,
+                          '--msi', $relayMsi,
+                          '--msi-log', $relayMsiLog,
+                          '--restart', $restartProbe,
+                          '--relay-log', $relayLog
+                      ) `
+                      -Label 'paneflow MSI relay'
+              } catch {
+                  Show-LogTail -Path $relayLog
+                  Show-LogTail -Path $relayMsiLog
+                  throw
+              }
+
+              if (Test-Path -LiteralPath $relayMsi) {
+                  throw "MSI relay did not remove staged MSI copy: $relayMsi"
+              }
+
+              $relayText = Get-Content -LiteralPath $relayLog -Raw
+              foreach ($needle in @(
+                  'started pid=',
+                  "parent $missingParentPid already exited or cannot be opened",
+                  'running msiexec',
+                  'msiexec exited with 0',
+                  'relaunch requested'
+              )) {
+                  if (-not $relayText.Contains($needle)) {
+                      throw "Relay log missing expected entry '$needle'"
+                  }
+              }
+          } finally {
+              if ($installed) {
+                  try {
+                      Invoke-SmokeProcess `
+                          -FilePath $msiexec `
+                          -Arguments @('/x', $msi.FullName, '/qn', '/norestart', '/l*v', $uninstallLog) `
+                          -Label 'msiexec uninstall'
+                  } catch {
+                      Show-LogTail -Path $uninstallLog
+                      throw
+                  }
+              }
+          }
+
+      - name: Upload Windows MSI smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi-smoke-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}\paneflow-msi-smoke
+          if-no-files-found: warn
+          retention-days: 7
 
   # ─── US-003 AC5: dry-run artifact summary ───────────────────────────
   # In dry-run mode the `release:` job is skipped, so there's no
