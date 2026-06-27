@@ -2021,6 +2021,10 @@ fn mount_paneflow_app(window: &mut Window, cx: &mut App) -> Entity<PaneFlowApp> 
 fn main() {
     // Handle --help and --version before initializing GPUI
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(windows)]
+    let is_msi_relay = update::windows::msi::is_relay_invocation(&args);
+    #[cfg(not(windows))]
+    let is_msi_relay = false;
     // US-038: detect the `mcp` subcommand BEFORE the global flag scans. Those
     // scans look at *every* arg, so `paneflow mcp install --help` would
     // otherwise match the global `--help` and print the top-level help instead
@@ -2038,15 +2042,18 @@ fn main() {
     // before clap (like `mcp`) and mutates agent config files offline - so the
     // global flag scans must not eat its `--help`.
     let is_hooks_subcommand = args.get(1).map(String::as_str) == Some("hooks");
-    let is_global_help = !is_mcp_subcommand
+    let is_global_help = !is_msi_relay
+        && !is_mcp_subcommand
         && !is_cli_subcommand
         && !is_hooks_subcommand
         && args.iter().any(|a| a == "--help" || a == "-h");
-    let is_global_version = !is_mcp_subcommand
+    let is_global_version = !is_msi_relay
+        && !is_mcp_subcommand
         && !is_cli_subcommand
         && !is_hooks_subcommand
         && args.iter().any(|a| a == "--version" || a == "-v");
-    let is_update_and_exit = !is_mcp_subcommand
+    let is_update_and_exit = !is_msi_relay
+        && !is_mcp_subcommand
         && !is_cli_subcommand
         && !is_hooks_subcommand
         && args.iter().any(|a| a == "--update-and-exit");
@@ -2056,7 +2063,8 @@ fn main() {
 
     #[cfg(windows)]
     detach_lonely_windows_console_for_gui_launch(
-        is_mcp_subcommand
+        is_msi_relay
+            || is_mcp_subcommand
             || is_cli_subcommand
             || is_hooks_subcommand
             || is_global_help
@@ -2064,6 +2072,11 @@ fn main() {
             || is_update_and_exit
             || is_unknown_verb,
     );
+
+    #[cfg(windows)]
+    if is_msi_relay {
+        std::process::exit(update::windows::msi::run_relay_from_args(&args));
+    }
 
     if is_global_help {
         println!(

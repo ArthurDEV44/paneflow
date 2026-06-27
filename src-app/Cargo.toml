@@ -341,6 +341,7 @@ windows-sys = { version = "0.59", features = [
     # Windows toast attribution: bind the process identity to the same
     # AppUserModelID used by the Start Menu shortcut and WinRT toast sender.
     "Win32_UI_Shell",
+    "Win32_System_Registry",
     # EP-006 US-013 (agent-control-plane-hardening): PeekNamedPipe gates every
     # events.subscribe push on the named pipe's liveness, so a disconnected
     # `paneflow watch` evicts the subscription (RAII) instead of tripping
