@@ -2264,6 +2264,10 @@ jobs:
     name: Auto-update e2e (Linux x86_64)
     needs: build
     runs-on: ubuntu-22.04
+    # The E2E signs the NEW tarball before publish so it can remain a
+    # hard `release.needs` gate. That requires the same minisign secret as
+    # the publish job, stored on the protected `release` environment.
+    environment: release
     # Pre-refactor (≤ v0.3.3): this job did two full `cargo build
     # --release` (NEW from current tree, OLD from a worktree at the
     # previous tag), routinely ~20-25 min on cold cache. It was by
@@ -2367,44 +2371,49 @@ jobs:
             --dir "${RUNNER_TEMP}/e2e-old"
           ls -la "${RUNNER_TEMP}/e2e-old"
 
-      # The build artifact predates signing: the `.minisig` sidecars are
-      # produced and uploaded by the publish job, which runs in PARALLEL
-      # with this leg. OLD clients ≥ v0.3.9 verify fail-closed - they
-      # fetch `<tarball-url>.minisig` and abort the install when it is
-      # missing - so the harness needs the REAL signature of the NEW
-      # tarball (first observed on v0.4.1: the happy path 404'd on the
-      # fixture's .minisig and the leg went red despite a good release).
-      # Poll the release until the publish job has attached it; the
-      # artifact tarball and the published tarball are byte-identical,
-      # so the signature transfers. Tag-push runs only: a dry-run
-      # publishes nothing - the harness then self-no-ops with a notice
-      # (see scripts/test-update-e2e.sh phase 1).
-      - name: Fetch NEW tarball signature from the published release
-        if: steps.prev_release.outputs.old_version != '' && github.event_name == 'push'
+      # The build artifact predates the publish job's release signing, but
+      # auto-update-e2e now sits in `release.needs`. It cannot poll a
+      # GitHub Release that is waiting for this very job. Sign the NEW
+      # tarball here with the same minisign release key so OLD clients can
+      # verify the fixture before publish.
+      - name: Sign NEW tarball for auto-update e2e
+        if: steps.prev_release.outputs.old_version != ''
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ env.RELEASE_TAG }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
           set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "::error::MINISIGN_SECRET_KEY is required for auto-update e2e because OLD clients verify fail-closed."
+            exit 1
+          fi
+
           NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
-          sig="paneflow-${NEW_VERSION}-x86_64.tar.gz.minisig"
-          # 60 × 15 s = 15 min cap - the publish job typically uploads
-          # within ~2 min of the last build leg finishing. If the cap
-          # trips, publishing (or signing) itself is broken and THAT is
-          # the failure to surface, not a missing-file 404 in the
-          # harness.
-          for i in $(seq 1 60); do
-            if gh release download "$TAG" \
-                 --pattern "$sig" \
-                 --dir "${RUNNER_TEMP}/e2e-new" 2>/dev/null; then
-              echo "signature fetched after ${i} attempt(s)"
-              ls -la "${RUNNER_TEMP}/e2e-new"
-              exit 0
-            fi
-            sleep 15
-          done
-          echo "::error::${sig} never appeared on ${TAG} after 15 min - publish leg failed or artifact signing is broken"
-          exit 1
+          tarball="${RUNNER_TEMP}/e2e-new/paneflow-${NEW_VERSION}-x86_64.tar.gz"
+          [ -s "${tarball}" ] || {
+            echo "::error::Expected NEW tarball not found before signing: ${tarball}"
+            ls -la "${RUNNER_TEMP}/e2e-new" || true
+            exit 1
+          }
+
+          MINISIGN_VERSION=0.12
+          MINISIGN_SHA256=9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+          curl -sSfL --retry 3 -o /tmp/minisign.tar.gz \
+            "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-linux.tar.gz"
+          echo "${MINISIGN_SHA256}  /tmp/minisign.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/minisign.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
+          minisign -v
+
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "$key_file"
+          chmod 600 "$key_file"
+
+          base="$(basename "$tarball")"
+          minisign -S -s "$key_file" -m "$tarball" \
+            -t "paneflow release artifact ${base}" >/dev/null
+          test -s "${tarball}.minisig"
+          ls -la "${RUNNER_TEMP}/e2e-new"
 
       - name: Run auto-update e2e harness
         if: steps.prev_release.outputs.old_version != ''
