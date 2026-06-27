@@ -68,10 +68,10 @@ mod workspace;
 use crate::window_chrome::title_bar;
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle, Focusable, HitboxBehavior,
-    InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render, ResizeEdge, Styled,
-    Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, px,
-    size, transparent_black,
+    Animation, AnimationExt, App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle,
+    Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render,
+    ResizeEdge, SharedString, Styled, Window, WindowBounds, WindowDecorations, WindowOptions,
+    canvas, div, point, prelude::*, px, size, transparent_black,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -220,12 +220,118 @@ struct SelfUpdateState {
 
 const PRIMARY_SIDEBAR_ANIMATION_MS: u64 = 280;
 const PRIMARY_SIDEBAR_MIN_ANIMATION_DELTA: f32 = 0.5;
+const STARTUP_SPLASH_TEXT_WIDTH: f32 = 198.;
+const STARTUP_SPLASH_TEXT: [&str; 8] = ["P", "a", "n", "e", "f", "l", "o", "w"];
+const STARTUP_SPLASH_LETTER_COUNT: f32 = STARTUP_SPLASH_TEXT.len() as f32;
+const STARTUP_SPLASH_TEXT_ALPHA: f32 = 0.54;
+const STARTUP_SPLASH_SHIMMER_ALPHA: f32 = 0.82;
+const STARTUP_SPLASH_SHIMMER_MS: u64 = 2600;
+const STARTUP_SPLASH_MIN_VISIBLE_MS: u64 = 900;
 
 #[derive(Clone, Copy)]
 struct PrimarySidebarAnimation {
     from_width: f32,
     to_width: f32,
     started_at: std::time::Instant,
+}
+
+struct StartupSplashView {
+    mount_scheduled: bool,
+}
+
+impl StartupSplashView {
+    fn new(_: &mut Context<Self>) -> Self {
+        Self {
+            mount_scheduled: false,
+        }
+    }
+}
+
+fn startup_splash_letter(
+    label: &'static str,
+    index: usize,
+    base_color: gpui::Hsla,
+) -> gpui::AnyElement {
+    div()
+        .text_size(px(34.))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(base_color)
+        .child(label)
+        .with_animation(
+            SharedString::from(format!("startup-splash-shimmer-letter-{index}")),
+            Animation::new(std::time::Duration::from_millis(STARTUP_SPLASH_SHIMMER_MS)).repeat(),
+            move |letter, delta| {
+                let color = startup_splash_shimmer_color(base_color, index, delta);
+                letter.text_color(color)
+            },
+        )
+        .into_any_element()
+}
+
+fn startup_splash_shimmer_color(base_color: gpui::Hsla, index: usize, delta: f32) -> gpui::Hsla {
+    let active_delta = if delta < 0.78 {
+        delta / 0.78
+    } else {
+        return base_color;
+    };
+    let center = -1.8 + active_delta * (STARTUP_SPLASH_LETTER_COUNT + 3.6);
+    let distance = (index as f32 - center).abs();
+    let sigma = 0.86;
+    let strength = (-(distance * distance) / (2. * sigma * sigma)).exp();
+    let lightness = (base_color.l + (1. - base_color.l) * strength * 0.86).min(0.97);
+    let saturation = base_color.s * (1. - strength * 0.85).max(0.);
+    let alpha = base_color.a + (STARTUP_SPLASH_SHIMMER_ALPHA - base_color.a) * strength;
+
+    gpui::hsla(base_color.h, saturation, lightness, alpha)
+}
+
+impl Render for StartupSplashView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.mount_scheduled {
+            self.mount_scheduled = true;
+            cx.spawn_in(window, async move |_, cx| {
+                smol::Timer::after(std::time::Duration::from_millis(
+                    STARTUP_SPLASH_MIN_VISIBLE_MS,
+                ))
+                .await;
+                let _ = cx.update(|window, cx| {
+                    mount_paneflow_app(window, cx);
+                });
+            })
+            .detach();
+        }
+
+        let ui = crate::theme::ui_colors();
+        let splash_text_color = gpui::Hsla {
+            a: STARTUP_SPLASH_TEXT_ALPHA,
+            ..ui.muted
+        };
+
+        div()
+            .font_family("IBM Plex Sans")
+            .size_full()
+            .bg(transparent_black())
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .relative()
+                    .w(px(STARTUP_SPLASH_TEXT_WIDTH))
+                    .h(px(58.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(
+                        STARTUP_SPLASH_TEXT
+                            .iter()
+                            .enumerate()
+                            .map(|(index, label)| {
+                                startup_splash_letter(label, index, splash_text_color)
+                            }),
+                    ),
+            )
+    }
 }
 
 impl PrimarySidebarAnimation {
@@ -1857,6 +1963,61 @@ mod windows_startup_console_tests {
     }
 }
 
+fn mount_paneflow_app(window: &mut Window, cx: &mut App) -> Entity<PaneFlowApp> {
+    let view = window.replace_root(cx, |_, cx| PaneFlowApp::new(cx));
+    view.update(cx, |_, cx| {
+        let subscription = cx.observe_window_bounds(window, |this, window, cx| {
+            #[cfg(target_os = "linux")]
+            crate::window_chrome::linux_backdrop::refresh_blur_region(window);
+            if this.settings_section.is_some() {
+                this.reset_settings_scroll();
+                cx.notify();
+                cx.on_next_frame(window, |this, _window, cx| {
+                    if this.settings_section.is_some() {
+                        cx.notify();
+                    }
+                });
+            } else {
+                cx.notify();
+            }
+        });
+        subscription.detach();
+    });
+    window.on_window_should_close(cx, {
+        let view = view.clone();
+        move |_window, cx| {
+            let app = view.read(cx);
+            app.save_session_blocking(cx);
+            // US-013 AC #2 - final chance to flush `app_exited` when the OS
+            // close button or a keyboard shortcut closes the last window.
+            app.emit_app_exited_and_flush();
+            #[cfg(target_os = "linux")]
+            crate::window_chrome::linux_backdrop::clear_subtle_chrome_material();
+            cx.quit();
+            false
+        }
+    });
+    // US-116 (prd-agent-ui-refactor-2026-Q3.md): track window-activation state
+    // for OS notification gating.
+    view.update(cx, |_, cx| {
+        let subscription = cx.observe_window_activation(window, |_, window, cx| {
+            crate::agents::notifications::set_window_active(window.is_window_active());
+            #[cfg(target_os = "linux")]
+            crate::window_chrome::linux_backdrop::refresh_blur_region(window);
+            cx.notify();
+        });
+        subscription.detach();
+    });
+    crate::agents::notifications::set_window_active(window.is_window_active());
+
+    view.update(cx, |app, cx| {
+        if !app.workspaces.is_empty() {
+            app.workspaces[0].focus_first(window, cx);
+        }
+    });
+    view
+}
+
 fn main() {
     // Handle --help and --version before initializing GPUI
     let args: Vec<String> = std::env::args().collect();
@@ -2266,77 +2427,7 @@ fn main() {
                     #[cfg(target_os = "linux")]
                     crate::window_chrome::linux_backdrop::apply_subtle_chrome_material(window);
 
-                    let view = cx.new(PaneFlowApp::new);
-                    view.update(cx, |_, cx| {
-                        let subscription =
-                            cx.observe_window_bounds(window, |this, window, cx| {
-                                #[cfg(target_os = "linux")]
-                                crate::window_chrome::linux_backdrop::refresh_blur_region(window);
-                                if this.settings_section.is_some() {
-                                    this.reset_settings_scroll();
-                                    cx.notify();
-                                    cx.on_next_frame(window, |this, _window, cx| {
-                                        if this.settings_section.is_some() {
-                                            cx.notify();
-                                        }
-                                    });
-                                } else {
-                                    cx.notify();
-                                }
-                            });
-                        subscription.detach();
-                    });
-                    window.on_window_should_close(cx, {
-                        let view = view.clone();
-                        move |_window, cx| {
-                            let app = view.read(cx);
-                            app.save_session_blocking(cx);
-                            // US-013 AC #2 - final chance to flush
-                            // `app_exited` when the OS close button or a
-                            // keyboard shortcut closes the last window.
-                            app.emit_app_exited_and_flush();
-                            #[cfg(target_os = "linux")]
-                            crate::window_chrome::linux_backdrop::clear_subtle_chrome_material();
-                            cx.quit();
-                            false
-                        }
-                    });
-                    // US-116 (prd-agent-ui-refactor-2026-Q3.md): track
-                    // window-activation state in a process-wide
-                    // AtomicBool the agents notifications module reads
-                    // when deciding whether to fire an OS toast. The
-                    // observer keeps a Subscription alive that drops
-                    // with the entity, so no manual teardown is needed.
-                    view.update(cx, |_, cx| {
-                        let subscription = cx.observe_window_activation(
-                            window,
-                            |_, window, cx| {
-                                crate::agents::notifications::set_window_active(
-                                    window.is_window_active(),
-                                );
-                                #[cfg(target_os = "linux")]
-                                crate::window_chrome::linux_backdrop::refresh_blur_region(window);
-                                cx.notify();
-                            },
-                        );
-                        // Detach: the closure side-effect is what we
-                        // want, and we never need to manually drop
-                        // this subscription -- the entity outlives
-                        // every render that could care.
-                        subscription.detach();
-                    });
-                    // Prime the gate with the current state in case the
-                    // first activation tick is delayed past the first
-                    // runtime event (e.g. a tool the user launched
-                    // before app focus stabilises).
-                    crate::agents::notifications::set_window_active(window.is_window_active());
-
-                    view.update(cx, |app, cx| {
-                        if !app.workspaces.is_empty() {
-                            app.workspaces[0].focus_first(window, cx);
-                        }
-                    });
-                    view
+                    cx.new(StartupSplashView::new)
                 },
             );
 
