@@ -811,21 +811,21 @@ fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str])
 }
 
 fn hook_handler(event: &str) -> serde_json::Value {
-    let mut handler = serde_json::json!({
-        "type": "command",
-        "command": resolve_hook_command(event),
-        "timeout": 5,
-    });
+    let mut handler = serde_json::Map::new();
+    handler.insert("type".into(), serde_json::Value::String("command".into()));
+    handler.insert(
+        "command".into(),
+        serde_json::Value::String(resolve_hook_command(event)),
+    );
+    handler.insert("timeout".into(), serde_json::json!(5));
     #[cfg(windows)]
     {
-        if let Some(obj) = handler.as_object_mut() {
-            obj.insert(
-                "commandWindows".into(),
-                serde_json::Value::String(resolve_hook_command_windows(event)),
-            );
-        }
+        handler.insert(
+            "commandWindows".into(),
+            serde_json::Value::String(resolve_hook_command_windows(event)),
+        );
     }
-    handler
+    serde_json::Value::Object(handler)
 }
 
 /// Remove PaneFlow's hook handlers from the parsed settings tree. Leaves
