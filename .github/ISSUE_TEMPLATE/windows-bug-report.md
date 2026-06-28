@@ -50,7 +50,6 @@ Before pasting output below, scrub anything you'd rather not publish
 - **PaneFlow version** (`paneflow --version`):
 - **Install format** (pick one):
   - [ ] Signed MSI from GitHub Release (`paneflow-*-x86_64-pc-windows-msvc.msi`)
-  - [ ] `winget install ArthurDev44.PaneFlow`
   - [ ] Built from source (`cargo build --release --target x86_64-pc-windows-msvc`)
 - **Display environment** (pick one):
   - [ ] Local desktop session

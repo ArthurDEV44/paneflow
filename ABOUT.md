@@ -1,24 +1,33 @@
-# À propos de PaneFlow
+# About Paneflow
 
-PaneFlow est un espace de travail terminal natif, écrit en Rust, conçu pour faire tourner des agents de codage en parallèle.
+Paneflow is a native Rust/GPUI workspace for running coding agents in parallel.
 
-## En une phrase
+## In one sentence
 
-Un multiplexeur de terminaux GPU-natif (via le framework GPUI de Zed) où tu lances, surveilles et orchestres plusieurs agents IA (Claude Code, Codex, Gemini, opencode) côte à côte dans une seule fenêtre.
+A local control plane where Claude Code, Codex, Gemini, opencode, and any CLI
+agent run side by side in real terminal panes, with live status,
+worktree review, a read-only MCP bridge, and scriptable orchestration.
 
-## Ce qui le distingue
+## What makes it different
 
-- **Natif, pas TUI.** Rendu GPU via GPUI + émulation VT par `alacritty_terminal`, là où la plupart des multiplexeurs bricolent en TUI.
-- **Pensé pour les agents.** Workspaces, splits N-aires, détection de serveurs de dev, badges de branche git, et un pont MCP (`paneflow-mcp`) qui laisse un agent lire la sortie des autres panes.
-- **Cross-platform.** Linux (Wayland + X11), macOS (Intel + Apple Silicon), Windows (en cours).
-- **OSS et gratuit par design.** GPL-3.0-or-later.
+- **Native, not Electron.** Rust, GPUI, and `alacritty_terminal`, with GPU
+  rendering through Vulkan, Metal, and DirectX.
+- **Built for agent supervision.** Paneflow tracks which agents are thinking,
+  waiting, stalled, failed, or done instead of leaving you to scan raw
+  scrollback.
+- **Scriptable when you need it.** The `paneflow` CLI, JSON-RPC socket, MCP
+  bridge, and `flow.toml` runner let humans or agents coordinate panes.
+- **Cross-platform release surface.** Linux Wayland/X11, macOS Apple Silicon,
+  and Windows x64 ship as native release artifacts.
+- **Open by design.** GPL-3.0-or-later.
 
-## Démarrer
+## Start
 
 ```bash
-cargo run                 # build debug (nécessite un GPU avec Vulkan)
-RUST_LOG=info cargo run    # avec logs
+cargo run -p paneflow-app
+RUST_LOG=info cargo run -p paneflow-app
 ```
 
-Détails d'architecture, conventions et commandes : voir [`CLAUDE.md`](CLAUDE.md), [`ARCHITECTURE.md`](ARCHITECTURE.md) et [`README.md`](README.md).
-Site : [paneflow.dev](https://paneflow.dev)
+Architecture and repo conventions: [ARCHITECTURE.md](ARCHITECTURE.md),
+[AGENTS.md](AGENTS.md), and [README.md](README.md).
+Site: [paneflow.dev](https://paneflow.dev).

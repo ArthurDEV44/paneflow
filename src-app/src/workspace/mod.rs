@@ -2,7 +2,7 @@
 //!
 //! Module layout (US-030 of the src-app refactor PRD):
 //! - [`git`] - git metadata probing (branch, diff stats, `.git` dir lookup)
-//! - [`ports`] - cross-platform TCP listening-port detection (Linux/macOS/stub)
+//! - [`ports`] - cross-platform TCP listening-port detection
 //!
 //! The [`Workspace`] struct and its constructors live in this `mod.rs`; git
 //! and port helpers are re-exported so external callers keep the flat

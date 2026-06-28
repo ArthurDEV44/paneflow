@@ -9,33 +9,53 @@
   <img alt="Rust" src="https://img.shields.io/badge/Rust-1.95-orange?logo=rust">
 </p>
 
-**The native workspace for running coding agents in parallel.** Launch Claude Code, Codex, opencode, and any CLI agent in real terminal panes, keep every session visible, and see at a glance which agent is thinking, which is waiting on you, and which is done.
+**A native GPUI workspace for running coding agents in parallel.**
 
-Paneflow turns "one terminal per agent" into a branch-aware workspace: panes, tabs, sidebars, session restore, side-by-side diff review with per-agent cost tracking, a read-only MCP bridge so agents can read each other's panes, and a JSON-RPC control plane your own tooling can script. It is open source, written in Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), and runs natively on Linux, macOS, and Windows. No Electron, no WSL.
+Paneflow keeps Claude Code, Codex, Gemini, opencode, and any CLI
+agent in real terminal panes you can see, interrupt, and take over. It tracks
+which agent is thinking, waiting, stalled, failed, or done; keeps each task tied
+to its workspace and branch; and gives agents a local control plane when you
+want them to coordinate instead of work blind.
+
+It is open source, written in Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui),
+and ships native builds for Linux, macOS Apple Silicon, and Windows x64. No
+Electron. No WSL required. No hosted agent runtime.
 
 <p align="center">
-  <a href="#quickstart">Quickstart</a> ·
   <a href="#install">Install</a> ·
-  <a href="#features">Features</a> ·
-  <a href="ARCHITECTURE.md">Architecture</a> ·
-  <a href="#faq">FAQ</a> ·
-  <a href="https://paneflow.dev">Website</a> ·
-  <a href="https://paneflow.dev/compare">Compare</a>
+  <a href="#why-paneflow">Why Paneflow</a> ·
+  <a href="#core-workflows">Core workflows</a> ·
+  <a href="#safety-model">Safety model</a> ·
+  <a href="#docs">Docs</a> ·
+  <a href="#faq">FAQ</a>
 </p>
 
 <p align="center">
-  <img src="assets/images/demo.gif" alt="Paneflow running several coding agents in parallel panes, with live per-session status in the sidebar" width="100%" />
+  <img src="assets/images/demo.gif" alt="Paneflow running several coding agents in parallel panes, with live agent status in the sidebar" width="100%" />
 </p>
 <p align="center">
-  <sub>A real session, sped up: several coding agents working in parallel panes, with live per-session status in the sidebar: who is thinking, who is running, who needs you.</sub>
+  <sub>Several coding agents running in parallel panes, with live status for who is thinking, running, waiting, or done.</sub>
 </p>
 
-## Quickstart
+## Install
 
-Install a release build first; you do **not** need Rust unless you are building from source.
+Release builds are attached to the
+[latest GitHub release](https://github.com/ArthurDEV44/paneflow/releases/latest).
+You do not need Rust unless you are building from source.
+Asset filenames use the version without the leading `v` from the Git tag
+(`paneflow-0.7.0-x86_64.AppImage`, not `paneflow-v0.7.0-...`).
+
+| Platform | Recommended path | Status |
+|---|---|---|
+| Linux x86_64 / aarch64 | AppImage, `.deb`, `.rpm`, or `.tar.gz` | Active: Wayland and X11 |
+| macOS Apple Silicon | Signed and notarized `.dmg` | Active |
+| macOS Intel | Not shipped today | Planned to return when the release matrix reopens it |
+| Windows x64 | Signed `.msi` | Active: Windows 10 1809+ and Windows 11 |
+| Windows ARM64 | Not shipped today | Deferred pending GPUI DX11 ARM64 reliability |
+
+### Linux quickstart
 
 ```bash
-# Linux portable AppImage
 VER=$(curl -fsSL https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest \
       | grep -oE '"tag_name":\s*"v[^"]+"' | cut -d\" -f4 | sed 's/^v//')
 ARCH=$(uname -m)
@@ -44,648 +64,218 @@ chmod +x "paneflow-${VER}-${ARCH}.AppImage"
 ./paneflow-${VER}-${ARCH}.AppImage
 ```
 
-Need `.deb`, `.rpm`, `.tar.gz`, or macOS DMG? Jump to [Install](#install).
+On Ubuntu 24.04+ or immutable distros, run the AppImage with
+`--appimage-extract-and-run` if FUSE 2 is unavailable. `.deb`, `.rpm`,
+`.tar.gz`, SHA-256 sidecars, and Minisign signatures are published with each
+release.
 
-> Paneflow is free and open source. If it earns a place in your workflow, [a star](https://github.com/ArthurDEV44/paneflow/stargazers) helps other people running agents in parallel find it.
+### macOS
 
-## Where it fits
+Download `paneflow-X.Y.Z-aarch64-apple-darwin.dmg` from the
+[latest release](https://github.com/ArthurDEV44/paneflow/releases/latest), open
+it, and drag `PaneFlow.app` into `/Applications`.
 
-| Setup | Best for | Paneflow focus |
-|---|---|---|
-| Terminal tabs or tmux | Shell-native multiplexing | Native panes plus agent status, workspace metadata, and app-level sidebars |
-| cmux-style agent workspaces | Coordinating several coding agents | Independent Rust/GPUI app, cross-platform (Linux, macOS, Windows) |
-| AI terminal apps | Polished single-terminal AI workflows | Keeps raw CLI agents visible in real PTY panes |
-| Paneflow | Parallel agent sessions inside one project window | Branch-aware panes, review flows, MCP pane reading, IPC automation |
-
-Side-by-side comparisons live at [paneflow.dev/compare](https://paneflow.dev/compare).
-
-## Features
-
-- **Agent orchestration**: one-click Claude Code, Codex, opencode, and Pi launchers in the tab bar, per-session tracking, and an `ai.*` JSON-RPC event stream (`session_start`, `tool_use`, `notification`, `stop`) that the interface and your own tooling can react to the moment an agent needs you
-- **In-app code review**: side-by-side diff viewer (one column per worktree), hunk navigation, branch review prompts, and a per-agent cost estimate (model plus a running dollar total across worktrees) so you can see what each agent spent
-- **MCP pane reading**: `paneflow mcp install` wires a read-only bridge into Claude Code, Codex, Gemini, and opencode, so one agent can inspect another's output through `list_panes`, `read_pane`, and `search_pane` with no copy-paste
-- **Scriptable control plane**: a `paneflow` CLI (`up`, `send`, `read`, `search`, `split`, `flow`, and more) plus a JSON-RPC socket drive panes, prompts, and layouts; `paneflow flow run` executes a `flow.toml` DAG of agent steps with regex-gated handoffs and captured variables
-- **Cross-platform by design**: one native Rust core on Linux (Wayland + X11), macOS 13 Ventura+ (Apple Silicon), and Windows 10 1809+, where the other agent terminals in this space ship macOS-only
-- **Parallel panes**: horizontal and vertical splits, drag-to-resize, layout presets (even, main+stack, tiled), up to 32 panes
-- **Branch-aware workspaces**: up to 20 workspaces with rename, quick-switch (`Ctrl+1`-`9`), undo close; the sidebar surfaces the active git branch per workspace
-- **Session restore**: save/restore layouts, CWD, workspace names, and custom buttons; resume yesterday's setup with one launch
-- **Markdown pane**: render a Markdown file in-pane next to a terminal (useful for keeping a PRD or README open beside the agent)
-- **GPU-accelerated rendering**: Vulkan on Linux, Metal on macOS, DirectX on Windows (handled by GPUI)
-- **Dev-server detection**: surfaces Vite, Next.js, Webpack, and other local ports in the sidebar with one-click open
-- **Find-in-buffer**: `Ctrl+Shift+F`, regex toggle, match cycling
-- **Hyperlinks**: OSC 8 escape sequences + automatic URL detection
-- **Themes**: 2 bundled themes with hot-reload (One Dark, PaneFlow Light)
-- **Custom keybindings**: JSON-configurable override of every default action (57 actions)
-- **Auto-update**: in-app updater for every supported install format
-- **IPC**: JSON-RPC 2.0 over Unix socket (Linux/macOS) or named pipe (Windows)
-
-## Install
-
-Pick the format that matches your platform. Published release artifacts are attached to the [latest GitHub release](https://github.com/ArthurDEV44/paneflow/releases/latest); the differences between formats are how updates arrive and where files land on disk.
-
-> **Substitute placeholders before running.** The commands below use two placeholders:
-> - `X.Y.Z`: replace with the release version (e.g., `0.3.7`). **No leading `v`** in the asset filename.
-> - `<ARCH>`: replace with `x86_64` or `aarch64` (check with `uname -m`).
->
-> To auto-resolve the latest version:
-> ```bash
-> VER=$(curl -fsSL https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest \
->       | grep -oE '"tag_name":\s*"v[^"]+"' | cut -d\" -f4 | sed 's/^v//')
-> ARCH=$(uname -m)
-> ```
-> Then paste `$VER` and `$ARCH` in place of the placeholders below. The Git tag uses a `v` prefix (`v0.3.7`); the artifact filenames do not (`paneflow-0.3.7-x86_64.deb`).
-
-### Ubuntu / Debian / Mint (apt + repo)
-
-One-shot install of the `.deb`. The package's `postinst` automatically wires `pkg.paneflow.dev` into `/etc/apt/sources.list.d/paneflow.list`, so `apt upgrade` pulls subsequent releases:
-
-```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.deb
-# Verify the signature BEFORE `apt install`: postinst runs as root,
-# so an unsigned/tampered .deb could write arbitrary repo sources.
-# Import the release key first (cross-check the fingerprint, see
-# Troubleshooting > Verifying releases), then:
-#   Debian / Ubuntu <= 23.10:
-sudo apt install -y dpkg-sig && dpkg-sig --verify paneflow-X.Y.Z-<ARCH>.deb   # expect: GOODSIG
-#   Ubuntu 24.04+ (dpkg-sig was dropped from the archive):
-ar x paneflow-X.Y.Z-<ARCH>.deb _gpgbuilder && gpg --verify _gpgbuilder        # expect: Good signature
-sudo apt install ./paneflow-X.Y.Z-<ARCH>.deb
-paneflow --version
-```
-
-Future updates:
-
-```bash
-sudo apt update && sudo apt upgrade paneflow
-```
-
-### Fedora / RHEL / Rocky (dnf + repo)
-
-Same pattern with `.rpm`. The `%post` scriptlet drops `/etc/yum.repos.d/paneflow.repo` pointing at `pkg.paneflow.dev/rpm`:
-
-```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.rpm
-# Verify the signature BEFORE `dnf install`: %post runs as root.
-sudo rpm --import https://pkg.paneflow.dev/gpg      # see Troubleshooting for the TOFU caveat
-rpm --checksig paneflow-X.Y.Z-<ARCH>.rpm            # expect: digests signatures OK
-sudo dnf install ./paneflow-X.Y.Z-<ARCH>.rpm
-paneflow --version
-```
-
-Future updates:
-
-```bash
-sudo dnf upgrade paneflow
-```
-
-### AppImage (portable, any distro)
-
-Single-file download. No install, no root; double-click to run or launch from the terminal:
-
-```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.AppImage
-chmod +x paneflow-X.Y.Z-<ARCH>.AppImage
-./paneflow-X.Y.Z-<ARCH>.AppImage --version
-```
-
-Ubuntu 24.04+ and Fedora Silverblue ship without FUSE 2 by default; see [Troubleshooting > AppImage won't run on Ubuntu 24.04](#appimage-wont-run-on-ubuntu-2404) if the command above fails.
-
-### Tarball (immutable distros, no-root installs)
-
-Use this on Fedora Silverblue, SteamOS, NixOS, or any machine where you'd rather not touch `/usr`. Installs to `~/.local/paneflow.app/` and symlinks `~/.local/bin/paneflow`:
-
-```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.tar.gz
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.tar.gz.sha256
-sha256sum --check paneflow-X.Y.Z-<ARCH>.tar.gz.sha256
-tar xzf paneflow-X.Y.Z-<ARCH>.tar.gz
-./paneflow.app/install.sh
-~/.local/bin/paneflow --version
-```
-
-The in-app updater atomically swaps `~/.local/paneflow.app/` on new releases (no package manager involved).
-
-### macOS (Apple Silicon)
-
-The signed + notarized `.dmg` is published for `aarch64-apple-darwin` (Apple Silicon). Intel (`x86_64-apple-darwin`) is currently out of the build matrix and is targeted for re-introduction in a future release.
-
-```bash
-# Direct download. Drag PaneFlow.app into /Applications from the mounted DMG.
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-aarch64-apple-darwin.dmg
-open paneflow-X.Y.Z-aarch64-apple-darwin.dmg
-```
-
-A Homebrew cask is wired into the release pipeline:
+A Homebrew tap is available:
 
 ```bash
 brew tap arthurdev44/paneflow
 brew install --cask paneflow
 ```
 
-If the cask lags a new release, prefer the direct DMG download above.
-
-Gatekeeper accepts the signed DMG offline; no `xattr -cr` workaround is needed for release builds.
+If the cask lags a fresh release, use the DMG directly.
 
 ### Windows
 
-A signed `.msi` for `x86_64-pc-windows-msvc` (Windows 10 1809+ and Windows 11) is attached to every [release](https://github.com/ArthurDEV44/paneflow/releases/latest). Download it and double-click to install. The MSI is signed with Azure Trusted Signing; verify it with `signtool verify /pa /v paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi`.
+Download `paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi` from the
+[latest release](https://github.com/ArthurDEV44/paneflow/releases/latest) and
+double-click it. The MSI is signed; verify it with:
 
-A winget package (`ArthurDev44.PaneFlow`) tracks the same releases; see [`docs/WINDOWS.md`](docs/WINDOWS.md) for winget status, the supported-versions matrix, and known limitations.
-
-## Prerequisites
-
-You do not need these to install a packaged release. This section is for building from source and for troubleshooting GPU/runtime setup.
-
-### Rust toolchain
-
-Paneflow pins **Rust 1.95** via [`rust-toolchain.toml`](rust-toolchain.toml). [rustup](https://rustup.rs/) installs the exact version automatically the first time you run `cargo`:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```powershell
+signtool verify /pa /v paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi
 ```
 
-### Linux system dependencies
+See [docs/WINDOWS.md](docs/WINDOWS.md) for the supported Windows matrix and
+known platform caveats.
 
-Install the build libraries for your distribution:
+## Why Paneflow
 
-**Debian/Ubuntu:**
-```bash
-sudo apt install build-essential pkg-config libssl-dev libvulkan-dev \
-  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev \
-  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig-dev \
-  libfreetype-dev libdbus-1-dev
-```
+Starting coding agents is easy. Keeping a reliable view of ten running sessions
+is the hard part: which one is waiting on you, which branch it touched, which
+test output belongs to which task, and how to hand context from one agent to
+another without copy-pasting terminal scrollback.
 
-**Fedora:**
-```bash
-sudo dnf install gcc pkgconf-pkg-config openssl-devel vulkan-loader-devel \
-  wayland-devel libxkbcommon-devel libX11-devel libxcb-devel \
-  fontconfig-devel freetype-devel dbus-devel
-```
+Paneflow is built around that coordination problem:
 
-**Arch Linux:**
-```bash
-sudo pacman -S base-devel pkg-config openssl vulkan-icd-loader wayland \
-  libxkbcommon libx11 libxcb fontconfig freetype2 dbus
-```
+- Real terminal panes for every agent, so nothing is hidden behind a chat-only
+  abstraction.
+- Live agent state from hooks and IPC, not a vague "terminal is active"
+  heuristic.
+- Workspaces and git branches visible in the app chrome.
+- A review surface for comparing worktree diffs side by side.
+- A read-only MCP bridge so one agent can inspect another pane's output.
+- A local CLI and JSON-RPC control plane for scripted orchestration.
 
-### Vulkan GPU driver (Linux only)
+The goal is not to replace your editor or your shell. It is to make parallel
+agent work observable enough that you can supervise it without losing context.
 
-```bash
-# AMD/Intel (Mesa)
-sudo apt install mesa-vulkan-drivers        # Debian/Ubuntu
-sudo dnf install mesa-vulkan-drivers        # Fedora
-sudo pacman -S vulkan-radeon vulkan-intel    # Arch
+## Core workflows
 
-# NVIDIA
-sudo apt install nvidia-vulkan-icd          # Debian/Ubuntu
-sudo pacman -S nvidia-utils                 # Arch
+### Run agents side by side
 
-# Verify Vulkan works
-vulkaninfo --summary
-```
+Launch Claude Code, Codex, Gemini, opencode, Pi, Hermes, or any CLI
+agent in a real PTY pane. Paneflow keeps the raw terminal visible while adding
+the app-level state you need for multi-agent work: workspace, branch, title,
+status, notifications, and session restore.
 
-## Troubleshooting
+### See what needs attention
 
-### "No GPU adapter found" / Vulkan unavailable
+The sidebar, tab dots, desktop notifications, Attention Queue, and Rosetta
+surface turn scattered agent events into a readable queue: waiting for input,
+running, stalled, errored, or recently finished. Rosetta is the in-app status
+surface for agent notifications and can stay quiet unless something needs your
+attention.
 
-The most common first-launch error on Linux, especially in VMs, WSL2, or on hosts without an ICD installed. The fix depends on the platform:
+### Coordinate a fleet with Conductor
+
+The `paneflow` CLI talks to the same local socket as the app:
 
 ```bash
-# Install a Vulkan ICD (see Prerequisites > Vulkan GPU driver above).
-vulkaninfo --summary    # should list at least one physicalDevice
-
-# WSL2 / headless / GPU-less hosts: force the lavapipe software ICD.
-sudo apt install mesa-vulkan-drivers  # Debian/Ubuntu
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json paneflow
+paneflow ps
+paneflow read cargo-run --lines 100
+paneflow watch --json
+paneflow send codex-review "Review this branch and report risks"
+paneflow wait --surface claude-impl --pattern "REPORT_DONE"
+paneflow flow run examples/review-pipeline.flow.toml
 ```
 
-GPUI auto-selects Wayland or X11 based on `WAYLAND_DISPLAY` / `DISPLAY`. To force X11 on a Wayland session: `WAYLAND_DISPLAY= paneflow`.
+`paneflow up` can spawn declarative workspaces, and `paneflow flow run` executes
+a `flow.toml` DAG with spawn, wait, send, capture, and review steps. By default
+Paneflow pre-fills prompts and a human presses Enter. Auto-submit is explicit
+and gated.
 
-### AppImage won't run on Ubuntu 24.04
+### Let agents read each other safely
 
-Ubuntu 24.04 and newer don't ship `libfuse2` by default. The error looks like `dlopen(): error loading libfuse.so.2`. Two fixes:
+`paneflow mcp install` registers a local read-only MCP bridge for supported CLI
+agents. It exposes:
 
-- **Preferred:** skip FUSE by mounting the AppImage in-process:
-  ```bash
-  ./paneflow-X.Y.Z-x86_64.AppImage --appimage-extract-and-run
-  ```
-- **Alternative:** install the compatibility shim
-  ```bash
-  sudo apt install libfuse2t64
-  ```
-  On Ubuntu 22.04 the package is `libfuse2` instead. Installing `libfuse2` on 24.04 can remove `ubuntu-session` as a transitive conflict; `--appimage-extract-and-run` avoids that risk.
+- `list_panes`
+- `read_pane`
+- `search_pane`
 
-### Verifying releases
+The bridge cannot type into panes or control them. Returned terminal output is
+wrapped as untrusted data so downstream agents know to analyze it, not obey it.
+The tool manifests live in [mcps/paneflow/tools](mcps/paneflow/tools).
 
-Every Paneflow release is signed and the procedure to verify a downloaded artifact is documented per platform:
+### Review worktree diffs in one place
 
-- **Linux** (`.deb` / `.rpm` / `.tar.gz` / `.AppImage`): [`docs/release/linux-signing.md`](docs/release/linux-signing.md). GPG-signed `.deb` + `.rpm` (key: [`keys/paneflow-release.asc`](keys/paneflow-release.asc)); SHA-256 sidecars on `.tar.gz` and `.AppImage`.
-- **macOS** (`.dmg` / `.app`): [`docs/release/macos-signing.md`](docs/release/macos-signing.md). Apple Developer ID signed + notarized + stapled.
-- **Windows** (`.msi`): [`docs/release/windows-signing.md`](docs/release/windows-signing.md). Azure Trusted Signing; verify via `signtool verify /pa /v paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi`.
+When each agent works in its own branch or worktree, Paneflow can show the
+resulting diffs side by side: one column per worktree, with hunk navigation,
+branch review prompts, attribution, and local cost estimates where token usage
+is available.
 
-**Quick `.deb` verification** (full procedure, including the mandatory fingerprint cross-check before key import, in the Linux runbook §1; do NOT paste the snippet below until you have verified the key fingerprint matches `9809948F4433CF93DD1329449A252F0C183F2711`):
+## Feature map
 
-```bash
-# Import the release key into your GPG keyring (verify the fingerprint first):
-curl -fsSL https://raw.githubusercontent.com/ArthurDEV44/paneflow/main/keys/paneflow-release.asc \
-  | gpg --import
-# Debian / Ubuntu <= 23.10:
-sudo apt-get install -y dpkg-sig && dpkg-sig --verify paneflow-X.Y.Z-x86_64.deb   # expect: GOODSIG
-# Ubuntu 24.04+ (dpkg-sig no longer packaged): verify the embedded signature directly
-ar x paneflow-X.Y.Z-x86_64.deb _gpgbuilder && gpg --verify _gpgbuilder            # expect: Good signature
-```
+| Area | What Paneflow gives you |
+|---|---|
+| Terminal workspace | Splits, tabs, resize, layout presets, session restore, markdown panes |
+| Agent state | Thinking, waiting, finished, errored, stalled, notifications, Rosetta |
+| Review | Worktree diff columns, hunk navigation, review prompts, cost estimate |
+| Automation | CLI, JSON-RPC socket, `paneflow up`, `paneflow flow run`, event stream |
+| Agent context | Read-only MCP bridge with `list_panes`, `read_pane`, `search_pane` |
+| Native runtime | Rust, GPUI, `alacritty_terminal`, Vulkan / Metal / DirectX |
+| Trust | GPL-3.0-or-later, signed release artifacts, opt-in telemetry |
 
-### Uninstall
+## Safety model
 
-**.deb (Ubuntu/Debian):**
+Paneflow is intentionally local-first.
 
-```bash
-sudo apt remove paneflow                              # keep config
-sudo apt purge paneflow                               # remove config too
-sudo rm /etc/apt/sources.list.d/paneflow.list         # remove APT source
-sudo rm /usr/share/keyrings/paneflow-archive.gpg      # remove signing key
-```
-
-**.rpm (Fedora/RHEL):**
-
-```bash
-sudo dnf remove paneflow
-sudo rm /etc/yum.repos.d/paneflow.repo                # remove DNF source
-```
-
-**AppImage:** just `rm paneflow-X.Y.Z-<ARCH>.AppImage`. Nothing else is installed on disk.
-
-**.tar.gz:**
-
-```bash
-rm -rf ~/.local/paneflow.app ~/.local/bin/paneflow \
-       ~/.local/share/applications/paneflow.desktop
-for s in 16 32 48 128 256 512; do
-    rm -f ~/.local/share/icons/hicolor/${s}x${s}/apps/paneflow.png
-done
-# Optional: remove config and cache
-rm -rf ~/.config/paneflow ~/.cache/paneflow
-```
+- Agents run as normal CLI processes inside normal PTYs.
+- The UI is a supervisor surface, not a hosted agent runtime.
+- Prompt prefill is the default; auto-submit is opt-in.
+- IPC writes are gated behind explicit scripting access.
+- MCP tools are read-only.
+- Terminal output returned to agents is marked as untrusted.
+- Telemetry is opt-in and can be disabled unconditionally with
+  `PANEFLOW_NO_TELEMETRY=1`.
+- Release artifacts ship with checksums and detached Minisign signatures.
 
 ## Build from source
 
-### Linux
+Paneflow pins Rust 1.95 through [rust-toolchain.toml](rust-toolchain.toml).
 
 ```bash
 git clone https://github.com/ArthurDEV44/paneflow.git
 cd paneflow
 cargo build --release -p paneflow-app
-bash scripts/bundle-tarball.sh "$(cargo pkgid -p paneflow-app | sed 's/.*#//')"
-tar xzf target/bundle/paneflow-*.tar.gz -C /tmp
-/tmp/paneflow.app/install.sh
+cargo run -p paneflow-app
 ```
 
-### macOS
+Useful development checks:
 
 ```bash
-# 1. Install Xcode Command Line Tools (one-time)
-xcode-select --install
-
-# 2. Add the target
-rustup target add aarch64-apple-darwin
-
-# 3. Build
-cargo build --release -p paneflow-app --target aarch64-apple-darwin
-
-# 4. Bundle into a .app (produces dist/PaneFlow.app)
-bash scripts/bundle-macos.sh \
-    --version "$(cargo pkgid -p paneflow-app | sed 's/.*#//')" \
-    --arch aarch64
-
-# 5. (Optional) Build a .dmg for local distribution
-bash scripts/create-dmg.sh \
-    --version "$(cargo pkgid -p paneflow-app | sed 's/.*#//')" \
-    --arch aarch64
+cargo fmt --check
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
 ```
 
-**Unsigned dev build first-launch:** macOS Gatekeeper rejects unsigned builds by default. For locally-built binaries (no Developer ID cert available), strip the quarantine attribute once:
+Linux builds need Vulkan and the usual Wayland/X11 development libraries. macOS
+and Windows packaging have extra signing and bundling steps documented in the
+release runbooks.
 
-```bash
-xattr -cr dist/PaneFlow.app
-open dist/PaneFlow.app
-```
+## Docs
 
-### Windows
-
-```powershell
-# 1. Install the Rust MSVC toolchain target (one-time)
-rustup target add x86_64-pc-windows-msvc
-
-# 2. Compile the binary
-cargo build --release -p paneflow-app --target x86_64-pc-windows-msvc
-
-# 3. (Optional) Produce an MSI via cargo-wix + WiX 3.14
-choco install wixtoolset --version 3.14.1
-cargo install cargo-wix --version 0.3.9 --locked
-cargo wix build --no-build `
-    --package paneflow-app `
-    --target x86_64-pc-windows-msvc `
-    --install-version "$(cargo pkgid -p paneflow-app | ForEach-Object { $_ -replace '.*#','' })"
-```
-
-**Reporting Windows-specific bugs:** use the [Windows bug report](https://github.com/ArthurDEV44/paneflow/issues/new?template=windows-bug-report.md) template (captures Windows version + build automatically) and see [`docs/WINDOWS.md`](docs/WINDOWS.md) for the full v1 limitations catalog.
-
-## Usage
-
-```bash
-# Launch
-paneflow
-
-# With logging
-RUST_LOG=info paneflow
-
-# Print version / help
-paneflow --version
-paneflow --help
-
-# CI self-update harness (exit codes 0-5)
-paneflow --update-and-exit
-```
-
-### Environment variables
-
-| Variable | Effect |
-|----------|--------|
-| `RUST_LOG` | env_logger filter (e.g. `info`, `paneflow=debug`) |
-| `PANEFLOW_LATENCY_PROBE` | Set to `1` to trace keystroke -> pixel latency (debug builds only) |
-| `PANEFLOW_UPDATE_FEED_URL` | Override the update feed URL (testing) |
-| `PANEFLOW_NO_TELEMETRY` | Set to `1` to disable telemetry unconditionally (overrides config) |
-
-## Keybindings
-
-All 57 actions are defined in `src-app/src/app/actions.rs` and bound in `src-app/src/keybindings/defaults.rs`. Every binding can be overridden via the `shortcuts` map in `paneflow.json`.
-
-### Window & workspace management
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+Shift+N` | New workspace |
-| `Ctrl+Shift+Q` | Close workspace |
-| `Ctrl+Tab` | Next workspace |
-| `Ctrl+1`-`Ctrl+9` | Switch to workspace N |
-| `Ctrl+Shift+Alt+C` | Copy workspace path |
-| `Ctrl+Alt+R` | Reveal workspace in file manager |
-| `Ctrl+Alt+Z` | Open workspace in Zed |
-| `Ctrl+Alt+C` | Open workspace in Cursor |
-| `Ctrl+Alt+V` | Open workspace in VS Code |
-| `Ctrl+Alt+W` | Open workspace in Windsurf |
-
-### Pane & layout
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+Shift+D` | Split horizontal (top/bottom) |
-| `Ctrl+Shift+E` | Split vertical (left/right) |
-| `Ctrl+Shift+W` | Close pane |
-| `Ctrl+Shift+T` | Undo close pane |
-| `Ctrl+Alt+T` | New tab |
-| `Ctrl+W` | Close tab |
-| `Alt+Arrow` | Focus adjacent pane |
-| `Ctrl+Shift+Z` | Toggle zoom (maximize active pane) |
-| `Ctrl+Shift+S` | Swap pane |
-| `Ctrl+Shift+=` | Equalize split ratios |
-| `Ctrl+Alt+1` | Layout preset: even horizontal |
-| `Ctrl+Alt+2` | Layout preset: even vertical |
-| `Ctrl+Alt+3` | Layout preset: main + vertical stack |
-| `Ctrl+Alt+4` | Layout preset: tiled |
-
-### Terminal
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+Shift+C` | Copy selection |
-| `Ctrl+Shift+V` | Paste |
-| `Shift+PageUp` | Scroll up |
-| `Shift+PageDown` | Scroll down |
-| `Ctrl+Shift+F` | Open search |
-| `Ctrl+Shift+X` | Toggle copy mode |
-| `Ctrl+Shift+Up` | Jump to previous shell prompt |
-| `Ctrl+Shift+Down` | Jump to next shell prompt |
-
-### Search (when search bar is open)
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Next match |
-| `Shift+Enter` | Previous match |
-| `Alt+R` | Toggle regex mode |
-| `Escape` | Dismiss search |
-
-### Markdown pane
-
-| Key | Action |
-|-----|--------|
-| `Shift+PageUp` / `Shift+PageDown` | Scroll markdown |
-| `Ctrl+F` | Open find-in-markdown |
-| `Ctrl+Shift+C` | Copy selection |
-
-### macOS
-
-| Key | Action |
-|-----|--------|
-| `Cmd+C` / `Cmd+V` | Copy / paste (in addition to `Ctrl+Shift+C`/`V`) |
-| `Cmd+Q` | Quit |
-
-## Configuration
-
-Paneflow reads `paneflow.json` from a platform-appropriate config directory:
-
-| Platform | Config path |
-|----------|-------------|
-| Linux | `$XDG_CONFIG_HOME/paneflow/paneflow.json` (default: `~/.config/paneflow/paneflow.json`) |
-| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
-| Windows | `%APPDATA%\paneflow\paneflow.json` |
-
-```json
-{
-  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
-  "$schemaVersion": "1.0.0",
-  "default_shell": "/bin/zsh",
-  "theme": "One Dark",
-  "font_family": ".PaneflowMono",
-  "font_size": 14,
-  "line_height": 1.3,
-  "window_decorations": "client",
-  "option_as_meta": true,
-  "shortcuts": {},
-  "terminal": {
-    "ligatures": false
-  },
-  "telemetry": {
-    "enabled": null
-  },
-  "claude_code_button_visible": true,
-  "claude_code_bypass_permissions": false,
-  "codex_button_visible": true,
-  "opencode_button_visible": true,
-  "pi_button_visible": true,
-  "hermes_agent_button_visible": true,
-  "commands": []
-}
-```
-
-### Font
-
-`font_family` accepts:
-- `".PaneflowMono"` (default): alias for the bundled Lilex monospace family
-- `".PaneflowSans"`: alias for the bundled IBM Plex Sans family
-- `"Lilex"` / `"IBM Plex Sans"`: concrete embedded family names (equivalent to the aliases)
-- Any installed system monospace family (`"Menlo"`, `"Cascadia Mono"`, `"DejaVu Sans Mono"`, etc.): validated against the platform's font registry; falls back to the embedded Lilex with a warning if missing.
-
-### Themes
-
-`One Dark` (default) and `PaneFlow Light` ship in the binary. Theme changes are hot-reloaded (500 ms mtime poll on the config file).
-
-### Window decorations
-
-`"client"` = CSD (custom title bar), `"server"` = SSD (compositor-drawn). Read once at startup; changes require a restart.
-
-### Alt / Option behavior
-
-`option_as_meta` defaults to `true` and makes Alt send an ESC prefix. On macOS, set it to `false` if you rely on Option to produce Unicode characters.
-
-### Terminal options
-
-- `terminal.ligatures` (default `false`): when `true`, programming-font ligatures (FiraCode `=>` `!=`, JetBrains Mono, Cascadia Code) are rendered through GPUI's text system. Hot-reloaded; takes effect on the next render. Some ligated glyphs span multiple cells, which can shift cell-width measurements compared to default monospaced behavior.
-
-### AI agent buttons
-
-The tab bar can launch supported coding-agent CLIs. Each button is gated by a `*_button_visible` flag: omitted/null auto-detects the CLI binary, `true` always shows it, and `false` hides it. `claude_code_bypass_permissions` (default `false`) controls whether the Claude Code button launches with `--permission-mode bypassPermissions`; that flag disables every permission prompt and offers no protection against prompt injection; opt in only on machines where that risk is acceptable.
-
-### Telemetry
-
-The `telemetry` block tracks opt-in desktop telemetry consent:
-
-- `null` (block missing or `enabled` unset): first-run consent modal is pending.
-- `enabled: true` / `false`: explicit user answer.
-- `PANEFLOW_NO_TELEMETRY=1` overrides this unconditionally.
-
-No event is sent unless `enabled` resolves to `true`.
-
-### Commands & workspaces
-
-The `commands` array accepts cmux-compatible entries. Each entry has a `name`, optional `description` and `keywords`, and either a `workspace` definition (layout + cwd + accent color) or a shell `command` string. See [`schemas/paneflow.schema.json`](schemas/paneflow.schema.json) for the full structure.
-
-### Configuration schema
-
-A versioned JSON Schema for `paneflow.json` lives at [`schemas/paneflow.schema.json`](schemas/paneflow.schema.json) (draft-07). Editors that understand `$schema` (VS Code, Zed, JetBrains, neovim with `coc-json` / `nvim-lspconfig`) give you autocomplete and inline validation when you point at it from your config:
-
-```json
-{
-  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
-  "$schemaVersion": "1.0.0"
-}
-```
-
-Both `$schema` (the editor pointer) and `$schemaVersion` (the version pin) are optional. Paneflow logs a warning when `$schemaVersion` is unknown but never refuses to load the file. Schema validation is editor-side; runtime parsing stays tolerant.
-
-## IPC
-
-Paneflow exposes a JSON-RPC 2.0 endpoint:
-
-| Platform | Endpoint |
-|----------|----------|
-| Linux / macOS | Unix socket at `$XDG_RUNTIME_DIR/paneflow/paneflow.sock` (or `$TMPDIR` fallback on macOS) |
-| Windows | Named pipe `\\.\pipe\paneflow` |
-
-The `interprocess` crate handles the platform dispatch transparently for clients that speak both transports.
-
-```bash
-# Ping
-echo '{"jsonrpc":"2.0","method":"system.ping","id":1}' \
-  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
-
-# List workspaces
-echo '{"jsonrpc":"2.0","method":"workspace.list","id":1}' \
-  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
-
-# Send text to active pane (or a specific surface)
-echo '{"jsonrpc":"2.0","method":"surface.send_text","params":{"text":"ls\n"},"id":1}' \
-  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
-```
-
-### Methods
-
-| Namespace | Method | Purpose |
-|-----------|--------|---------|
-| `system` | `ping` | Stateless health check |
-| `system` | `capabilities` | List supported methods and namespaces |
-| `system` | `identify` | Return version, build info, PID |
-| `workspace` | `list` | List all workspaces |
-| `workspace` | `current` | Return the active workspace |
-| `workspace` | `create` | Create a new workspace |
-| `workspace` | `select` | Switch to a workspace by index or id |
-| `workspace` | `close` | Close a workspace |
-| `workspace` | `restore_layout` | Apply a `LayoutNode` JSON tree to a workspace |
-| `surface` | `list` | List surfaces in a workspace |
-| `surface` | `send_text` | Send text to a surface (params: `text`, optional `surface_id`; max 64 KiB) |
-| `surface` | `send_keystroke` | Send a keystroke (params: `keystroke`, optional `surface_id`) |
-| `surface` | `split` | Split a surface |
-| `ai` | `session_start` | Notify Paneflow that an AI agent session began |
-| `ai` | `prompt_submit` | Record a prompt submission event |
-| `ai` | `tool_use` | Record a tool-use event |
-| `ai` | `notification` | Surface a notification from the agent |
-| `ai` | `stop` | Notify that the agent stopped |
-| `ai` | `session_end` | Notify that the session ended |
-
-Stateful methods are dispatched to the GPUI main thread; stateless methods (`system.*`) reply on the socket thread.
+- [paneflow.dev](https://paneflow.dev) - product site and public docs
+- [ARCHITECTURE.md](ARCHITECTURE.md) - runtime architecture and thread model
+- [docs/mcp-bridge.md](docs/mcp-bridge.md) - MCP bridge behavior and install
+- [docs/WINDOWS.md](docs/WINDOWS.md) - Windows support matrix and caveats
+- [docs/release/linux-signing.md](docs/release/linux-signing.md) - Linux release verification
+- [docs/release/macos-signing.md](docs/release/macos-signing.md) - macOS signing and notarization
+- [docs/release/windows-signing.md](docs/release/windows-signing.md) - Windows MSI signing
+- [AGENTS.md](AGENTS.md) - repository instructions for coding agents
+- [llms.txt](llms.txt) - compact map for AI agents and crawlers
 
 ## Compare
 
-Paneflow overlaps with terminals, multiplexers, and agent workspaces, but the design center is narrower: keep several real CLI agents visible and controllable inside one native project window.
-
 | Tool family | Strength | Paneflow difference |
 |---|---|---|
-| tmux / terminal tabs | Universal shell workflow, scriptable, lightweight | Adds app-level panes, session restore, agent state, and sidebars |
-| WezTerm / iTerm2 | Mature terminal emulation and customization | Focuses on agent orchestration, branch workspaces, and review flows |
-| Warp-style AI terminals | Polished AI-assisted command entry | Keeps Claude Code, Codex, opencode, Pi, and other CLIs as visible PTY sessions |
-| cmux-style agent workspaces | Multi-agent coordination | Independent Rust/GPUI codebase, cross-platform (Linux, macOS, Windows) |
+| tmux / terminal tabs | Universal shell multiplexing | Paneflow adds agent state, workspaces, review, sidebars, and MCP |
+| WezTerm / iTerm2 / Ghostty | Great terminals | Paneflow focuses on supervising several agent sessions in one project window |
+| Warp-style AI terminals | Polished single-terminal AI workflows | Paneflow keeps existing CLI agents visible in raw PTY panes |
+| cmux-style agent workspaces | Multi-agent coordination | Paneflow is independent Rust/GPUI, cross-platform, and local-first |
 
-Detailed comparisons:
-
-- **Hub:** [paneflow.dev/compare](https://paneflow.dev/compare)
-- [vs cmux](https://paneflow.dev/compare/cmux)
-- [vs WezTerm](https://paneflow.dev/compare/wezterm)
-- [vs iTerm2](https://paneflow.dev/compare/iterm2)
-- [vs Warp](https://paneflow.dev/compare/warp)
-
-## Architecture
-
-Paneflow is one Rust binary: GPUI for GPU-accelerated UI (Vulkan / Metal / DirectX), upstream `alacritty_terminal` for VT emulation confined behind a neutral-type boundary, one PTY I/O thread per pane, and a JSON-RPC IPC layer that powers the CLI, the MCP bridge, and agent lifecycle tracking.
-
-[ARCHITECTURE.md](ARCHITECTURE.md) covers the thread model, the keystroke-to-pixel pipeline, how agent state detection works (PATH shim + lifecycle hooks), and the security posture (minisign-signed updates with fail-closed verification, opt-in telemetry, untrusted-ingress validation).
+Detailed comparisons live at [paneflow.dev/compare](https://paneflow.dev/compare).
 
 ## FAQ
 
 **Why not tmux with one agent per pane?**
-That works, until you run more than two agents. Paneflow's value is the state layer on top of the panes: it knows when an agent is thinking, waiting on a question (and what the question is), finished, errored, or stalled, and routes that to tab dots, sidebar status, an attention queue, desktop notifications, and `Ctrl+Shift+J` to jump to the next agent that needs you. Add per-agent git worktrees, an in-app diff viewer, session restore, and an IPC API, and the comparison stops being about splitting a screen.
+Use tmux if you mostly work over SSH or want a headless multiplexer. Paneflow is
+for local GUI supervision: agent state, notifications, MCP pane reads, worktree
+review, and a native control plane around real terminals.
 
 **Is this another Electron app?**
-No. Paneflow is native Rust on Zed's GPUI: Vulkan on Linux, Metal on macOS, DirectX on Windows. No Chromium, no Node runtime.
+No. Paneflow is Rust on GPUI with Vulkan on Linux, Metal on macOS, and DirectX
+on Windows.
+
+**Does Paneflow drive agents for me?**
+Only when you explicitly enable that flow. The default is visible terminal
+control: prompts are pre-filled, you review them, then you press Enter.
+
+**Can agents read sensitive terminal output?**
+Only agents you configure through the MCP bridge can read pane output, and the
+bridge is read-only. Treat that as powerful local context access: useful for
+coordination, but still something to enable intentionally.
 
 **Does it phone home?**
-Not unless you say yes. Telemetry is opt-in via a first-run consent modal and disabled by default. When enabled it sends five app-lifecycle events (app started/exited, update check/installed, session corrupted), never terminal content, paths, or prompts. `PANEFLOW_NO_TELEMETRY=1` is an unconditional kill switch, and the entire client is auditable in [`crates/paneflow-telemetry/`](crates/paneflow-telemetry/).
-
-**Is it a fork of Zed or cmux?**
-No. Paneflow is an independent codebase that uses Zed's GPUI as its UI framework and upstream `alacritty_terminal` for emulation. The cmux comparison is about the category (agent workspaces), not the code.
-
-**Does it drive agents for me?**
-No, and that's deliberate. Agents run as real CLI processes in real PTY panes you can see and interrupt. Paneflow pre-fills prompts (Composer, Launch Pad, broadcast groups) but a human presses Enter; there is no headless mode that submits prompts on your behalf.
-
-**Why GPL-3.0?**
-Paneflow is free and open source by design, and GPL keeps it that way: improvements to the app stay in the commons.
+Not unless you opt in. Telemetry never includes terminal contents, paths, or
+prompts, and `PANEFLOW_NO_TELEMETRY=1` disables it regardless of config.
 
 **What about Windows?**
-Live. A signed `.msi` ships with every release for Windows 10 1809+ and Windows 11. The codebase is cross-platform by policy (every platform-specific path has a Windows branch). See [docs/WINDOWS.md](docs/WINDOWS.md) for the supported-versions matrix and known limitations.
+Windows x64 is a first-class release target. Windows ARM64 is not shipped yet.
+See [docs/WINDOWS.md](docs/WINDOWS.md) for the support matrix and known issues.
 
-**Is the terminal itself any good?**
-It is upstream alacritty's VT emulation with GPU rendering, so: fast. Find-in-buffer with regex, fleet-wide grep across every pane, OSC 8 hyperlinks, per-pane font zoom, ligatures, themes with hot reload. The multiplexing does not tax the basics.
+**Why GPL-3.0-or-later?**
+Paneflow is meant to stay open. GPL keeps improvements to the app in the
+commons while allowing normal internal and commercial use.
 
 ## License
 

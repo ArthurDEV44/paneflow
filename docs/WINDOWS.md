@@ -5,11 +5,10 @@ install paths, known v1 limitations, tracked upstream risks, and how
 to report a Windows-specific bug. If you're on Linux or macOS, see
 the top-level [README](../README.md) instead.
 
-Authored under US-022 of
-[`tasks/prd-windows-port.md`](../tasks/prd-windows-port.md). Scope
-decision (AC-4): the PaneFlow website links directly to this file on
-GitHub rather than re-hosting the content - one source of truth,
-no stale mirror.
+Maintained alongside the release smoke-test runbook in
+[`WINDOWS-SMOKE-TEST.md`](WINDOWS-SMOKE-TEST.md). The PaneFlow website links
+directly to this file on GitHub rather than re-hosting the content - one source
+of truth, no stale mirror.
 
 ---
 
@@ -34,36 +33,28 @@ below for the exception.
 
 ## 2. Installation
 
-### winget (recommended)
-
-```powershell
-winget install ArthurDev44.PaneFlow
-```
-
-The winget manifest is submitted to
-[`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs)
-on every stable release by
-[`update-winget.yml`](../.github/workflows/update-winget.yml); see
-US-019 for the automation. First-time submissions wait on the
-winget-pkgs reviewer SLA (3-10 days typically), after which the
-package is generally available.
-
 ### Direct MSI download
 
 Download `paneflow-<version>-x86_64-pc-windows-msvc.msi` from the
 [latest GitHub Release](https://github.com/ArthurDEV44/paneflow/releases/latest)
 and double-click to install. The installer is signed via Azure
 Artifact Signing under the **Strivex** certificate profile -
-SmartScreen shows "Windows protected your PC" with publisher
+SmartScreen may show "Windows protected your PC" with publisher
 **Strivex** (not "Unknown Publisher"). Click `More info` →
 `Run anyway` to proceed. Reputation accumulates over the first
-few weeks after a fresh cert profile is issued; once built,
-SmartScreen stops prompting entirely.
+few weeks after a fresh cert profile is issued, so prompts should
+become less frequent for that publisher identity.
 
 Uninstall from `Settings → Apps → Installed apps → PaneFlow →
 Uninstall`. The installer removes `%ProgramFiles%\PaneFlow\` but
 leaves `%APPDATA%\paneflow\paneflow.json` and related user config
 untouched - idiomatic Windows uninstall behaviour.
+
+### winget status
+
+A `winget` package is not the authoritative install path for the current Windows
+release. Use the signed MSI above until `ArthurDev44.PaneFlow` is accepted in
+`microsoft/winget-pkgs` and visible through `winget search`.
 
 ### Building from source
 
@@ -80,14 +71,12 @@ to reproduce the signed MSI end-to-end.
 These are PaneFlow's own limitations on Windows - distinct from the
 upstream risks in §4 below.
 
-- **Services sidebar is empty on Windows.** The port-scan feature
-  that populates the sidebar with discovered development services
-  (dev server on :3000, etc.) relies on POSIX `/proc/net/tcp` on
-  Linux and `sysctl` on macOS. A Windows implementation via
-  `GetExtendedTcpTable` is out of scope for v1 and returns an empty
-  list. Workaround: the sidebar simply doesn't populate - no error
-  is shown, and no feature regresses. Tracked in the PRD's Out of
-  Scope list.
+- **Service labels can be less rich on Windows.** The Windows scanner
+  discovers LISTEN ports with `GetExtendedTcpTable` and attributes them
+  to each pane's process subtree. Some JavaScript dev servers may still
+  appear as raw port chips rather than branded Vite/Next.js-style labels
+  when Windows exposes only the socket owner's executable name.
+  Workaround: open the raw port chip or use the printed dev-server URL.
 
 - **`cmd.exe` does not emit OSC 7, so CWD-aware features are
   degraded in `cmd.exe` panes.** PaneFlow tracks each pane's current
@@ -111,13 +100,6 @@ upstream risks in §4 below.
   v1.** The Windows implementation of runtime CWD detection (used
   as a fallback when OSC 7 isn't available) returns `None` in v1
   and defers to OSC 7. Tracked as an Out-of-Scope item in the PRD.
-
-- **Self-update shows a prompt, doesn't auto-download.** On Linux
-  and macOS PaneFlow can download and swap in the new version
-  in-place. On Windows, the updater shows a "new version
-  available" prompt with a direct link to the MSI - click-to-install
-  is deferred to a follow-up PRD because it requires UAC elevation
-  and a clean MSI-reinstall flow.
 
 ---
 
