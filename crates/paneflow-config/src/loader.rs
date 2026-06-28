@@ -889,6 +889,8 @@ mod tests {
             claude_code_bypass_permissions: None,
             ai_unrestricted: None,
             ai_injection_fence: None,
+            rosetta_enabled: None,
+            rosetta_show_passive: None,
             claude_code_button_visible: None,
             codex_button_visible: None,
             opencode_button_visible: None,

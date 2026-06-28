@@ -89,6 +89,9 @@ impl PaneFlowApp {
     ) {
         self.cached_config =
             config_writer::with_field(&self.cached_config, nested, key, value.clone());
+        if key.starts_with("rosetta_") {
+            self.sync_rosetta_config_state();
+        }
         cx.notify();
         cx.background_spawn(async move {
             smol::unblock(move || {

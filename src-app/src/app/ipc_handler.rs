@@ -17,8 +17,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::{App, AppContext, Context, Entity, Focusable};
-use paneflow_config::schema::{AppMode, LayoutNode, TerminalSurfaceProfile};
+use gpui::{App, AppContext, BackgroundExecutor, Context, Entity, Focusable};
+use paneflow_config::schema::{AppMode, LayoutNode, PaneFlowConfig, TerminalSurfaceProfile};
 
 use crate::agent_launcher::TerminalAgent;
 use crate::agents::notifications::{self as desktop_notifications, DesktopNotification};
@@ -56,6 +56,14 @@ const UP_PREFILL_POLL: Duration = Duration::from_millis(200);
 const UP_LAUNCH_FLOOR: Duration = Duration::from_millis(700);
 const UP_LAUNCH_MAX: Duration = Duration::from_millis(4000);
 const UP_LAUNCH_POLL: Duration = Duration::from_millis(100);
+
+struct TranscriptTurnEndNotification {
+    agent: TerminalAgent,
+    title: String,
+    config: PaneFlowConfig,
+    source_visible: bool,
+    executor: BackgroundExecutor,
+}
 
 /// EP-001 US-001 (agent-control-plane-hardening): cadence at which the deferred
 /// submit polls a freshly-pasted agent's `output_generation` for the paste echo
@@ -124,13 +132,15 @@ fn build_up_layout(preset: &str, panes: Vec<Entity<Pane>>, focus_idx: usize) -> 
 }
 
 fn fire_turn_end_notification(
+    agent: TerminalAgent,
     workspace_title: &str,
+    session_summary: Option<&str>,
     config: &paneflow_config::schema::PaneFlowConfig,
     source_visible: bool,
     executor: gpui::BackgroundExecutor,
 ) {
     desktop_notifications::fire_desktop_notification(
-        DesktopNotification::turn_finished(workspace_title),
+        DesktopNotification::turn_finished(agent, workspace_title, session_summary),
         config,
         source_visible,
         executor,
@@ -138,6 +148,7 @@ fn fire_turn_end_notification(
 }
 
 fn fire_attention_notification(
+    agent: TerminalAgent,
     workspace_title: &str,
     message: Option<&str>,
     config: &paneflow_config::schema::PaneFlowConfig,
@@ -145,7 +156,7 @@ fn fire_attention_notification(
     executor: gpui::BackgroundExecutor,
 ) {
     desktop_notifications::fire_desktop_notification(
-        DesktopNotification::needs_input(workspace_title, message),
+        DesktopNotification::needs_input(agent, workspace_title, message),
         config,
         source_visible,
         executor,
@@ -177,6 +188,15 @@ fn read_last_result(params: &serde_json::Value) -> Option<String> {
     Some(crate::markdown::strip_bidi_zero_width(
         raw.chars().take(2048).collect(),
     ))
+}
+
+fn read_notification_message(params: &serde_json::Value) -> Option<String> {
+    let hook = params.get("hook_payload");
+    hook.and_then(|h| h.get("message"))
+        .and_then(|v| v.as_str())
+        .or_else(|| params.get("message").and_then(|v| v.as_str()))
+        .map(sanitize_notification_message)
+        .filter(|message| !message.trim().is_empty())
 }
 
 /// EP-004 US-010 (agent-control-plane-hardening): a Stop-hook transcript larger
@@ -219,6 +239,15 @@ fn read_transcript_path(params: &serde_json::Value) -> Option<std::path::PathBuf
 /// Pure (path in, text out) so it is unit-tested against a fixture file.
 fn extract_last_result_from_transcript(path: &std::path::Path) -> Option<String> {
     extract_last_result_capped(path, TRANSCRIPT_READ_CAP)
+}
+
+fn read_stop_summary(params: &serde_json::Value) -> (Option<String>, Option<std::path::PathBuf>) {
+    let inline = read_last_result(params);
+    let transcript_path = inline
+        .is_none()
+        .then(|| read_transcript_path(params))
+        .flatten();
+    (inline, transcript_path)
 }
 
 /// Inner with an explicit cap so the oversize-skip branch is unit-testable
@@ -428,6 +457,7 @@ fn stage_context_file(
 }
 
 fn fire_agent_exit_notification(
+    agent: TerminalAgent,
     workspace_title: &str,
     exit_code: i32,
     config: &paneflow_config::schema::PaneFlowConfig,
@@ -435,7 +465,7 @@ fn fire_agent_exit_notification(
     executor: gpui::BackgroundExecutor,
 ) {
     desktop_notifications::fire_desktop_notification(
-        DesktopNotification::agent_exited(workspace_title, exit_code),
+        DesktopNotification::agent_exited(agent, workspace_title, exit_code),
         config,
         source_visible,
         executor,
@@ -448,6 +478,7 @@ fn fire_agent_exit_notification(
 /// structural (the sweep only flips `Thinking`, so a stalled session can't
 /// re-trigger until a hook event revives it first).
 pub(crate) fn fire_stalled_notification(
+    agent: TerminalAgent,
     workspace_title: &str,
     silent_secs: u64,
     config: &paneflow_config::schema::PaneFlowConfig,
@@ -455,7 +486,7 @@ pub(crate) fn fire_stalled_notification(
     executor: gpui::BackgroundExecutor,
 ) {
     desktop_notifications::fire_desktop_notification(
-        DesktopNotification::stalled(workspace_title, silent_secs),
+        DesktopNotification::stalled(agent, workspace_title, silent_secs),
         config,
         source_visible,
         executor,
@@ -1171,6 +1202,7 @@ impl PaneFlowApp {
             // pick up the reload without a per-frame `load_config()`. Last use
             // of `config` - move it in.
             self.cached_config = config;
+            self.sync_rosetta_config_state();
             // US-015: push the refreshed config to every pane's tab-bar cache.
             for ws in &self.workspaces {
                 ws.propagate_config(&self.cached_config, cx);
@@ -1713,24 +1745,32 @@ impl PaneFlowApp {
     }
 
     /// EP-004 US-010 (agent-control-plane-hardening): read a Claude Code Stop-hook
-    /// transcript OFF the render thread and backfill the session's `last_result`
-    /// with the last assistant message. The `ai.stop` handler runs on the GPUI
-    /// thread, so the file read goes through `smol::unblock`; the result is
-    /// deposited back via `cx.update`. Best-effort: any miss leaves `last_result`
-    /// null (the conductor falls back to the US-009 file discipline). Keyed on
-    /// `(ws_id, session_key)` like the auto-clear timer, and only fills when the
-    /// slot is STILL empty, so a newer turn's inline summary is never clobbered.
-    fn schedule_transcript_read(
-        ws_id: u64,
-        session_key: u32,
+    /// transcript OFF the render thread, optionally backfill `last_result`, and
+    /// optionally fire the turn-end notification with the extracted summary.
+    /// Best-effort: any miss keeps the workspace/thread title fallback.
+    fn schedule_transcript_turn_end(
+        update_target: Option<(u64, u32)>,
         path: std::path::PathBuf,
+        notification: Option<TranscriptTurnEndNotification>,
         cx: &mut Context<Self>,
     ) {
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let extracted =
                     smol::unblock(move || extract_last_result_from_transcript(&path)).await;
-                let Some(text) = extracted else {
+                if let Some(notification) = notification {
+                    desktop_notifications::fire_desktop_notification(
+                        DesktopNotification::turn_finished(
+                            notification.agent,
+                            &notification.title,
+                            extracted.as_deref(),
+                        ),
+                        &notification.config,
+                        notification.source_visible,
+                        notification.executor,
+                    );
+                }
+                let (Some((ws_id, session_key)), Some(text)) = (update_target, extracted) else {
                     return;
                 };
                 cx.update(|cx| {
@@ -2856,7 +2896,6 @@ impl PaneFlowApp {
                 let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
                     return serde_json::json!({"error": "Missing workspace_id"});
                 };
-                let hook = params.get("hook_payload");
                 let pid = read_session_pid(params);
                 let Some(tool) = read_tool(params) else {
                     // An unknown binary name can't map to a TerminalAgent -
@@ -2865,12 +2904,7 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Unknown tool"});
                 };
                 let explicit_surface_id = self.validated_frame_surface_id(params, cx);
-                let message = sanitize_notification_message(
-                    hook.and_then(|h| h.get("message"))
-                        .and_then(|v| v.as_str())
-                        .or_else(|| params.get("message").and_then(|v| v.as_str()))
-                        .unwrap_or("Needs input"),
-                );
+                let message = read_notification_message(params);
                 let notify_config = self.cached_config.clone();
                 let active_workspace_id = self.workspaces.get(self.active_idx).map(|ws| ws.id);
                 let workspace_source_visible =
@@ -2889,13 +2923,14 @@ impl PaneFlowApp {
                     // and the desktop notification surface it. Untrusted
                     // text: stored and displayed verbatim, never interpreted.
                     if let Some(s) = ws.agent_sessions.get_mut(&key) {
-                        s.message = Some(message.clone());
+                        s.message = message.clone();
                     }
                     let ws_title = ws.title.clone();
                     cx.notify();
                     fire_attention_notification(
+                        tool,
                         &ws_title,
-                        Some(&message),
+                        message.as_deref(),
                         &notify_config,
                         workspace_source_visible,
                         cx.background_executor().clone(),
@@ -2921,8 +2956,9 @@ impl PaneFlowApp {
                         .unwrap_or_else(|| t.title.clone());
                     cx.notify();
                     fire_attention_notification(
+                        tool,
                         &title,
-                        Some(&message),
+                        message.as_deref(),
                         &notify_config,
                         agents_source_visible,
                         cx.background_executor().clone(),
@@ -2966,36 +3002,53 @@ impl PaneFlowApp {
                     );
                     // US-016: the turn ended - the question is answered, no
                     // ghost message may survive into the next state.
-                    let mut transcript_to_read: Option<std::path::PathBuf> = None;
+                    let (session_summary, transcript_to_read) = read_stop_summary(params);
                     if let Some(s) = ws.agent_sessions.get_mut(&session_key) {
                         s.message = None;
                         // EP-004 US-015: capture a best-effort summary of the
                         // just-finished turn when the stop hook carried one, so
                         // a conductor reads it via fleet.list / surface.status.
                         // None when the hook provides nothing (the common case).
-                        s.last_result = read_last_result(params);
-                        // EP-004 US-010: the common Claude Code case carries no
-                        // inline summary, only a transcript path - capture it for
-                        // an off-thread backfill once the borrow ends.
-                        if s.last_result.is_none() {
-                            transcript_to_read = read_transcript_path(params);
-                        }
+                        s.last_result = session_summary.clone();
                     }
                     // EP-004 US-020: notify the user the turn ended if they're
                     // looking elsewhere. Read the title before the borrow ends.
                     let ws_title = ws.title.clone();
                     cx.notify();
-                    fire_turn_end_notification(
-                        &ws_title,
-                        &notify_config,
-                        workspace_source_visible,
-                        cx.background_executor().clone(),
-                    );
+                    if let Some(path) = transcript_to_read {
+                        Self::schedule_transcript_turn_end(
+                            Some((workspace_id, session_key)),
+                            path,
+                            Some(TranscriptTurnEndNotification {
+                                agent: tool,
+                                title: ws_title.clone(),
+                                config: notify_config.clone(),
+                                source_visible: workspace_source_visible,
+                                executor: cx.background_executor().clone(),
+                            }),
+                            cx,
+                        );
+                    } else {
+                        fire_turn_end_notification(
+                            tool,
+                            &ws_title,
+                            session_summary.as_deref(),
+                            &notify_config,
+                            workspace_source_visible,
+                            cx.background_executor().clone(),
+                        );
+                    }
                     self.bind_or_resolve_session_surface(
                         workspace_id,
                         session_key,
                         explicit_surface_id,
                         cx,
+                    );
+                    self.record_workspace_rosetta_event(
+                        workspace_id,
+                        session_key,
+                        crate::app::rosetta::RosettaRowState::Finished,
+                        std::time::Instant::now(),
                     );
                     self.sync_attention(cx);
                     // EP-001 US-003 (cli-cockpit): the turn ended - flush any
@@ -3030,36 +3083,57 @@ impl PaneFlowApp {
                     )
                     .detach();
 
-                    // EP-004 US-010: backfill last_result from the Stop-hook
-                    // transcript off the render thread (the inline read above
-                    // stayed None because the hook carried only a path).
-                    if let Some(path) = transcript_to_read {
-                        Self::schedule_transcript_read(workspace_id, session_key, path, cx);
-                    }
-
                     serde_json::json!({"status": "idle"})
-                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                } else if let Some(target) = self.agents_thread_target_by_env_id(workspace_id) {
                     // Codex-style: the spinner drops the moment the turn
                     // ends and the relative timestamp returns. No Finished
                     // hold state - `ThreadStatus` has no such variant and
                     // the row's timestamp is the natural rest indicator.
-                    apply_agents_thread_state(t, ai_types::AgentState::Finished, pid);
-                    let title = crate::project::clean_sidebar_title(&t.title)
-                        .unwrap_or_else(|| t.title.clone());
+                    let Some(thread) = self.thread_for_target(target) else {
+                        return serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")});
+                    };
+                    let title = crate::project::clean_sidebar_title(&thread.title)
+                        .unwrap_or_else(|| thread.title.clone());
                     // Snapshot what the off-thread ai-title backfill needs
                     // before the &mut borrow on `self` ends.
-                    let thread_id = t.id;
-                    let cwd = t.cwd.clone();
-                    let session_agent = t.terminal_agent.and_then(|a| a.session_agent());
-                    let bound_session = t.session_id.clone();
-                    let title_locked = t.title_user_set;
-                    cx.notify();
-                    fire_turn_end_notification(
-                        &title,
-                        &notify_config,
-                        agents_source_visible,
-                        cx.background_executor().clone(),
+                    let thread_id = thread.id;
+                    let cwd = thread.cwd.clone();
+                    let session_agent = thread.terminal_agent.and_then(|a| a.session_agent());
+                    let bound_session = thread.session_id.clone();
+                    let title_locked = thread.title_user_set;
+                    let (session_summary, transcript_to_read) = read_stop_summary(params);
+                    self.record_agents_thread_rosetta_event(
+                        target,
+                        crate::app::rosetta::RosettaRowState::Finished,
+                        std::time::Instant::now(),
                     );
+                    if let Some(t) = self.agents_thread_mut_by_id(thread_id) {
+                        apply_agents_thread_state(t, ai_types::AgentState::Finished, pid);
+                    }
+                    cx.notify();
+                    if let Some(path) = transcript_to_read {
+                        Self::schedule_transcript_turn_end(
+                            None,
+                            path,
+                            Some(TranscriptTurnEndNotification {
+                                agent: tool,
+                                title: title.clone(),
+                                config: notify_config.clone(),
+                                source_visible: agents_source_visible,
+                                executor: cx.background_executor().clone(),
+                            }),
+                            cx,
+                        );
+                    } else {
+                        fire_turn_end_notification(
+                            tool,
+                            &title,
+                            session_summary.as_deref(),
+                            &notify_config,
+                            agents_source_visible,
+                            cx.background_executor().clone(),
+                        );
+                    }
                     // Parity with `/resume`: at turn end the session's LLM
                     // `ai-title` exists on disk - adopt it as the sidebar
                     // label, unless the user pinned the name via a rename.
@@ -3116,6 +3190,7 @@ impl PaneFlowApp {
                     cx.notify();
                     if errored {
                         fire_agent_exit_notification(
+                            tool,
                             &ws_title,
                             exit_code,
                             &notify_config,
@@ -3132,6 +3207,12 @@ impl PaneFlowApp {
                             explicit_surface_id,
                             cx,
                         );
+                        self.record_workspace_rosetta_event(
+                            workspace_id,
+                            key,
+                            crate::app::rosetta::RosettaRowState::Errored,
+                            std::time::Instant::now(),
+                        );
                     }
                     // Finished (exit 0 / interrupt) intentionally fires no
                     // notification - `ai.stop` already announced the turn
@@ -3140,17 +3221,31 @@ impl PaneFlowApp {
                     self.sync_attention(cx);
                     self.agent_sessions_changed(cx);
                     serde_json::json!({"status": if errored { "errored" } else { "finished" }})
-                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                } else if let Some(target) = self.agents_thread_target_by_env_id(workspace_id) {
                     // Agents view mirrors the workspace exit classifier but
                     // keeps the row compact: success returns to timestamp,
                     // crashes become a red indicator (no status text).
                     let state = ai_types::state_for_exit(exit_code);
                     let errored = state == ai_types::AgentState::Errored;
-                    apply_agents_thread_state(t, state, pid);
+                    let Some(thread) = self.thread_for_target(target) else {
+                        return serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")});
+                    };
+                    let thread_id = thread.id;
+                    let title = crate::project::clean_sidebar_title(&thread.title)
+                        .unwrap_or_else(|| thread.title.clone());
                     if errored {
-                        let title = crate::project::clean_sidebar_title(&t.title)
-                            .unwrap_or_else(|| t.title.clone());
+                        self.record_agents_thread_rosetta_event(
+                            target,
+                            crate::app::rosetta::RosettaRowState::Errored,
+                            std::time::Instant::now(),
+                        );
+                    }
+                    if let Some(t) = self.agents_thread_mut_by_id(thread_id) {
+                        apply_agents_thread_state(t, state, pid);
+                    }
+                    if errored {
                         fire_agent_exit_notification(
+                            tool,
                             &title,
                             exit_code,
                             &notify_config,
@@ -3202,11 +3297,23 @@ impl PaneFlowApp {
                     // closes (`sweep_stale_pids`).
                     let is_errored =
                         |s: &ai_types::AgentSession| s.state == ai_types::AgentState::Errored;
+                    let mut recent_event = None;
                     let removed = if let Some(p) = pid
-                        && ws.agent_sessions.get(&p).is_some_and(|s| !is_errored(s))
-                        && ws.agent_sessions.remove(&p).is_some()
+                        && let Some(session) = ws.agent_sessions.get(&p)
+                        && !is_errored(session)
                     {
-                        true
+                        if session.state != ai_types::AgentState::Finished {
+                            recent_event = Some(
+                                crate::app::rosetta::rosetta_recent_event_from_workspace_session(
+                                    ws.id,
+                                    &ws.title,
+                                    session,
+                                    crate::app::rosetta::RosettaRowState::Finished,
+                                    std::time::Instant::now(),
+                                ),
+                            );
+                        }
+                        ws.agent_sessions.remove(&p).is_some()
                     } else if pid.is_some_and(|p| ws.agent_sessions.contains_key(&p)) {
                         // Exact-PID match exists but is Errored: keep it, and
                         // do NOT fall through to the tool-name removal (it
@@ -3219,6 +3326,19 @@ impl PaneFlowApp {
                             .find(|(_, s)| Some(s.tool) == tool && !is_errored(s))
                             .map(|(k, _)| *k);
                         if let Some(k) = pid_to_remove {
+                            if let Some(session) = ws.agent_sessions.get(&k)
+                                && session.state != ai_types::AgentState::Finished
+                            {
+                                recent_event = Some(
+                                    crate::app::rosetta::rosetta_recent_event_from_workspace_session(
+                                        ws.id,
+                                        &ws.title,
+                                        session,
+                                        crate::app::rosetta::RosettaRowState::Finished,
+                                        std::time::Instant::now(),
+                                    ),
+                                );
+                            }
                             ws.agent_sessions.remove(&k);
                             true
                         } else {
@@ -3226,6 +3346,9 @@ impl PaneFlowApp {
                         }
                     };
                     if removed {
+                        if let Some(event) = recent_event {
+                            self.rosetta_recent_history.push(event);
+                        }
                         self.sync_attention(cx);
                         // EP-001 US-003 (cli-cockpit): a removed session
                         // leaves a bare shell - always a safe prefill target.
@@ -3233,7 +3356,24 @@ impl PaneFlowApp {
                         cx.notify();
                     }
                     serde_json::json!({"cleared": removed})
-                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                } else if let Some(target) = self.agents_thread_target_by_env_id(workspace_id) {
+                    let Some(thread) = self.thread_for_target(target) else {
+                        return serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")});
+                    };
+                    let thread_id = thread.id;
+                    let should_record_finished = thread.status
+                        != crate::project::ThreadStatus::Idle
+                        && thread.status != crate::project::ThreadStatus::Failed;
+                    if should_record_finished {
+                        self.record_agents_thread_rosetta_event(
+                            target,
+                            crate::app::rosetta::RosettaRowState::Finished,
+                            std::time::Instant::now(),
+                        );
+                    }
+                    let Some(t) = self.agents_thread_mut_by_id(thread_id) else {
+                        return serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")});
+                    };
                     let was_active = clear_agents_thread_on_session_end(t);
                     if was_active {
                         cx.notify();
@@ -3258,6 +3398,26 @@ impl PaneFlowApp {
     fn agents_thread_mut_by_env_id(&mut self, env_id: u64) -> Option<&mut crate::project::Thread> {
         let thread_id = crate::project::thread_id_from_env_id(env_id)?;
         self.agents_thread_mut_by_id(thread_id)
+    }
+
+    fn agents_thread_target_by_env_id(&self, env_id: u64) -> Option<crate::project::AgentsTarget> {
+        let thread_id = crate::project::thread_id_from_env_id(env_id)?;
+        for (project_idx, project) in self.projects.iter().enumerate() {
+            if let Some(thread_idx) = project
+                .threads
+                .iter()
+                .position(|thread| thread.id == thread_id)
+            {
+                return Some(crate::project::AgentsTarget::Thread {
+                    project_idx,
+                    thread_idx,
+                });
+            }
+        }
+        self.chats
+            .iter()
+            .position(|chat| chat.id == thread_id)
+            .map(|chat_idx| crate::project::AgentsTarget::Chat { chat_idx })
     }
 }
 
@@ -3774,11 +3934,11 @@ mod tests {
     fn agent_exit_body_carries_workspace_and_code() {
         assert_eq!(
             crate::agents::notifications::agent_exit_notification_body("api", 1),
-            "api: agent exited with code 1"
+            "api: exited with code 1"
         );
         assert_eq!(
             crate::agents::notifications::agent_exit_notification_body("ws", -1073741510),
-            "ws: agent exited with code -1073741510"
+            "ws: exited with code -1073741510"
         );
     }
 
@@ -3786,7 +3946,7 @@ mod tests {
     fn stalled_body_carries_workspace_and_silence() {
         assert_eq!(
             crate::agents::notifications::stalled_notification_body("api", 300),
-            "api: no agent activity for 300 s"
+            "api: no activity for 300 s"
         );
     }
 
@@ -4481,6 +4641,19 @@ mod tests {
         assert!(super::read_last_result(&serde_json::json!({})).is_none());
     }
 
+    #[test]
+    fn read_notification_message_is_optional_and_sanitized() {
+        let p = serde_json::json!({"hook_payload": {"message": "Approve?"}});
+        assert_eq!(
+            super::read_notification_message(&p).as_deref(),
+            Some("Approve?")
+        );
+
+        let p = serde_json::json!({"message": " \u{202E} "});
+        assert!(super::read_notification_message(&p).is_none());
+        assert!(super::read_notification_message(&serde_json::json!({})).is_none());
+    }
+
     // EP-004 US-010: transcript backfill of last_result.
 
     #[test]
@@ -4516,6 +4689,24 @@ mod tests {
                 .is_none()
         );
         assert!(read_transcript_path(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn read_stop_summary_uses_inline_before_transcript_path() {
+        #[cfg(windows)]
+        let abs = r"C:\abs\session.jsonl";
+        #[cfg(not(windows))]
+        let abs = "/abs/session.jsonl";
+
+        let p = serde_json::json!({"hook_payload": {"summary": "done", "transcript_path": abs}});
+        let (summary, path) = super::read_stop_summary(&p);
+        assert_eq!(summary.as_deref(), Some("done"));
+        assert!(path.is_none());
+
+        let p = serde_json::json!({"hook_payload": {"transcript_path": abs}});
+        let (summary, path) = super::read_stop_summary(&p);
+        assert!(summary.is_none());
+        assert_eq!(path.as_deref(), Some(std::path::Path::new(abs)));
     }
 
     #[test]
