@@ -118,6 +118,7 @@ pub(crate) enum SettingsSection {
     Appearance,
     Shortcuts,
     Terminal,
+    Notifications,
     AiAgent,
     McpServers,
 }
@@ -1252,7 +1253,10 @@ impl Render for PaneFlowApp {
                 )
                 .into_any_element()
         };
-        let rosetta_surface = self.render_rosetta_surface(window, cx);
+        let rosetta_surface_allowed = self.rosetta_surface_allowed();
+        let rosetta_surface = rosetta_surface_allowed
+            .then(|| self.render_rosetta_surface(window, cx))
+            .flatten();
 
         // Update title bar with current workspace name. US-010: in Agents
         // mode the brand slot carries the thread/chat context instead, so the
@@ -1285,7 +1289,9 @@ impl Render for PaneFlowApp {
         self.title_bar.update(cx, |tb, _| {
             tb.workspace_name = ws_name;
             tb.sidebar_visible = self.primary_sidebar_visible;
-            tb.rosetta_surface_open = self.rosetta_surface_expanded;
+            tb.rosetta_enabled = self.cached_config.rosetta_enabled();
+            tb.rosetta_button_enabled = rosetta_surface_allowed;
+            tb.rosetta_surface_open = rosetta_surface_allowed && self.rosetta_surface_expanded;
             tb.files_menu_open = self.title_bar_files_menu_open.is_some();
             tb.help_menu_open = self.title_bar_help_menu_open.is_some();
             tb.update_available = update_info;
@@ -1697,9 +1703,13 @@ impl Render for PaneFlowApp {
         if self.launch_pad.is_some() && in_cli_mode {
             app_content = app_content.child(self.render_launch_pad(cx));
         }
-        if self.rosetta_surface_expanded && std::mem::take(&mut self.rosetta_surface_pending_focus)
+        if rosetta_surface_allowed
+            && self.rosetta_surface_expanded
+            && std::mem::take(&mut self.rosetta_surface_pending_focus)
         {
             self.rosetta_surface_focus.focus(window, cx);
+        } else if !rosetta_surface_allowed {
+            self.rosetta_surface_pending_focus = false;
         }
         // EP-006 US-018: fleet-grep results overlay (same mode gate). The
         // deferred focus (the trigger event has no Window) lands here.

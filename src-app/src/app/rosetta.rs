@@ -374,6 +374,14 @@ impl RosettaRecentHistory {
         before != self.events.len()
     }
 
+    pub(crate) fn remove_finished_for_target(&mut self, target: RosettaFocusTarget) -> bool {
+        let before = self.events.len();
+        self.events.retain(|event| {
+            !(event.state == RosettaRowState::Finished && event.focus_target == Some(target))
+        });
+        before != self.events.len()
+    }
+
     fn visible_events(&self, now: Instant) -> impl Iterator<Item = &RosettaRecentEvent> {
         self.events
             .iter()
@@ -452,7 +460,7 @@ impl crate::PaneFlowApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.cached_config.rosetta_enabled() || !self.rosetta_mode_enabled() {
+        if !self.rosetta_surface_allowed() {
             self.reset_rosetta_surface_state();
             return None;
         }
@@ -521,6 +529,12 @@ impl crate::PaneFlowApp {
         self.agents_view.agents_menu_open = None;
         self.agents_view.sidebar_actions_menu_open = false;
         self.agents_view.sidebar_mode_picker_open = false;
+
+        if !self.rosetta_surface_allowed() {
+            self.reset_rosetta_surface_state();
+            cx.notify();
+            return;
+        }
 
         if self.rosetta_surface_expanded {
             self.close_rosetta_surface(window, cx);
@@ -1005,6 +1019,12 @@ impl crate::PaneFlowApp {
     }
 
     fn open_rosetta_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.rosetta_surface_allowed() {
+            self.reset_rosetta_surface_state();
+            cx.notify();
+            return;
+        }
+
         let projection = self.rosetta_projection(Instant::now());
         self.rosetta_surface_expanded = true;
         self.rosetta_surface_selected = self
@@ -1272,11 +1292,17 @@ impl crate::PaneFlowApp {
         }
     }
 
+    pub(crate) fn rosetta_surface_allowed(&self) -> bool {
+        self.cached_config.rosetta_enabled()
+            && self.settings_section.is_none()
+            && self.rosetta_mode_enabled()
+    }
+
     fn rosetta_mode_enabled(&self) -> bool {
         matches!(self.mode, AppMode::Cli | AppMode::Agents)
     }
 
-    fn reset_rosetta_surface_state(&mut self) {
+    pub(crate) fn reset_rosetta_surface_state(&mut self) {
         self.rosetta_surface_expanded = false;
         self.rosetta_surface_selected = 0;
         self.rosetta_surface_selected_key = None;
@@ -2351,6 +2377,40 @@ mod tests {
 
         assert!(history.dismiss_sequence(sequence));
         assert!(history.visible_events(now).next().is_none());
+    }
+
+    #[test]
+    fn recent_history_removes_finished_events_for_target_only() {
+        let now = Instant::now();
+        let target = RosettaFocusTarget::WorkspaceSurface {
+            workspace_id: 3,
+            surface_id: 77,
+        };
+        let other_target = RosettaFocusTarget::WorkspaceSurface {
+            workspace_id: 3,
+            surface_id: 88,
+        };
+        let mut history = RosettaRecentHistory::default();
+        let mut closed_finished = RosettaRecentEvent::new(RosettaRowState::Finished, now);
+        closed_finished.focus_target = Some(target);
+        let mut waiting = RosettaRecentEvent::new(RosettaRowState::WaitingForInput, now);
+        waiting.focus_target = Some(target);
+        let mut other_finished = RosettaRecentEvent::new(RosettaRowState::Finished, now);
+        other_finished.focus_target = Some(other_target);
+        history.push(closed_finished);
+        history.push(waiting);
+        history.push(other_finished);
+
+        assert!(history.remove_finished_for_target(target));
+
+        let events: Vec<_> = history.visible_events(now).collect();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().any(|event| {
+            event.state == RosettaRowState::WaitingForInput && event.focus_target == Some(target)
+        }));
+        assert!(events.iter().any(|event| {
+            event.state == RosettaRowState::Finished && event.focus_target == Some(other_target)
+        }));
     }
 
     #[test]

@@ -81,6 +81,21 @@ const NAV_GROUPS: &[NavGroup] = &[
                 icon: "icons/bolt.svg",
                 keywords: &["keyboard", "shortcuts", "keys", "bindings", "hotkey"],
             },
+            NavItem {
+                section: SettingsSection::Notifications,
+                label: "Notifications",
+                icon: "icons/bell.svg",
+                keywords: &[
+                    "notifications",
+                    "native",
+                    "os",
+                    "system",
+                    "rosetta",
+                    "bell",
+                    "toast",
+                    "agent",
+                ],
+            },
         ],
     },
     NavGroup {
@@ -139,6 +154,7 @@ pub(crate) fn section_title(section: SettingsSection) -> &'static str {
         SettingsSection::Appearance => "Themes",
         SettingsSection::Shortcuts => "Keyboard Shortcuts",
         SettingsSection::Terminal => "Terminal",
+        SettingsSection::Notifications => "Notifications",
         SettingsSection::AiAgent => "AI Agent",
         SettingsSection::McpServers => "MCP Servers",
     }
@@ -390,6 +406,9 @@ impl PaneFlowApp {
             SettingsSection::Appearance => self.render_appearance_content(cx).into_any_element(),
             SettingsSection::Shortcuts => self.render_shortcuts_content(cx).into_any_element(),
             SettingsSection::Terminal => self.render_terminal_content(cx).into_any_element(),
+            SettingsSection::Notifications => {
+                self.render_notifications_content(cx).into_any_element()
+            }
             SettingsSection::AiAgent => self.render_ai_agent_content(cx).into_any_element(),
             SettingsSection::McpServers => self.render_mcp_servers_content(cx).into_any_element(),
         };

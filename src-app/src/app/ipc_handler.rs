@@ -3186,6 +3186,16 @@ impl PaneFlowApp {
                     if let Some(s) = ws.agent_sessions.get_mut(&key) {
                         s.message = None;
                     }
+                    let finished_target = (!errored)
+                        .then(|| {
+                            let surface_id = ws
+                                .agent_sessions
+                                .get(&key)
+                                .and_then(|s| s.surface_id)
+                                .or(explicit_surface_id);
+                            workspace_rosetta_focus_target(workspace_id, surface_id)
+                        })
+                        .flatten();
                     let ws_title = ws.title.clone();
                     cx.notify();
                     if errored {
@@ -3213,6 +3223,9 @@ impl PaneFlowApp {
                             crate::app::rosetta::RosettaRowState::Errored,
                             std::time::Instant::now(),
                         );
+                    } else if let Some(target) = finished_target {
+                        self.rosetta_recent_history
+                            .remove_finished_for_target(target);
                     }
                     // Finished (exit 0 / interrupt) intentionally fires no
                     // notification - `ai.stop` already announced the turn
@@ -3238,6 +3251,10 @@ impl PaneFlowApp {
                             target,
                             crate::app::rosetta::RosettaRowState::Errored,
                             std::time::Instant::now(),
+                        );
+                    } else {
+                        self.rosetta_recent_history.remove_finished_for_target(
+                            crate::app::rosetta::RosettaFocusTarget::AgentsThread(target),
                         );
                     }
                     if let Some(t) = self.agents_thread_mut_by_id(thread_id) {
@@ -3280,6 +3297,7 @@ impl PaneFlowApp {
                 // Unknown tool string → `None`: the PID-based removal below
                 // still works, only the tool-name fallback is skipped.
                 let tool = crate::agent_launcher::TerminalAgent::from_binary(tool_str);
+                let explicit_surface_id = self.validated_frame_surface_id(params, cx);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // Prefer exact PID removal; fall back to removing one
@@ -3298,11 +3316,17 @@ impl PaneFlowApp {
                     let is_errored =
                         |s: &ai_types::AgentSession| s.state == ai_types::AgentState::Errored;
                     let mut recent_event = None;
+                    let mut finished_target_to_clear = None;
                     let removed = if let Some(p) = pid
                         && let Some(session) = ws.agent_sessions.get(&p)
                         && !is_errored(session)
                     {
-                        if session.state != ai_types::AgentState::Finished {
+                        if session.state == ai_types::AgentState::Finished {
+                            finished_target_to_clear = workspace_rosetta_focus_target(
+                                ws.id,
+                                session.surface_id.or(explicit_surface_id),
+                            );
+                        } else {
                             recent_event = Some(
                                 crate::app::rosetta::rosetta_recent_event_from_workspace_session(
                                     ws.id,
@@ -3326,18 +3350,23 @@ impl PaneFlowApp {
                             .find(|(_, s)| Some(s.tool) == tool && !is_errored(s))
                             .map(|(k, _)| *k);
                         if let Some(k) = pid_to_remove {
-                            if let Some(session) = ws.agent_sessions.get(&k)
-                                && session.state != ai_types::AgentState::Finished
-                            {
-                                recent_event = Some(
-                                    crate::app::rosetta::rosetta_recent_event_from_workspace_session(
+                            if let Some(session) = ws.agent_sessions.get(&k) {
+                                if session.state == ai_types::AgentState::Finished {
+                                    finished_target_to_clear = workspace_rosetta_focus_target(
                                         ws.id,
-                                        &ws.title,
-                                        session,
-                                        crate::app::rosetta::RosettaRowState::Finished,
-                                        std::time::Instant::now(),
-                                    ),
-                                );
+                                        session.surface_id.or(explicit_surface_id),
+                                    );
+                                } else {
+                                    recent_event = Some(
+                                        crate::app::rosetta::rosetta_recent_event_from_workspace_session(
+                                            ws.id,
+                                            &ws.title,
+                                            session,
+                                            crate::app::rosetta::RosettaRowState::Finished,
+                                            std::time::Instant::now(),
+                                        ),
+                                    );
+                                }
                             }
                             ws.agent_sessions.remove(&k);
                             true
@@ -3346,6 +3375,10 @@ impl PaneFlowApp {
                         }
                     };
                     if removed {
+                        if let Some(target) = finished_target_to_clear {
+                            self.rosetta_recent_history
+                                .remove_finished_for_target(target);
+                        }
                         if let Some(event) = recent_event {
                             self.rosetta_recent_history.push(event);
                         }
@@ -3369,6 +3402,10 @@ impl PaneFlowApp {
                             target,
                             crate::app::rosetta::RosettaRowState::Finished,
                             std::time::Instant::now(),
+                        );
+                    } else if thread.status == crate::project::ThreadStatus::Idle {
+                        self.rosetta_recent_history.remove_finished_for_target(
+                            crate::app::rosetta::RosettaFocusTarget::AgentsThread(target),
                         );
                     }
                     let Some(t) = self.agents_thread_mut_by_id(thread_id) else {
@@ -3450,6 +3487,18 @@ fn clear_agents_thread_on_session_end(thread: &mut crate::project::Thread) -> bo
     thread.agent_pid = None;
     thread.agent_proc_start = None;
     was_active
+}
+
+fn workspace_rosetta_focus_target(
+    workspace_id: u64,
+    surface_id: Option<u64>,
+) -> Option<crate::app::rosetta::RosettaFocusTarget> {
+    surface_id.map(
+        |surface_id| crate::app::rosetta::RosettaFocusTarget::WorkspaceSurface {
+            workspace_id,
+            surface_id,
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

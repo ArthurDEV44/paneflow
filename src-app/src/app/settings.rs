@@ -112,6 +112,32 @@ impl PaneFlowApp {
         .detach();
     }
 
+    /// Apply an Agents-panel-scoped settings change. This keeps
+    /// `agent_panel` writes as narrow read-modify-writes so profile settings
+    /// and future sibling fields survive notification toggles.
+    pub(crate) fn persist_agent_panel_setting(
+        &mut self,
+        key: &'static str,
+        value: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        self.cached_config =
+            config_writer::with_agent_panel_field(&self.cached_config, key, value.clone());
+        cx.notify();
+        cx.background_spawn(async move {
+            smol::unblock(move || {
+                let ok = config_writer::save_agent_panel_field_checked(key, value);
+                if !ok {
+                    log::warn!(
+                        "settings: failed to persist agent_panel.{key}; choice is in-memory only this session"
+                    );
+                }
+            })
+            .await;
+        })
+        .detach();
+    }
+
     pub(crate) fn handle_settings_key_down(
         &mut self,
         event: &KeyDownEvent,

@@ -234,6 +234,28 @@ fn apply_terminal_field(json: &mut serde_json::Value, key: &str, value: serde_js
     }
 }
 
+/// Pure read-modify-write of the `"agent_panel"` sub-object. Mirrors
+/// [`apply_terminal_field`] for settings that are scoped to the Agents panel,
+/// such as the native OS notification gate.
+fn apply_agent_panel_field(json: &mut serde_json::Value, key: &str, value: serde_json::Value) {
+    let Some(root) = json.as_object_mut() else {
+        return;
+    };
+    let agent_panel = root
+        .entry("agent_panel")
+        .or_insert_with(|| serde_json::json!({}));
+    if !agent_panel.is_object() {
+        *agent_panel = serde_json::json!({});
+    }
+    if let Some(obj) = agent_panel.as_object_mut() {
+        if value.is_null() {
+            obj.remove(key);
+        } else {
+            obj.insert(key.to_string(), value);
+        }
+    }
+}
+
 /// US-016: return a copy of `config` with a single field updated *in memory*,
 /// mirroring the on-disk merge of [`save_config_value`] / [`save_terminal_field`]
 /// without touching disk. A settings handler uses this to refresh its render
@@ -259,6 +281,17 @@ pub fn with_field(
     serde_json::from_value(json).unwrap_or_else(|_| config.clone())
 }
 
+/// In-memory companion for [`save_agent_panel_field_checked`].
+pub fn with_agent_panel_field(
+    config: &paneflow_config::schema::PaneFlowConfig,
+    key: &str,
+    value: serde_json::Value,
+) -> paneflow_config::schema::PaneFlowConfig {
+    let mut json = serde_json::to_value(config).unwrap_or_else(|_| serde_json::json!({}));
+    apply_agent_panel_field(&mut json, key, value);
+    serde_json::from_value(json).unwrap_or_else(|_| config.clone())
+}
+
 /// Save a single field inside the `"terminal": { ... }` block in `paneflow.json`
 /// (US-016 Terminal settings tab). A `Null` value removes the key (restoring
 /// the schema default on next load); the `"terminal"` object itself is left in
@@ -274,9 +307,24 @@ pub fn save_terminal_field(key: &str, value: serde_json::Value) {
     write_config(&path, &json);
 }
 
+/// Save a single field inside the `"agent_panel": { ... }` block in
+/// `paneflow.json`, preserving sibling agent-panel settings and unknown fields.
+pub fn save_agent_panel_field_checked(key: &str, value: serde_json::Value) -> bool {
+    let Some(path) = paneflow_config::loader::config_path() else {
+        log::warn!("config: cannot determine config path, not saving");
+        return false;
+    };
+    let _guard = config_write_guard();
+    let mut json = load_raw_config(&path);
+    apply_agent_panel_field(&mut json, key, value);
+    write_config_checked(&path, &json)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{apply_terminal_field, merge_shortcut, write_config_checked};
+    use super::{
+        apply_agent_panel_field, apply_terminal_field, merge_shortcut, write_config_checked,
+    };
     use serde_json::{Value, json};
 
     #[test]
@@ -389,5 +437,31 @@ mod tests {
         assert_eq!(j["theme"], json!("One Dark"));
         assert_eq!(j["font_size"], json!(14.0));
         assert_eq!(j["terminal"]["scrollback_lines"], json!(5000));
+    }
+
+    #[test]
+    fn upserts_into_agent_panel_preserving_siblings() {
+        let mut j = json!({
+            "agent_panel": {
+                "max_content_width": 760,
+                "notify_when_agent_waiting": "PrimaryScreen"
+            }
+        });
+        apply_agent_panel_field(&mut j, "notify_when_agent_waiting", json!("Never"));
+        assert_eq!(j["agent_panel"]["max_content_width"], json!(760));
+        assert_eq!(
+            j["agent_panel"]["notify_when_agent_waiting"],
+            json!("Never")
+        );
+    }
+
+    #[test]
+    fn replaces_non_object_agent_panel_value() {
+        let mut j = json!({"agent_panel": "garbage"});
+        apply_agent_panel_field(&mut j, "notify_when_agent_waiting", json!("Never"));
+        assert_eq!(
+            j["agent_panel"]["notify_when_agent_waiting"],
+            json!("Never")
+        );
     }
 }

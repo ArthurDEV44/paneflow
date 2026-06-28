@@ -388,6 +388,12 @@ impl PaneFlowApp {
                 self.agents_view.sidebar_actions_menu_open = false;
                 self.agents_view.sidebar_mode_picker_open = false;
 
+                if !self.rosetta_surface_allowed() {
+                    self.reset_rosetta_surface_state();
+                    cx.notify();
+                    return;
+                }
+
                 if self.rosetta_surface_expanded {
                     self.rosetta_surface_expanded = false;
                     self.rosetta_surface_selected = 0;

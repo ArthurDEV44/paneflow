@@ -18,6 +18,10 @@ const NOTIFICATION_DETAIL_CAP_CHARS: usize = 512;
 /// HKCU\Software\Classes\AppUserModelId before showing a toast.
 #[cfg(target_os = "windows")]
 const PANEFLOW_WINDOWS_AUMID: &str = "Strivex.PaneFlow";
+#[cfg(target_os = "windows")]
+const PANEFLOW_WINDOWS_NOTIFICATION_ICON_ASSET: &str = "icons/paneflow.png";
+#[cfg(target_os = "windows")]
+const PANEFLOW_WINDOWS_NOTIFICATION_ICON_FILE: &str = "paneflow-notification.png";
 
 /// Window-active gate updated by `cx.observe_window_activation`.
 /// `true` while the OS reports the Paneflow window as the focused one.
@@ -252,12 +256,43 @@ fn ensure_windows_app_user_model_id_registered() -> Result<(), String> {
         .map_err(|err| format!("set DisplayName: {err}"))?;
     key.set_string("IconBackgroundColor", "0")
         .map_err(|err| format!("set IconBackgroundColor: {err}"))?;
-    if let Ok(exe) = std::env::current_exe() {
-        let exe = exe.display().to_string();
-        key.set_string("IconUri", &exe)
-            .map_err(|err| format!("set IconUri: {err}"))?;
-    }
+    let icon_path = ensure_windows_notification_icon()?;
+    key.set_hstring("IconUri", &icon_path.as_path().into())
+        .map_err(|err| format!("set IconUri: {err}"))?;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_windows_notification_icon() -> Result<std::path::PathBuf, String> {
+    let data = crate::assets::Assets::get(PANEFLOW_WINDOWS_NOTIFICATION_ICON_ASSET)
+        .ok_or_else(|| {
+            format!(
+                "embedded notification icon {PANEFLOW_WINDOWS_NOTIFICATION_ICON_ASSET} not found"
+            )
+        })?
+        .data;
+    let icon_dir = crate::runtime_paths::data_dir()
+        .ok_or_else(|| "Paneflow data dir is unavailable for notification icon".to_string())?
+        .join("icons");
+    std::fs::create_dir_all(&icon_dir)
+        .map_err(|err| format!("create notification icon dir {}: {err}", icon_dir.display()))?;
+
+    let icon_path = icon_dir.join(PANEFLOW_WINDOWS_NOTIFICATION_ICON_FILE);
+    let needs_write = match std::fs::read(&icon_path) {
+        Ok(existing) => existing != data.as_ref(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(err) => {
+            return Err(format!(
+                "read notification icon {}: {err}",
+                icon_path.display()
+            ));
+        }
+    };
+    if needs_write {
+        std::fs::write(&icon_path, data.as_ref())
+            .map_err(|err| format!("write notification icon {}: {err}", icon_path.display()))?;
+    }
+    Ok(icon_path)
 }
 
 #[cfg(target_os = "windows")]

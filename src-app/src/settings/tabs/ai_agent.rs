@@ -53,8 +53,6 @@ impl PaneFlowApp {
         // independent injection fence. Defaults: unrestricted OFF, fence ON.
         let unrestricted = config.ai_unrestricted_enabled();
         let fence = config.ai_injection_fence_enabled();
-        let rosetta_enabled = config.rosetta_enabled();
-        let rosetta_show_passive = config.rosetta_show_passive_enabled();
 
         let buttons_card = setting_card(ui)
             .child(setting_row(
@@ -261,36 +259,6 @@ impl PaneFlowApp {
             .child(section_header(ui, "Permissions"))
             .child(permissions_card);
 
-        let mut rosetta_card = setting_card(ui).child(setting_row(
-            "row-rosetta-enabled",
-            "Rosetta",
-            "Show the in-app agent status card for supported Paneflow modes.",
-            None,
-            rosetta_enabled,
-            "rosetta_enabled",
-            ui,
-            cx,
-        ));
-        if rosetta_enabled {
-            rosetta_card = rosetta_card.child(hairline(ui)).child(setting_row(
-                "row-rosetta-passive",
-                "Show running agents",
-                "Allow passive running-only agent rows to appear as a compact Rosetta card. Turn off for urgent-only status.",
-                None,
-                rosetta_show_passive,
-                "rosetta_show_passive",
-                ui,
-                cx,
-            ));
-        }
-
-        let rosetta_section = div()
-            .mt(px(24.))
-            .flex()
-            .flex_col()
-            .child(section_header(ui, "Rosetta"))
-            .child(rosetta_card);
-
         // EP-003 US-009: AI access (free-access mode + injection fence). The
         // fence sub-toggle only appears once free-access is on: with the mode
         // off, surface.read is always fenced and there is nothing to relax.
@@ -353,7 +321,6 @@ impl PaneFlowApp {
             .flex_col()
             .child(buttons_section)
             .child(permissions_section)
-            .child(rosetta_section)
             .child(access_section)
             .child(div().h(px(180.)).flex_none())
     }
