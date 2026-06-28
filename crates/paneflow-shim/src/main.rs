@@ -212,7 +212,7 @@ fn install_hook_guard(tool: &str) -> Option<ToolHookGuard> {
             ".codebuddy",
             "settings.local.json",
             "CodeBuddy",
-            merge_paneflow_hooks,
+            merge_codebuddy_hooks,
             remove_paneflow_hooks,
         )
         .map(ToolHookGuard::Managed),
@@ -224,9 +224,9 @@ fn install_hook_guard(tool: &str) -> Option<ToolHookGuard> {
             remove_qoder_hooks,
         )
         .map(ToolHookGuard::Managed),
-        // Flat-format CLIs, user-scope config (their project files are
-        // primary configs, often git-tracked - mutating those would churn
-        // the user's diff for the whole session).
+        // User-scope JSON agents (their project files are primary configs,
+        // often git-tracked - mutating those would churn the user's diff for
+        // the whole session). Gemini is matcher-grouped; Cursor is flat.
         "gemini" => ManagedHookConfigGuard::install_in_home(
             ".gemini",
             "settings.json",
@@ -891,7 +891,7 @@ mod tests {
         assert_eq!(arr[0]["matcher"], json!("Bash"));
     }
 
-    // ---------- Multi-agent: clones + flat-format guards ----------
+    // ---------- Multi-agent: clones + JSON/TS/YAML guards ----------
 
     #[test]
     fn qoder_merge_skips_notification_event() {
@@ -906,27 +906,47 @@ mod tests {
             !hooks.contains_key("Notification"),
             "Notification must not be registered for Qoder"
         );
+        let group = &root["hooks"]["UserPromptSubmit"][0];
+        assert!(
+            group.get("_paneflow_managed").is_none(),
+            "Qoder public schema does not document Paneflow-only markers"
+        );
+        assert!(
+            group["hooks"][0].get("commandWindows").is_none(),
+            "Qoder public schema does not document commandWindows"
+        );
         // Round-trip: removal leaves an empty tree (deletable file).
         remove_qoder_hooks(&mut root);
         assert_eq!(root, json!({}));
     }
 
     #[test]
-    fn gemini_flat_merge_writes_canonical_argv_and_roundtrips() {
+    fn gemini_nested_merge_writes_official_shape_and_roundtrips() {
         let mut root = json!({});
         merge_gemini_hooks(&mut root);
         // Foreign key on the config side…
         let before_agent = root["hooks"]["BeforeAgent"].as_array().unwrap();
         assert_eq!(before_agent.len(), 1);
-        // …canonical Claude-shaped event in the command argv.
-        let cmd = before_agent[0]["command"].as_str().unwrap();
+        let group = &before_agent[0];
+        assert_eq!(group["matcher"], json!("*"));
+        let inner = group["hooks"].as_array().unwrap();
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0]["name"], json!("paneflow-status"));
+        assert_eq!(inner[0]["type"], json!("command"));
+        assert_eq!(
+            inner[0]["timeout"],
+            json!(5000),
+            "Gemini hook timeout is milliseconds"
+        );
+        // …canonical Claude-shaped event in the command arg.
+        let cmd = inner[0]["command"].as_str().unwrap();
         assert!(
             cmd.ends_with(" UserPromptSubmit"),
             "BeforeAgent must invoke the canonical UserPromptSubmit: {cmd}"
         );
-        // No matcher-group wrapper and no marker field (stricter parsers).
-        assert!(before_agent[0].get("_paneflow_managed").is_none());
-        assert!(before_agent[0].get("hooks").is_none());
+        // No Paneflow-only marker field (stricter parsers).
+        assert!(group.get("_paneflow_managed").is_none());
+        assert!(group.get("command").is_none());
         // Idempotent merge.
         merge_gemini_hooks(&mut root);
         assert_eq!(root["hooks"]["BeforeAgent"].as_array().unwrap().len(), 1);
@@ -979,7 +999,7 @@ mod tests {
             &dir,
             "settings.local.json",
             "CodeBuddy",
-            merge_paneflow_hooks,
+            merge_codebuddy_hooks,
             remove_paneflow_hooks,
         )
         .expect("install in fresh dir must succeed");
@@ -987,6 +1007,17 @@ mod tests {
         let content = std::fs::read_to_string(dir.join("settings.local.json")).unwrap();
         let root: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(root["hooks"]["UserPromptSubmit"].is_array());
+        let group = &root["hooks"]["UserPromptSubmit"][0];
+        assert!(
+            group.get("_paneflow_managed").is_none(),
+            "CodeBuddy public schema does not document Paneflow-only markers"
+        );
+        let handler = &root["hooks"]["UserPromptSubmit"][0]["hooks"][0];
+        assert_eq!(handler["type"], json!("command"));
+        assert!(
+            handler.get("commandWindows").is_none(),
+            "CodeBuddy public schema does not document commandWindows"
+        );
 
         drop(guard);
         assert!(
@@ -1098,6 +1129,12 @@ mod tests {
         assert!(
             root["hooks"].get("Notification").is_none(),
             "Notification must not be registered for Grok; PermissionRequest handles approvals"
+        );
+        assert!(
+            root["hooks"]["PreToolUse"][0]
+                .get("_paneflow_managed")
+                .is_none(),
+            "Grok public docs do not document Paneflow-only markers"
         );
         let cmd = root["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
             .as_str()

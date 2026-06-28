@@ -568,6 +568,29 @@ fn windows_cmd_hook_command(path: &Path, event: &str) -> String {
     format!("\"\"{}\" {event}\"", display_hook_program(path))
 }
 
+#[cfg(windows)]
+fn windows_plain_hook_command(path: &Path, event: &str) -> String {
+    format!("\"{}\" {event}", display_hook_program(path))
+}
+
+/// Render a single `command` field for agents that do not document a
+/// Windows-specific override. On Windows, prefer double quotes because these
+/// fields may be executed by cmd.exe rather than a POSIX shell; forward
+/// slashes keep the same string usable by Git Bash-style runners too.
+fn resolve_plain_hook_command(event: &str) -> String {
+    #[cfg(windows)]
+    {
+        match locate_sibling_hook_binary() {
+            Some(path) => windows_plain_hook_command(&path, event),
+            None => format!("{HOOK_COMMAND_PREFIX}{event}"),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        resolve_hook_command(event)
+    }
+}
+
 /// Render the hook binary's absolute path for the `command` string the agent
 /// writes into its hook config and later executes through a shell.
 ///
@@ -747,12 +770,43 @@ pub(crate) fn merge_paneflow_hooks(root: &mut serde_json::Value) {
     merge_matcher_hooks_for_events(root, CLAUDE_HOOK_EVENTS);
 }
 
-/// Claude-Code-FORMAT merge parameterized by event list, shared by Claude
-/// Code itself and its config-compatible clones (CodeBuddy: same five
-/// events; Qoder: four - no `Notification`). The format is the matcher-group
-/// shape: `hooks.<Event>: [{_paneflow_managed, hooks: [{type, command,
-/// timeout}]}]`.
+/// CodeBuddy uses the Claude matcher-group shape, but its public schema does
+/// not document `commandWindows`. Keep the object strict and put the
+/// cross-shell Windows quoting in the single `command` string.
+pub(crate) fn merge_codebuddy_hooks(root: &mut serde_json::Value) {
+    merge_strict_matcher_hooks_for_events_with(root, CLAUDE_HOOK_EVENTS, plain_hook_handler);
+}
+
 fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str]) {
+    merge_matcher_hooks_for_events_with(root, events, hook_handler);
+}
+
+fn merge_strict_matcher_hooks_for_events_with(
+    root: &mut serde_json::Value,
+    events: &[&str],
+    handler_for_event: fn(&str) -> serde_json::Value,
+) {
+    merge_matcher_hooks_for_events_with_marker(root, events, handler_for_event, false);
+}
+
+fn merge_matcher_hooks_for_events_with(
+    root: &mut serde_json::Value,
+    events: &[&str],
+    handler_for_event: fn(&str) -> serde_json::Value,
+) {
+    merge_matcher_hooks_for_events_with_marker(root, events, handler_for_event, true);
+}
+
+/// Matcher-group merge parameterized by event list. Claude/Codex get the
+/// Paneflow marker because their settings writers tolerate it; stricter
+/// clone schemas use the same shape without the marker and rely on command
+/// basename detection for cleanup.
+fn merge_matcher_hooks_for_events_with_marker(
+    root: &mut serde_json::Value,
+    events: &[&str],
+    handler_for_event: fn(&str) -> serde_json::Value,
+    include_marker: bool,
+) {
     let root_obj = match root.as_object_mut() {
         Some(o) => o,
         None => {
@@ -795,18 +849,15 @@ fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str])
         // hard-killed). Net effect stays idempotent: exactly one entry.
         array.retain(|g| !is_paneflow_matcher_group(g));
 
-        // The `_paneflow_managed` marker sits on the OUTER matcher-group
-        // wrapper - that's where `is_paneflow_matcher_group` checks it.
-        // The inner handler object carries the command-runner fields. On
-        // Windows, `commandWindows` keeps Codex off the bash/WSL path while
-        // `command` remains the cleanup/detection fallback shared with
-        // Claude-compatible runners.
-        array.push(serde_json::json!({
-            "_paneflow_managed": true,
-            "hooks": [
-                hook_handler(event)
-            ]
-        }));
+        let mut group = serde_json::Map::new();
+        if include_marker {
+            group.insert("_paneflow_managed".into(), serde_json::json!(true));
+        }
+        group.insert(
+            "hooks".into(),
+            serde_json::Value::Array(vec![handler_for_event(event)]),
+        );
+        array.push(serde_json::Value::Object(group));
     }
 }
 
@@ -826,6 +877,14 @@ fn hook_handler(event: &str) -> serde_json::Value {
         );
     }
     serde_json::Value::Object(handler)
+}
+
+fn plain_hook_handler(event: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "command",
+        "command": resolve_plain_hook_command(event),
+        "timeout": 5,
+    })
 }
 
 /// Remove PaneFlow's hook handlers from the parsed settings tree. Leaves
@@ -874,15 +933,15 @@ pub(crate) const QODER_HOOK_EVENTS: &[&str] =
 
 /// Qoder merge/remove - Claude Code format, reduced event list.
 pub(crate) fn merge_qoder_hooks(root: &mut serde_json::Value) {
-    merge_matcher_hooks_for_events(root, QODER_HOOK_EVENTS);
+    merge_strict_matcher_hooks_for_events_with(root, QODER_HOOK_EVENTS, plain_hook_handler);
 }
 pub(crate) fn remove_qoder_hooks(root: &mut serde_json::Value) {
     remove_matcher_hooks_for_events(root, QODER_HOOK_EVENTS);
 }
 
 /// Gemini CLI hook registrations as `(foreign_event, canonical_event)`.
-/// The CONFIG key uses Gemini's event vocabulary; the command's argv[1]
-/// carries our canonical Claude-shaped event name so `paneflow-ai-hook`
+/// The CONFIG key uses Gemini's event vocabulary; the hook command's final
+/// arg carries our canonical Claude-shaped event name so `paneflow-ai-hook`
 /// needs zero per-CLI mapping. `Notification` is deliberately skipped: its
 /// Gemini payload shape doesn't carry the `notification_type` whitelist the
 /// hook gates `WaitingForInput` on, so registering it would only burn a
@@ -895,7 +954,8 @@ pub(crate) const GEMINI_HOOK_EVENTS: &[(&str, &str)] = &[
 ];
 
 /// Cursor CLI (`cursor-agent`) hook registrations - camelCase vocabulary,
-/// same `(foreign, canonical)` translation as Gemini.
+/// same `(foreign, canonical)` translation as Gemini, but Cursor's config
+/// schema is flat rather than matcher-grouped.
 pub(crate) const CURSOR_HOOK_EVENTS: &[(&str, &str)] = &[
     ("beforeSubmitPrompt", "UserPromptSubmit"),
     ("stop", "Stop"),
@@ -903,11 +963,12 @@ pub(crate) const CURSOR_HOOK_EVENTS: &[(&str, &str)] = &[
     ("postToolUse", "PostToolUse"),
 ];
 
-/// Merge hook entries in the FLAT format shared by Gemini CLI and Cursor:
+/// Merge hook entries in Cursor's FLAT format:
 /// `hooks.<event>: [{command, timeout}]` - no matcher-group wrapper. No
-/// `_paneflow_managed` marker either: both parsers are stricter than Claude
-/// Code's about unknown fields, so ownership detection rides exclusively on
-/// the command basename ([`is_paneflow_hook_command`]). `version_field`
+/// `_paneflow_managed` marker either: Cursor's parser is stricter than
+/// Claude Code's about unknown fields, so ownership detection rides
+/// exclusively on the command basename ([`is_paneflow_hook_command`]).
+/// `version_field`
 /// stamps Cursor's required top-level `"version": 1` when absent.
 fn merge_flat_hooks_for_events(
     root: &mut serde_json::Value,
@@ -951,7 +1012,7 @@ fn merge_flat_hooks_for_events(
         // idempotent - exactly one paneflow entry per event.
         array.retain(|e| !is_paneflow_flat_entry(e));
         array.push(serde_json::json!({
-            "command": resolve_hook_command(canonical),
+            "command": resolve_plain_hook_command(canonical),
             "timeout": 5,
         }));
     }
@@ -997,16 +1058,82 @@ fn is_paneflow_flat_entry(value: &serde_json::Value) -> bool {
 /// Per-tool wrapper fns - `install_hook_config_file` takes plain `fn`
 /// pointers, so the event tables are baked in here.
 pub(crate) fn merge_gemini_hooks(root: &mut serde_json::Value) {
-    merge_flat_hooks_for_events(root, GEMINI_HOOK_EVENTS, false);
+    merge_gemini_hooks_for_events(root, GEMINI_HOOK_EVENTS);
 }
 pub(crate) fn remove_gemini_hooks(root: &mut serde_json::Value) {
-    remove_flat_hooks_for_events(root, GEMINI_HOOK_EVENTS);
+    remove_gemini_hooks_for_events(root, GEMINI_HOOK_EVENTS);
 }
 pub(crate) fn merge_cursor_hooks(root: &mut serde_json::Value) {
     merge_flat_hooks_for_events(root, CURSOR_HOOK_EVENTS, true);
 }
 pub(crate) fn remove_cursor_hooks(root: &mut serde_json::Value) {
     remove_flat_hooks_for_events(root, CURSOR_HOOK_EVENTS);
+}
+
+/// Gemini's current official hook schema is matcher-grouped:
+/// `hooks.<event>: [{ matcher, hooks: [{ name, type, command, timeout_ms }] }]`.
+/// Timeout is milliseconds for Gemini, unlike Cursor/Hermes' seconds.
+fn merge_gemini_hooks_for_events(root: &mut serde_json::Value, events: &[(&str, &str)]) {
+    let root_obj = match root.as_object_mut() {
+        Some(o) => o,
+        None => {
+            *root = serde_json::json!({});
+            let Some(o) = root.as_object_mut() else {
+                return;
+            };
+            o
+        }
+    };
+
+    let hooks_entry = root_obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(hooks_obj) = hooks_entry.as_object_mut() else {
+        *hooks_entry = serde_json::json!({});
+        return;
+    };
+
+    for (foreign, canonical) in events {
+        let entry = hooks_obj
+            .entry(*foreign)
+            .or_insert_with(|| serde_json::json!([]));
+        let Some(array) = entry.as_array_mut() else {
+            continue;
+        };
+        array.retain(|g| !is_paneflow_matcher_group(g));
+        array.push(serde_json::json!({
+            "matcher": "*",
+            "hooks": [
+                {
+                    "name": "paneflow-status",
+                    "type": "command",
+                    "command": resolve_plain_hook_command(canonical),
+                    "timeout": 5000,
+                }
+            ]
+        }));
+    }
+}
+
+fn remove_gemini_hooks_for_events(root: &mut serde_json::Value, events: &[(&str, &str)]) {
+    let Some(root_obj) = root.as_object_mut() else {
+        return;
+    };
+    if let Some(hooks_obj) = root_obj.get_mut("hooks").and_then(|v| v.as_object_mut()) {
+        for (foreign, _) in events {
+            if let Some(array) = hooks_obj.get_mut(*foreign).and_then(|v| v.as_array_mut()) {
+                array.retain(|entry| !is_paneflow_matcher_group(entry));
+            }
+        }
+        hooks_obj.retain(|_k, v| v.as_array().is_none_or(|a| !a.is_empty()));
+    }
+    let hooks_empty = root_obj
+        .get("hooks")
+        .and_then(|v| v.as_object())
+        .is_none_or(serde_json::Map::is_empty);
+    if hooks_empty {
+        root_obj.remove("hooks");
+    }
 }
 
 /// RAII guard for every JSON-config agent beyond Claude/Codex (CodeBuddy,
@@ -1395,10 +1522,10 @@ impl GrokHookFileGuard {
         std::fs::create_dir_all(hooks_dir).ok()?;
         let hook_path = hooks_dir.join("paneflow.json");
         // Grok's hook schema is the Claude matcher-group shape verbatim
-        // (timeout in seconds, `type: command`) - reuse the shared merge on
-        // an empty root.
+        // (timeout in seconds, `type: command`) but its public docs do not
+        // document `commandWindows`, so use the strict one-command handler.
         let mut root = serde_json::json!({});
-        merge_matcher_hooks_for_events(&mut root, GROK_HOOK_EVENTS);
+        merge_strict_matcher_hooks_for_events_with(&mut root, GROK_HOOK_EVENTS, plain_hook_handler);
         write_atomic(&hook_path, &root).ok()?;
         Some(Self { hook_path })
     }
@@ -1443,7 +1570,7 @@ fn yaml_quote(s: &str) -> String {
 ///   universal `ai.exit`/`ai.session_end` already covers the lifecycle and
 ///   registering them would double-fire.
 fn hermes_managed_block() -> String {
-    let q = |event: &str| yaml_quote(&resolve_hook_command(event));
+    let q = |event: &str| yaml_quote(&resolve_plain_hook_command(event));
     format!(
         "{HERMES_BLOCK_BEGIN}\n\
          hooks:\n\
@@ -1676,11 +1803,24 @@ pub(crate) const CODEX_HOOK_EVENTS: &[&str] = &[
 /// flag is toggled - Codex enables hooks by default on Windows.
 #[cfg(not(unix))]
 pub(crate) fn merge_codex_hooks_win(root: &mut serde_json::Value) {
-    merge_matcher_hooks_for_events(root, CODEX_HOOK_EVENTS);
+    merge_matcher_hooks_for_events_with(root, CODEX_HOOK_EVENTS, codex_windows_hook_handler);
 }
 #[cfg(not(unix))]
 pub(crate) fn remove_codex_hooks_win(root: &mut serde_json::Value) {
     remove_matcher_hooks_for_events(root, CODEX_HOOK_EVENTS);
+}
+
+#[cfg(windows)]
+fn codex_windows_hook_handler(event: &str) -> serde_json::Value {
+    let mut handler = hook_handler(event);
+    let command = match locate_sibling_hook_binary() {
+        Some(path) => windows_plain_hook_command(&path, event),
+        None => format!("{HOOK_COMMAND_PREFIX}{event}"),
+    };
+    if let Some(obj) = handler.as_object_mut() {
+        obj.insert("command".into(), serde_json::Value::String(command));
+    }
+    handler
 }
 
 /// Marker for the TOML comment placed above `hooks = true` in
@@ -2324,6 +2464,18 @@ mod hooks_tests {
         ));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_plain_hook_command_quotes_program_files_path_for_cmd_fallback() {
+        let p = Path::new(r"C:\Program Files\PaneFlow\bin\paneflow-ai-hook.exe");
+        let cmd = super::windows_plain_hook_command(p, "UserPromptSubmit");
+        assert_eq!(
+            cmd,
+            "\"C:/Program Files/PaneFlow/bin/paneflow-ai-hook.exe\" UserPromptSubmit"
+        );
+        assert!(is_paneflow_hook_command(&cmd));
+    }
+
     /// Unix path rendering is unchanged (no separator rewrite).
     #[cfg(unix)]
     #[test]
@@ -2357,6 +2509,14 @@ mod hooks_tests {
             let handler = &arr[0]["hooks"][0];
             let cmd = handler["command"].as_str().unwrap();
             assert!(cmd.ends_with(&format!(" {event}")), "{event}: {cmd}");
+            assert!(
+                !cmd.starts_with('\''),
+                "{event}: command must not rely on POSIX single quotes on Windows: {cmd}"
+            );
+            assert!(
+                super::is_paneflow_hook_command(cmd),
+                "{event}: command fallback must remain basename-detectable: {cmd}"
+            );
             let win_cmd = handler["commandWindows"].as_str().unwrap();
             assert!(
                 win_cmd.starts_with("cmd.exe /D /C "),

@@ -76,7 +76,7 @@ scan.
 | Codex | hooks.json + TOML feature flag (Unix); JSONL tee (Windows) | `./.codex/hooks.json` | SessionStart, UserPromptSubmit, Stop, Pre/PostToolUse, PermissionRequest |
 | CodeBuddy | Claude-compatible clone | `./.codebuddy/settings.local.json` | same five as Claude Code |
 | Qoder | Claude-compatible clone | `./.qoder/settings.local.json` | four (no Notification) |
-| Gemini CLI | flat hooks in settings | `~/.gemini/settings.json` | BeforeAgent→UserPromptSubmit, AfterAgent→Stop, Before/AfterTool→Pre/PostToolUse |
+| Gemini CLI | matcher-group hooks in settings | `~/.gemini/settings.json` | BeforeAgent→UserPromptSubmit, AfterAgent→Stop, Before/AfterTool→Pre/PostToolUse |
 | Cursor | flat hooks.json (`version: 1`) | `~/.cursor/hooks.json` | beforeSubmitPrompt, stop, pre/postToolUse |
 | OpenCode | TS plugin + `plugin` entry | `~/.config/opencode/plugins/paneflow-status.ts` + `opencode.json` | chat.message, tool.execute.before/after, session.idle, permission.asked |
 | Pi | TS extension (auto-loaded) | `~/.pi/agent/extensions/paneflow-status.ts` | agent_start/end, tool_execution_start/end |
@@ -88,9 +88,11 @@ ownership detection by command basename (`paneflow-ai-hook`), orphan sweep on
 the next launch after a SIGKILL, and refusal paths that protect user files -
 a symlinked config dir, an unparseable PRIMARY config (`opencode.json`,
 `~/.hermes/config.yaml` with an existing `hooks:` key), or a `.jsonc`-only
-OpenCode setup all skip the install instead of clobbering. The TS bridges are
-env-gated on `PANEFLOW_SOCKET_PATH`, so they are inert when the CLI runs
-outside a Paneflow terminal.
+OpenCode setup all skip the install instead of clobbering. Agents without a
+documented Windows-specific hook field receive a single `command` string with
+Windows-safe quoting on Windows rather than an undocumented extra field. The
+TS bridges are env-gated on `PANEFLOW_SOCKET_PATH`, so they are inert when the
+CLI runs outside a Paneflow terminal.
 
 Deliberately not integrated (no safe surface): **Copilot CLI** (no hooks, no
 JSON stream), **Factory Droid** (dashboard-managed hooks), **Kiro** (hooks
