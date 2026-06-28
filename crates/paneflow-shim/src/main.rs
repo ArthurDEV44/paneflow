@@ -1090,12 +1090,14 @@ mod tests {
         let path = hooks_dir.join("paneflow.json");
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // Claude matcher-group shape, reduced event set.
+        // Claude matcher-group shape, reduced event set with explicit
+        // permission requests.
         assert!(root["hooks"]["UserPromptSubmit"].is_array());
+        assert!(root["hooks"]["PermissionRequest"].is_array());
         assert!(root["hooks"]["Stop"].is_array());
         assert!(
             root["hooks"].get("Notification").is_none(),
-            "Notification must not be registered for Grok (whitelist-dropped)"
+            "Notification must not be registered for Grok; PermissionRequest handles approvals"
         );
         let cmd = root["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
             .as_str()

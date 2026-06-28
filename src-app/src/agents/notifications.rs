@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gpui::BackgroundExecutor;
 use paneflow_config::schema::{AgentPanelConfig, NotifyWhenAgentWaiting, PaneFlowConfig};
 
+use crate::agent_launcher::TerminalAgent;
+
+const NOTIFICATION_DETAIL_CAP_CHARS: usize = 512;
+
 /// Stable Windows AppUserModelID. The WiX Start Menu shortcut mirrors this in
 /// `packaging/wix/main.wxs`; the dev/unpackaged path also registers it under
 /// HKCU\Software\Classes\AppUserModelId before showing a toast.
@@ -56,33 +60,45 @@ pub(crate) struct DesktopNotification {
 }
 
 impl DesktopNotification {
-    pub(crate) fn turn_finished(workspace_title: &str) -> Self {
+    pub(crate) fn turn_finished(
+        agent: TerminalAgent,
+        workspace_title: &str,
+        session_summary: Option<&str>,
+    ) -> Self {
         Self {
-            summary: "Agent finished".to_string(),
-            body: format!("{workspace_title} is ready."),
+            summary: format!("{} finished", agent.display_name()),
+            body: notification_context_body(workspace_title, session_summary),
             urgency: DesktopNotificationUrgency::Normal,
         }
     }
 
-    pub(crate) fn needs_input(workspace_title: &str, message: Option<&str>) -> Self {
+    pub(crate) fn needs_input(
+        agent: TerminalAgent,
+        workspace_title: &str,
+        message: Option<&str>,
+    ) -> Self {
         Self {
-            summary: "Paneflow needs your input".to_string(),
+            summary: format!("{} needs input", agent.display_name()),
             body: attention_notification_body(workspace_title, message),
             urgency: DesktopNotificationUrgency::Critical,
         }
     }
 
-    pub(crate) fn agent_exited(workspace_title: &str, exit_code: i32) -> Self {
+    pub(crate) fn agent_exited(
+        agent: TerminalAgent,
+        workspace_title: &str,
+        exit_code: i32,
+    ) -> Self {
         Self {
-            summary: "Agent exited unexpectedly".to_string(),
+            summary: format!("{} exited unexpectedly", agent.display_name()),
             body: agent_exit_notification_body(workspace_title, exit_code),
             urgency: DesktopNotificationUrgency::Critical,
         }
     }
 
-    pub(crate) fn stalled(workspace_title: &str, silent_secs: u64) -> Self {
+    pub(crate) fn stalled(agent: TerminalAgent, workspace_title: &str, silent_secs: u64) -> Self {
         Self {
-            summary: "Agent may be stuck".to_string(),
+            summary: format!("{} may be stuck", agent.display_name()),
             body: stalled_notification_body(workspace_title, silent_secs),
             urgency: DesktopNotificationUrgency::Critical,
         }
@@ -130,19 +146,41 @@ pub(crate) fn sanitize_notification_message(raw: &str) -> String {
     crate::markdown::strip_bidi_zero_width(raw.chars().take(512).collect())
 }
 
+fn notification_detail(raw: &str) -> Option<String> {
+    let clean: String = crate::markdown::strip_bidi_zero_width(
+        raw.chars().take(NOTIFICATION_DETAIL_CAP_CHARS).collect(),
+    )
+    .trim()
+    .to_string();
+    (!clean.is_empty()).then_some(clean)
+}
+
+pub(crate) fn notification_context_body(
+    workspace_title: &str,
+    session_summary: Option<&str>,
+) -> String {
+    session_summary
+        .and_then(notification_detail)
+        .or_else(|| notification_detail(workspace_title))
+        .unwrap_or_else(|| "Paneflow".to_string())
+}
+
 pub(crate) fn attention_notification_body(workspace_title: &str, message: Option<&str>) -> String {
-    match message.filter(|m| !m.trim().is_empty()) {
-        Some(m) => format!("{workspace_title}: {m}"),
-        None => format!("{workspace_title}: approval needed"),
-    }
+    notification_context_body(workspace_title, message)
 }
 
 pub(crate) fn agent_exit_notification_body(workspace_title: &str, exit_code: i32) -> String {
-    format!("{workspace_title}: agent exited with code {exit_code}")
+    format!(
+        "{}: exited with code {exit_code}",
+        notification_context_body(workspace_title, None)
+    )
 }
 
 pub(crate) fn stalled_notification_body(workspace_title: &str, silent_secs: u64) -> String {
-    format!("{workspace_title}: no agent activity for {silent_secs} s")
+    format!(
+        "{}: no activity for {silent_secs} s",
+        notification_context_body(workspace_title, None)
+    )
 }
 
 fn show_desktop_notification(notification: DesktopNotification) -> Result<(), String> {
@@ -278,36 +316,47 @@ mod tests {
     fn notification_bodies_are_specific_and_non_empty() {
         assert_eq!(
             attention_notification_body("backend", Some("Allow `cargo test`?")),
-            "backend: Allow `cargo test`?"
+            "Allow `cargo test`?"
         );
-        assert_eq!(
-            attention_notification_body("backend", None),
-            "backend: approval needed"
-        );
+        assert_eq!(attention_notification_body("backend", None), "backend");
         assert_eq!(
             attention_notification_body("backend", Some("   ")),
-            "backend: approval needed"
+            "backend"
         );
         assert_eq!(
             agent_exit_notification_body("api", 1),
-            "api: agent exited with code 1"
+            "api: exited with code 1"
         );
         assert_eq!(
             stalled_notification_body("api", 300),
-            "api: no agent activity for 300 s"
+            "api: no activity for 300 s"
+        );
+        assert_eq!(
+            notification_context_body("workspace", Some("Finished the release draft")),
+            "Finished the release draft"
         );
     }
 
     #[test]
     fn desktop_notification_constructors_set_title_body_and_urgency() {
-        let finished = DesktopNotification::turn_finished("backend");
-        assert_eq!(finished.summary, "Agent finished");
-        assert_eq!(finished.body, "backend is ready.");
+        let finished =
+            DesktopNotification::turn_finished(TerminalAgent::Codex, "backend", Some("Tests pass"));
+        assert_eq!(finished.summary, "Codex finished");
+        assert_eq!(finished.body, "Tests pass");
         assert_eq!(finished.urgency, DesktopNotificationUrgency::Normal);
 
-        let attention = DesktopNotification::needs_input("backend", Some("Approve edit?"));
-        assert_eq!(attention.summary, "Paneflow needs your input");
-        assert_eq!(attention.body, "backend: Approve edit?");
+        let finished_without_summary =
+            DesktopNotification::turn_finished(TerminalAgent::Codex, "backend", None);
+        assert_eq!(finished_without_summary.summary, "Codex finished");
+        assert_eq!(finished_without_summary.body, "backend");
+
+        let attention = DesktopNotification::needs_input(
+            TerminalAgent::ClaudeCode,
+            "backend",
+            Some("Approve edit?"),
+        );
+        assert_eq!(attention.summary, "Claude Code needs input");
+        assert_eq!(attention.body, "Approve edit?");
         assert_eq!(attention.urgency, DesktopNotificationUrgency::Critical);
     }
 }

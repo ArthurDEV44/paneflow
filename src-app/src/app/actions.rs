@@ -147,6 +147,7 @@ actions!(
         // cross-workspace with its question + wait time; `OpenLaunchPad`
         // (US-005) is the worktree + split + agent + prefill one-gesture
         // modal.
+        ToggleRosettaSurface,
         OpenAttentionQueue,
         OpenLaunchPad
     ]

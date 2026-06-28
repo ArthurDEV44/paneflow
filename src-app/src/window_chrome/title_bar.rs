@@ -12,6 +12,7 @@ pub struct TitleBar {
     should_move: bool,
     pub workspace_name: Option<String>,
     pub sidebar_visible: bool,
+    pub rosetta_surface_open: bool,
     pub files_menu_open: bool,
     pub help_menu_open: bool,
     pub ipc_state: crate::ipc::IpcState,
@@ -113,6 +114,7 @@ impl TitleBar {
             should_move: false,
             workspace_name: None,
             sidebar_visible: true,
+            rosetta_surface_open: false,
             files_menu_open: false,
             help_menu_open: false,
             ipc_state: crate::ipc::IpcState::Online,
@@ -130,6 +132,7 @@ impl TitleBar {
 pub enum TitleBarEvent {
     CloseRequested,
     ToggleSidebar,
+    ToggleRosettaSurface,
     ToggleFilesMenu(gpui::Point<gpui::Pixels>),
     ToggleHelpMenu(gpui::Point<gpui::Pixels>),
 }
@@ -238,12 +241,19 @@ impl Render for TitleBar {
             gpui::px(12.0)
         };
         let toggle_sidebar_handle = cx.entity().downgrade();
+        let toggle_rosetta_handle = cx.entity().downgrade();
         let toggle_files_menu_handle = cx.entity().downgrade();
         let toggle_help_menu_handle = cx.entity().downgrade();
         let sidebar_tooltip: gpui::SharedString = if self.sidebar_visible {
             "Hide sidebar"
         } else {
             "Show sidebar"
+        }
+        .into();
+        let rosetta_tooltip: gpui::SharedString = if self.rosetta_surface_open {
+            "Hide Rosetta"
+        } else {
+            "Show Rosetta"
         }
         .into();
         let mut brand = div()
@@ -289,6 +299,42 @@ impl Render for TitleBar {
                             .path("icons/sidebar.svg")
                             .text_color(ui.muted),
                     ),
+            )
+            .child(
+                div()
+                    .id("toggle-rosetta-surface")
+                    .flex_none()
+                    .w(px(24.))
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(self.rosetta_surface_open, |d| {
+                        d.bg(crate::app::constants::sidebar_tab_active_background())
+                    })
+                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+                    .tooltip(move |_window, cx| {
+                        let label = rosetta_tooltip.clone();
+                        cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
+                            .into()
+                    })
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(entity) = toggle_rosetta_handle.upgrade() {
+                            entity.update(cx, |_this, cx| {
+                                cx.emit(TitleBarEvent::ToggleRosettaSurface);
+                            });
+                        }
+                    })
+                    .child(svg().size(px(14.)).path("icons/bell.svg").text_color(
+                        if self.rosetta_surface_open {
+                            ui.text
+                        } else {
+                            ui.muted
+                        },
+                    )),
             )
             .child(
                 div()

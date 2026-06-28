@@ -18,6 +18,9 @@ use crate::PaneFlowApp;
 use crate::settings::components::{select_item, select_menu_surface, with_alpha};
 use crate::window_chrome::title_bar::{SelfUpdatePillState, SystemPackageKind, UpdatePillKind};
 
+const SIDEBAR_UPDATE_SHIMMER_MS: u64 = 2600;
+const SIDEBAR_UPDATE_IRIS_COLORS: [u32; 5] = [0x2f6fff, 0x1da8ff, 0x8ea7ff, 0xb68cff, 0xf2f7ff];
+
 impl PaneFlowApp {
     /// Update CTA banner at the bottom of the sidebar, above the Settings
     /// trigger. Replaces the title-bar update pill in the cockpit modes
@@ -59,6 +62,12 @@ impl PaneFlowApp {
             UpdatePillKind::InApp(SelfUpdatePillState::Idle | SelfUpdatePillState::Errored)
                 | UpdatePillKind::SystemManaged(_)
         );
+        let label_element = if matches!(info.kind, UpdatePillKind::InApp(SelfUpdatePillState::Idle))
+        {
+            render_update_available_label(&format!("v{}", info.version), ui)
+        } else {
+            render_update_plain_label(&label, ui)
+        };
 
         let leading_icon: AnyElement = if busy {
             svg()
@@ -91,27 +100,16 @@ impl PaneFlowApp {
             .id("sidebar-update-banner")
             .mx(px(6.))
             .mb(px(2.))
+            .h(px(30.))
             .px(px(8.))
-            .py(px(6.))
-            .rounded(px(6.))
-            .border_1()
-            .border_color(ui.border)
-            .bg(ui.subtle)
+            .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
+            .bg(crate::app::constants::sidebar_tab_active_background())
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.))
             .child(leading_icon)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(ui.text)
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .truncate()
-                    .child(label),
-            );
+            .child(label_element);
 
         if dismissable {
             let muted = ui.muted;
@@ -145,8 +143,7 @@ impl PaneFlowApp {
                 .cursor_pointer()
                 .when(system_hint, |d| d.opacity(0.8))
                 .hover(move |s| {
-                    let ui = crate::theme::ui_colors();
-                    let s = s.bg(ui.surface).border_color(ui.muted);
+                    let s = s.bg(crate::app::constants::sidebar_tab_hover_background());
                     if system_hint { s.opacity(1.0) } else { s }
                 })
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -433,4 +430,100 @@ fn render_menu_item(
                 .child(item.label),
         )
         .into_any_element()
+}
+
+fn render_update_available_label(version: &str, ui: crate::theme::UiColors) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w_0()
+        .text_size(px(12.))
+        .font_weight(FontWeight::BOLD)
+        .truncate()
+        .flex()
+        .flex_row()
+        .child(render_update_shimmer_text(
+            version,
+            gpui::Hsla::from(gpui::rgb(SIDEBAR_UPDATE_IRIS_COLORS[2])).opacity(0.88),
+        ))
+        .child(div().text_color(ui.text).child(" available"))
+        .into_any_element()
+}
+
+fn render_update_plain_label(label: &str, ui: crate::theme::UiColors) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w_0()
+        .text_size(px(12.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(ui.text)
+        .truncate()
+        .child(label.to_string())
+        .into_any_element()
+}
+
+fn render_update_shimmer_text(label: &str, base_color: gpui::Hsla) -> AnyElement {
+    let letter_count = label.chars().count() as f32;
+
+    div()
+        .flex()
+        .flex_row()
+        .children(label.chars().enumerate().map(|(index, ch)| {
+            div()
+                .text_color(base_color)
+                .child(ch.to_string())
+                .with_animation(
+                    SharedString::from(format!("sidebar-update-shimmer-letter-{index}")),
+                    Animation::new(Duration::from_millis(SIDEBAR_UPDATE_SHIMMER_MS)).repeat(),
+                    move |letter, delta| {
+                        letter.text_color(update_shimmer_color(
+                            base_color,
+                            index,
+                            letter_count,
+                            delta,
+                        ))
+                    },
+                )
+                .into_any_element()
+        }))
+        .into_any_element()
+}
+
+fn update_shimmer_color(
+    base_color: gpui::Hsla,
+    index: usize,
+    letter_count: f32,
+    delta: f32,
+) -> gpui::Hsla {
+    let width = letter_count.max(1.);
+    let letter_phase = index as f32 / width;
+    let phase = (delta + letter_phase * 0.32).fract();
+    let iris_color = update_iris_color_at(phase);
+    let highlight = ((phase * std::f32::consts::TAU).sin() + 1.) * 0.5;
+    let hue = lerp(base_color.h, iris_color.h, 0.92);
+    let saturation = lerp(base_color.s, iris_color.s, 0.9);
+    let lightness = (lerp(base_color.l, iris_color.l, 0.9) + highlight * 0.035).min(0.94);
+    let alpha = lerp(base_color.a, 0.98, 0.86);
+
+    gpui::hsla(hue, saturation, lightness, alpha)
+}
+
+fn update_iris_color_at(phase: f32) -> gpui::Hsla {
+    let palette_len = SIDEBAR_UPDATE_IRIS_COLORS.len();
+    let scaled = phase * palette_len as f32;
+    let start = scaled.floor() as usize % palette_len;
+    let end = (start + 1) % palette_len;
+    let amount = scaled.fract();
+    let a = gpui::Hsla::from(gpui::rgb(SIDEBAR_UPDATE_IRIS_COLORS[start]));
+    let b = gpui::Hsla::from(gpui::rgb(SIDEBAR_UPDATE_IRIS_COLORS[end]));
+
+    gpui::hsla(
+        lerp(a.h, b.h, amount),
+        lerp(a.s, b.s, amount),
+        lerp(a.l, b.l, amount),
+        lerp(a.a, b.a, amount),
+    )
+}
+
+fn lerp(from: f32, to: f32, amount: f32) -> f32 {
+    from + (to - from) * amount
 }

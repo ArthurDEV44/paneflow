@@ -744,6 +744,10 @@ impl PaneFlowApp {
         cx.observe(&settings_search_input, |_, _, cx| cx.notify())
             .detach();
 
+        let cached_config = paneflow_config::loader::load_config();
+        let effective_shortcuts = keybindings::effective_shortcuts(&cached_config.shortcuts);
+        let rosetta_passive_display_enabled = cached_config.rosetta_show_passive_enabled();
+
         let mut app = Self {
             workspaces,
             active_idx,
@@ -752,7 +756,7 @@ impl PaneFlowApp {
             pending_config,
             save_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             // US-014: hydrate the render-path config cache once at startup.
-            cached_config: paneflow_config::loader::load_config(),
+            cached_config,
             ipc_rx,
             ipc_status,
             event_bus,
@@ -782,9 +786,7 @@ impl PaneFlowApp {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             sidebar_scroll: gpui::ScrollHandle::new(),
-            effective_shortcuts: keybindings::effective_shortcuts(
-                &paneflow_config::loader::load_config().shortcuts,
-            ),
+            effective_shortcuts,
             recording_shortcut_idx: None,
             settings_focus: cx.focus_handle(),
             mono_font_names: Vec::new(),
@@ -848,6 +850,17 @@ impl PaneFlowApp {
             attention_queue_open: false,
             attention_queue_selected: 0,
             attention_queue_focus: cx.focus_handle(),
+            rosetta_recent_history: crate::app::rosetta::RosettaRecentHistory::default(),
+            rosetta_surface_expanded: false,
+            rosetta_surface_selected: 0,
+            rosetta_surface_selected_key: None,
+            rosetta_surface_focus: cx.focus_handle(),
+            rosetta_surface_scroll: gpui::ScrollHandle::new(),
+            rosetta_surface_pending_focus: false,
+            rosetta_snoozed_rows: std::collections::HashMap::new(),
+            rosetta_dismissed_rows: std::collections::HashSet::new(),
+            rosetta_read_rows: std::collections::HashSet::new(),
+            rosetta_passive_display_enabled,
             // EP-006 US-018 (cli-cockpit): fleet grep closed.
             fleet_search: None,
             fleet_search_generation: 0,

@@ -377,6 +377,36 @@ impl PaneFlowApp {
                     self.agents_view.sidebar_mode_picker_open = false;
                 }
             }
+            title_bar::TitleBarEvent::ToggleRosettaSurface => {
+                self.title_bar_files_menu_open = None;
+                self.title_bar_help_menu_open = None;
+                self.workspace_menu_open = None;
+                self.tab_menu_open = None;
+                self.profile_menu_open = None;
+                self.files_menu_open = None;
+                self.agents_view.agents_menu_open = None;
+                self.agents_view.sidebar_actions_menu_open = false;
+                self.agents_view.sidebar_mode_picker_open = false;
+
+                if self.rosetta_surface_expanded {
+                    self.rosetta_surface_expanded = false;
+                    self.rosetta_surface_selected = 0;
+                    self.rosetta_surface_selected_key = None;
+                    self.rosetta_surface_pending_focus = false;
+                } else {
+                    let projection = self.rosetta_projection(std::time::Instant::now());
+                    self.rosetta_surface_expanded = true;
+                    self.rosetta_surface_selected = self
+                        .rosetta_surface_selected
+                        .min(projection.rows.len().saturating_sub(1));
+                    self.rosetta_surface_selected_key = projection
+                        .rows
+                        .get(self.rosetta_surface_selected)
+                        .map(crate::app::rosetta::RosettaRow::key);
+                    self.rosetta_surface_pending_focus = true;
+                }
+                cx.notify();
+            }
             title_bar::TitleBarEvent::ToggleFilesMenu(anchor) => {
                 self.title_bar_files_menu_open =
                     self.title_bar_files_menu_open.is_none().then_some(*anchor);
@@ -1062,7 +1092,8 @@ impl PaneFlowApp {
         } else {
             None
         };
-        let mut stalled_notifs: Vec<(String, u64, bool)> = Vec::new();
+        let mut stalled_notifs: Vec<(crate::agent_launcher::TerminalAgent, String, u64, bool)> =
+            Vec::new();
         for ws in &mut self.workspaces {
             if ws.agent_sessions.is_empty() {
                 continue;
@@ -1100,6 +1131,7 @@ impl PaneFlowApp {
                         // clear defensively rather than rely on that.
                         session.waiting_since = None;
                         stalled_notifs.push((
+                            session.tool,
                             ws.title.clone(),
                             session.last_activity.elapsed().as_secs(),
                             active_workspace_id == Some(ws.id),
@@ -1143,8 +1175,9 @@ impl PaneFlowApp {
         // EP-004 US-011: fire AFTER the state writes so the notification and
         // the UI agree. One entry per Thinking→Stalled transition == one
         // notification per stall episode (PRD dedup AC).
-        for (title, silent_secs, source_visible) in stalled_notifs {
+        for (agent, title, silent_secs, source_visible) in stalled_notifs {
             super::ipc_handler::fire_stalled_notification(
+                agent,
                 &title,
                 silent_secs,
                 &self.cached_config,

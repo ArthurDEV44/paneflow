@@ -1352,13 +1352,19 @@ fn is_paneflow_plugin_entry(value: &serde_json::Value) -> bool {
 // Grok (`~/.grok/hooks/paneflow.json` - dedicated merged hook file)
 // ---------------------------------------------------------------------------
 
-/// Grok Build hook events - PascalCase, Claude-compatible names. Same
-/// reduced set as Qoder: `Notification` is skipped (Grok's stdin payload
-/// has no `notification_type`, so the hook's whitelist would drop every
-/// frame) and `SessionStart`/`SessionEnd` are covered by the shim's
-/// universal lifecycle.
-pub(crate) const GROK_HOOK_EVENTS: &[&str] =
-    &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
+/// Grok Build hook events - PascalCase, Claude-compatible names.
+/// `Notification` is skipped (Grok's stdin payload has no
+/// `notification_type`, so the hook's whitelist would drop every frame);
+/// approval prompts use `PermissionRequest`, which `paneflow-ai-hook`
+/// normalizes to `notification_type: "permission_prompt"`.
+/// `SessionStart`/`SessionEnd` are covered by the shim's universal lifecycle.
+pub(crate) const GROK_HOOK_EVENTS: &[&str] = &[
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PermissionRequest",
+    "Stop",
+];
 
 /// RAII guard for Grok: writes a DEDICATED `~/.grok/hooks/paneflow.json`
 /// (Grok merges every `*.json` in that dir at discovery - global hooks are
