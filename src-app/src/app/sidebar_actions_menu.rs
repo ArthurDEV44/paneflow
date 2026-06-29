@@ -32,7 +32,7 @@ impl PaneFlowApp {
     /// `None` when no update is available.
     pub(crate) fn render_sidebar_update_banner(
         &self,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let info = self.update_pill_info()?;
         let ui = crate::theme::ui_colors();
@@ -128,10 +128,10 @@ impl PaneFlowApp {
                     // dispatch - hitting × must not start the update it
                     // just dismissed.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(|_, window, cx| {
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        window.dispatch_action(Box::new(crate::DismissUpdate), cx);
-                    })
+                        this.handle_dismiss_update(&crate::DismissUpdate, window, cx);
+                    }))
                     .child("×"),
             );
         }
@@ -146,10 +146,13 @@ impl PaneFlowApp {
                     let s = s.bg(crate::app::constants::sidebar_tab_hover_background());
                     if system_hint { s.opacity(1.0) } else { s }
                 })
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    cx.stop_propagation();
-                    window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
-                });
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.handle_start_self_update(&crate::StartSelfUpdate, window, cx);
+                    }),
+                );
         }
 
         Some(banner.into_any_element())
