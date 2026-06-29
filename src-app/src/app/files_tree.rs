@@ -59,6 +59,13 @@ impl FilesTreeState {
         }
     }
 
+    /// Whether the root directory has completed its first listing read. A
+    /// root shell intentionally starts without this entry so the UI can show
+    /// a transient loading state instead of a false empty folder.
+    pub(crate) fn root_listing_ready(&self) -> bool {
+        self.children.contains_key(&self.root)
+    }
+
     /// Build a state rooted at `root`, restoring `persisted` expanded
     /// directories (US-007). The root is always expanded; each persisted path
     /// is restored only if it still resolves to a directory under the root -
@@ -128,11 +135,7 @@ pub(crate) fn read_dir_sorted(root: &Path, dir: &Path) -> Vec<FileNode> {
         .map(|entry| {
             let path = entry.path();
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            let is_hidden = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with('.'))
-                .unwrap_or(false);
+            let is_hidden = is_hidden_name(&path) || has_windows_hidden_attribute(&entry);
             let is_ignored = gitignore
                 .as_ref()
                 .map(|gi| gi.matched(&path, is_dir).is_ignore())
@@ -147,6 +150,28 @@ pub(crate) fn read_dir_sorted(root: &Path, dir: &Path) -> Vec<FileNode> {
         .collect();
     nodes.sort_by(compare_nodes);
     nodes
+}
+
+fn is_hidden_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with('.'))
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn has_windows_hidden_attribute(entry: &std::fs::DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    entry
+        .metadata()
+        .map(|m| m.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn has_windows_hidden_attribute(_entry: &std::fs::DirEntry) -> bool {
+    false
 }
 
 /// Build a gitignore matcher rooted at `root` that folds in every `.gitignore`
@@ -197,21 +222,18 @@ pub(crate) fn workspace_relative_path(root: &Path, path: &Path) -> String {
 /// the set - a parent re-read subsumes its queued descendants (the burst-safe
 /// "parent change drops queued child events" rule). Pure / unit-tested.
 pub(crate) fn coalesce_by_prefix(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut unique: Vec<PathBuf> = Vec::new();
-    for d in dirs {
-        if !unique.contains(&d) {
-            unique.push(d);
+    let mut dirs = dirs;
+    dirs.sort();
+    dirs.dedup();
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in dirs {
+        if out.last().is_some_and(|parent| dir.starts_with(parent)) {
+            continue;
         }
+        out.push(dir);
     }
-    unique
-        .iter()
-        .filter(|d| {
-            !unique
-                .iter()
-                .any(|other| *other != **d && d.starts_with(other))
-        })
-        .cloned()
-        .collect()
+    out
 }
 
 fn push_children(
@@ -257,6 +279,16 @@ mod tests {
             is_ignored: false,
             is_hidden: false,
         }
+    }
+
+    #[test]
+    fn root_shell_marks_root_listing_not_ready() {
+        let root = PathBuf::from("/r");
+        let shell = FilesTreeState::root_shell(root.clone());
+        assert!(!shell.root_listing_ready());
+
+        let hydrated = FilesTreeState::hydrated(root, &[]);
+        assert!(hydrated.root_listing_ready());
     }
 
     #[test]
@@ -388,5 +420,30 @@ mod tests {
         let children = HashMap::new();
         let expanded = HashSet::new();
         assert!(flatten_visible(&root, &expanded, &children).is_empty());
+    }
+
+    #[test]
+    fn hydrated_restores_existing_dirs_and_drops_stale_dirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        let src = root.join("src");
+        let stale = root.join("stale");
+        std::fs::create_dir(&src).expect("src dir");
+        std::fs::write(src.join("lib.rs"), "").expect("src file");
+
+        let tree = FilesTreeState::hydrated(root.clone(), &[src.clone(), stale.clone()]);
+
+        assert!(tree.expanded.contains(&root));
+        assert!(tree.expanded.contains(&src));
+        assert!(!tree.expanded.contains(&stale));
+        assert!(tree.children.contains_key(&root));
+        assert!(tree.children.contains_key(&src));
+        assert!(
+            tree.children
+                .get(&src)
+                .expect("src listing")
+                .iter()
+                .any(|node| node.path == src.join("lib.rs"))
+        );
     }
 }

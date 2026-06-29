@@ -89,12 +89,7 @@ impl PaneFlowApp {
                     // US-007: store expanded dirs relative to the workspace
                     // root. A path that can't be made relative (symlinked
                     // outside the root) is dropped rather than persisted absolute.
-                    expanded_paths: ws
-                        .files_expanded
-                        .iter()
-                        .filter_map(|p| p.strip_prefix(&ws.cwd).ok())
-                        .map(|rel| rel.to_string_lossy().into_owned())
-                        .collect(),
+                    expanded_paths: persisted_expanded_paths(&ws.cwd, &ws.files_expanded),
                     // EP-002 (orchestration-v2): persist worktree ownership so
                     // a crash/restart keeps the teardown + prune record.
                     managed_worktrees: ws
@@ -671,6 +666,16 @@ fn rehydrate_expanded_path(cwd: &str, rel: &str) -> Option<PathBuf> {
     Some(abs)
 }
 
+fn persisted_expanded_paths(cwd: &str, expanded: &[PathBuf]) -> Vec<String> {
+    let mut paths: Vec<String> = expanded
+        .iter()
+        .filter_map(|p| p.strip_prefix(cwd).ok())
+        .map(|rel| rel.to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    paths
+}
+
 // ---------------------------------------------------------------------------
 // US-006: corruption-backup helpers (free functions, free of `&self`)
 // ---------------------------------------------------------------------------
@@ -840,6 +845,30 @@ mod tests {
         assert_eq!(rehydrate_expanded_path("/home/u/proj", "../../etc"), None);
         assert_eq!(rehydrate_expanded_path("/home/u/proj", "/etc/passwd"), None);
         assert_eq!(rehydrate_expanded_path("/home/u/proj", "a/../../b"), None);
+    }
+
+    #[test]
+    fn persisted_expanded_paths_are_workspace_relative_and_sorted() {
+        let root = PathBuf::from("project");
+        let cwd = root.to_string_lossy().into_owned();
+        let paths = vec![
+            root.join("src").join("z"),
+            PathBuf::from("outside"),
+            root.join("src").join("a"),
+        ];
+
+        let expected_a = PathBuf::from("src")
+            .join("a")
+            .to_string_lossy()
+            .into_owned();
+        let expected_z = PathBuf::from("src")
+            .join("z")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            persisted_expanded_paths(&cwd, &paths),
+            vec![expected_a, expected_z]
+        );
     }
 
     #[test]

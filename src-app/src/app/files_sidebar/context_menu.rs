@@ -26,7 +26,15 @@ impl PaneFlowApp {
         // Two items × ~25px + 8px padding. Flip above the click when there
         // isn't room below (mirrors the workspace menu).
         let menu_height = px(66.);
-        let win_h = window.window_bounds().get_bounds().size.height;
+        let menu_width = px(220.);
+        let win_size = window.window_bounds().get_bounds().size;
+        let win_h = win_size.height;
+        let win_w = win_size.width;
+        let menu_x = if menu.position.x + menu_width > win_w {
+            (menu.position.x - menu_width).max(px(0.))
+        } else {
+            menu.position.x
+        };
         let menu_y = if menu.position.y + menu_height > win_h {
             (menu.position.y - menu_height).max(px(0.))
         } else {
@@ -41,9 +49,9 @@ impl PaneFlowApp {
             .id("files-context-menu")
             .occlude()
             .absolute()
-            .left(menu.position.x)
+            .left(menu_x)
             .top(menu_y)
-            .w(px(220.))
+            .w(menu_width)
             .bg(ui.overlay)
             .border_1()
             .border_color(ui.border)

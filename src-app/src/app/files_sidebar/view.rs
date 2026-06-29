@@ -1,6 +1,8 @@
 //! Files sidebar presentation: header + scrollable body. The per-row render
 //! lives in `row.rs`; this file stays under the 250-line component budget.
 
+use std::cell::Cell;
+
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
     SharedString, Styled, div, prelude::*, px,
@@ -8,6 +10,38 @@ use gpui::{
 
 use crate::PaneFlowApp;
 use crate::app::files_tree;
+
+struct FilesSidebarRenderTimeCanary {
+    start: std::time::Instant,
+    row_count: Cell<usize>,
+}
+
+impl FilesSidebarRenderTimeCanary {
+    fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            row_count: Cell::new(0),
+        }
+    }
+
+    fn set_row_count(&self, row_count: usize) {
+        self.row_count.set(row_count);
+    }
+}
+
+impl Drop for FilesSidebarRenderTimeCanary {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        if elapsed > std::time::Duration::from_millis(16) {
+            tracing::debug!(
+                target: "paneflow_app::files_sidebar",
+                "render_files_sidebar exceeded 16ms frame budget: {:.2}ms across {} visible rows",
+                elapsed.as_secs_f64() * 1000.0,
+                self.row_count.get()
+            );
+        }
+    }
+}
 
 impl PaneFlowApp {
     pub(super) fn files_sidebar_header(
@@ -76,24 +110,26 @@ impl PaneFlowApp {
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let canary = FilesSidebarRenderTimeCanary::new();
         let rows = files_tree::flatten_visible(
             &self.files_tree.root,
             &self.files_tree.expanded,
             &self.files_tree.children,
         );
+        canary.set_row_count(rows.len());
 
         if rows.is_empty() {
+            let message = if self.files_tree.root_listing_ready() {
+                "This folder is empty."
+            } else {
+                "Loading files..."
+            };
             return div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .p(px(14.))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(ui.muted)
-                        .child("This folder is empty."),
-                )
+                .child(div().text_size(px(12.)).text_color(ui.muted).child(message))
                 .into_any_element();
         }
 

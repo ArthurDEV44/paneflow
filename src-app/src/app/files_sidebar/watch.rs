@@ -22,13 +22,14 @@ impl PaneFlowApp {
     /// `session.json` (US-007).
     pub(super) fn sync_files_expansion(&mut self) {
         let root = self.files_tree.root.clone();
-        let expanded: Vec<PathBuf> = self
+        let mut expanded: Vec<PathBuf> = self
             .files_tree
             .expanded
             .iter()
             .filter(|p| **p != root)
             .cloned()
             .collect();
+        expanded.sort();
         if let Some(ws) = self.workspaces.get_mut(self.active_idx) {
             ws.files_expanded = expanded;
         }

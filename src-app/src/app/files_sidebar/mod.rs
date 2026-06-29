@@ -55,8 +55,10 @@ impl PaneFlowApp {
         let persisted = ws.files_expanded.clone();
 
         // Mutual exclusion: only one right column is ever visible.
-        if self.agent_sessions.sessions_sidebar_open {
-            self.close_sessions_sidebar(cx);
+        if self.agent_sessions.sessions_sidebar_open
+            || self.agent_sessions.sessions_sidebar_animation.is_some()
+        {
+            self.close_sessions_sidebar_immediate(cx);
         }
         // Floating dropdowns would paint over the docked panel.
         self.workspace_menu_open = None;
