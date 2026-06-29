@@ -573,6 +573,19 @@ fn windows_plain_hook_command(path: &Path, event: &str) -> String {
     format!("\"{}\" {event}", display_hook_program(path))
 }
 
+#[cfg(windows)]
+fn windows_powershell_hook_command(path: &Path, event: &str) -> String {
+    format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& {} {event}\"",
+        powershell_single_quoted(&display_hook_program(path))
+    )
+}
+
+#[cfg(windows)]
+fn powershell_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 /// Render a single `command` field for agents that do not document a
 /// Windows-specific override. On Windows, prefer double quotes because these
 /// fields may be executed by cmd.exe rather than a POSIX shell; forward
@@ -644,13 +657,24 @@ fn shell_program_path(path: &Path) -> String {
 /// `cargo clean` between sessions) must still be recognized so cleanup can
 /// remove it on the next shim run.
 pub(crate) fn is_paneflow_hook_command(command: &str) -> bool {
-    let Some(program) = command_program_token(command) else {
-        return false;
-    };
-    let basename = Path::new(&program)
+    paneflow_hook_program_token(command).is_some()
+}
+
+fn paneflow_hook_program_token(command: &str) -> Option<String> {
+    if let Some(program) = command_program_token(command) {
+        if is_paneflow_hook_program(&program) {
+            return Some(program);
+        }
+    }
+    embedded_paneflow_hook_program_token(command)
+        .filter(|program| is_paneflow_hook_program(program))
+}
+
+fn is_paneflow_hook_program(program: &str) -> bool {
+    let basename = Path::new(program)
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or(&program);
+        .unwrap_or(program);
     basename == "paneflow-ai-hook" || basename == "paneflow-ai-hook.exe"
 }
 
@@ -667,9 +691,45 @@ fn paneflow_hook_commands_in_group(group: &serde_json::Value) -> Vec<String> {
 }
 
 fn paneflow_hook_command_program_exists(command: &str) -> bool {
-    command_program_token(command)
+    paneflow_hook_program_token(command)
         .as_deref()
         .is_some_and(program_exists)
+}
+
+fn embedded_paneflow_hook_program_token(command: &str) -> Option<String> {
+    let needle = "paneflow-ai-hook";
+    let idx = command.find(needle)?;
+    let prefix = &command[..idx];
+    let (start, quote) = if let Some((pos, ch)) = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| matches!(ch, '\'' | '"'))
+    {
+        (pos + ch.len_utf8(), Some(ch))
+    } else {
+        let start = prefix
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| ch.is_whitespace() || *ch == '&')
+            .map_or(0, |(pos, ch)| pos + ch.len_utf8());
+        (start, None)
+    };
+
+    let suffix = &command[idx..];
+    let end = if let Some(quote) = quote {
+        suffix.find(quote).map_or(command.len(), |pos| idx + pos)
+    } else {
+        suffix
+            .char_indices()
+            .find(|(_, ch)| ch.is_whitespace())
+            .map_or(command.len(), |(pos, _)| idx + pos)
+    };
+
+    let mut program = command[start..end].to_owned();
+    if quote == Some('\'') {
+        program = program.replace("''", "'");
+    }
+    (!program.is_empty()).then_some(program)
 }
 
 /// Parse the shell command's first program token. This is intentionally small:
@@ -1814,8 +1874,15 @@ pub(crate) fn remove_codex_hooks_win(root: &mut serde_json::Value) {
 fn codex_windows_hook_handler(event: &str) -> serde_json::Value {
     let mut handler = hook_handler(event);
     let command = match locate_sibling_hook_binary() {
-        Some(path) => windows_plain_hook_command(&path, event),
-        None => format!("{HOOK_COMMAND_PREFIX}{event}"),
+        // Codex 0.142.x on Windows executes the generic `command` field in
+        // the active shell. In a PowerShell session, `"path" Event` is a
+        // parse error, so make the fallback self-contained while keeping the
+        // `commandWindows` field from `hook_handler` for runners that honor it.
+        Some(path) => windows_powershell_hook_command(&path, event),
+        None => format!(
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '{}' {event}\"",
+            HOOK_COMMAND_PREFIX.trim_end()
+        ),
     };
     if let Some(obj) = handler.as_object_mut() {
         obj.insert("command".into(), serde_json::Value::String(command));
@@ -2476,6 +2543,34 @@ mod hooks_tests {
         assert!(is_paneflow_hook_command(&cmd));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_powershell_hook_command_is_shell_safe_for_codex() {
+        let p = Path::new(r"C:\Program Files\PaneFlow\bin\paneflow-ai-hook.exe");
+        let cmd = super::windows_powershell_hook_command(p, "PreToolUse");
+        assert_eq!(
+            cmd,
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:/Program Files/PaneFlow/bin/paneflow-ai-hook.exe' PreToolUse\""
+        );
+        assert!(
+            !cmd.contains('\\'),
+            "forward slashes keep the hook path stable across Windows shells: {cmd}"
+        );
+        assert!(
+            is_paneflow_hook_command(&cmd),
+            "PowerShell-wrapped hook command must stay detectable: {cmd}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_single_quote_escaping_doubles_apostrophes() {
+        assert_eq!(
+            super::powershell_single_quoted("C:/Users/O'Neil/paneflow-ai-hook.exe"),
+            "'C:/Users/O''Neil/paneflow-ai-hook.exe'"
+        );
+    }
+
     /// Unix path rendering is unchanged (no separator rewrite).
     #[cfg(unix)]
     #[test]
@@ -2488,12 +2583,12 @@ mod hooks_tests {
     }
 
     /// Windows Codex hooks (June 2026): `.codex/hooks.json` must carry one
-    /// paneflow matcher-group per Codex event, recognizable for cleanup, with
-    /// the command ending in the event name - and must NOT register
+    /// paneflow matcher-group per Codex event, with a PowerShell-safe generic
+    /// command plus a cmd.exe `commandWindows` fallback - and must NOT register
     /// `Notification` (not a Codex event). Round-trips to empty on removal.
     #[cfg(not(unix))]
     #[test]
-    fn codex_win_merge_writes_detectable_matcher_groups() {
+    fn codex_win_merge_writes_shell_safe_matcher_groups() {
         use super::{
             is_paneflow_matcher_group, merge_codex_hooks_win, remove_codex_hooks_win,
             CODEX_HOOK_EVENTS,
@@ -2508,14 +2603,26 @@ mod hooks_tests {
             assert!(is_paneflow_matcher_group(&arr[0]), "{event}: detectable");
             let handler = &arr[0]["hooks"][0];
             let cmd = handler["command"].as_str().unwrap();
-            assert!(cmd.ends_with(&format!(" {event}")), "{event}: {cmd}");
             assert!(
-                !cmd.starts_with('\''),
-                "{event}: command must not rely on POSIX single quotes on Windows: {cmd}"
+                cmd.starts_with("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '"),
+                "{event}: command must run through PowerShell explicitly, got {cmd}"
             );
             assert!(
-                super::is_paneflow_hook_command(cmd),
-                "{event}: command fallback must remain basename-detectable: {cmd}"
+                cmd.ends_with(&format!(" {event}\"")),
+                "{event}: command must preserve the event arg, got {cmd}"
+            );
+            assert!(
+                cmd.contains("paneflow-ai-hook"),
+                "{event}: command must invoke the ai-hook binary, got {cmd}"
+            );
+            let mut marker_stripped = arr[0].clone();
+            marker_stripped
+                .as_object_mut()
+                .unwrap()
+                .remove("_paneflow_managed");
+            assert!(
+                is_paneflow_matcher_group(&marker_stripped),
+                "{event}: command fallback must remain detectable if the marker is stripped"
             );
             let win_cmd = handler["commandWindows"].as_str().unwrap();
             assert!(
