@@ -339,6 +339,12 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    fn command_preserves_event_arg(command: &str, event: &str) -> bool {
+        command.ends_with(&format!(" {event}"))
+            || command.ends_with(&format!(" {event}\""))
+            || command.contains(&format!(" {event} "))
+    }
+
     #[test]
     fn detect_tool_from_stem_maps_known_stems() {
         // Every wrapped tool maps to itself - the stem IS the wire id.
@@ -628,7 +634,7 @@ mod tests {
             // which it does NOT in `cargo test` (test binary lives under
             // `target/debug/deps/`, hook binary lives under `target/debug/`).
             // Assert the contract instead of the format: it must be detectable
-            // by `is_paneflow_hook_command`, and it must end with the event
+            // by `is_paneflow_hook_command`, and it must preserve the event
             // name so Claude Code dispatches to the correct handler.
             let cmd = handlers[0]
                 .pointer("/hooks/0/command")
@@ -639,8 +645,8 @@ mod tests {
                 "{event}: command {cmd:?} must be recognized as paneflow-managed"
             );
             assert!(
-                cmd.ends_with(&format!(" {event}")),
-                "{event}: command {cmd:?} must end with the event name"
+                command_preserves_event_arg(cmd, event),
+                "{event}: command {cmd:?} must preserve the event name"
             );
 
             let timeout = handlers[0].pointer("/hooks/0/timeout").unwrap();
@@ -941,7 +947,7 @@ mod tests {
         // …canonical Claude-shaped event in the command arg.
         let cmd = inner[0]["command"].as_str().unwrap();
         assert!(
-            cmd.ends_with(" UserPromptSubmit"),
+            command_preserves_event_arg(cmd, "UserPromptSubmit"),
             "BeforeAgent must invoke the canonical UserPromptSubmit: {cmd}"
         );
         // No Paneflow-only marker field (stricter parsers).
@@ -1139,7 +1145,7 @@ mod tests {
         let cmd = root["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
-        assert!(cmd.ends_with(" PreToolUse"));
+        assert!(command_preserves_event_arg(cmd, "PreToolUse"));
         drop(guard);
         assert!(!path.exists(), "drop must delete the dedicated hook file");
     }
@@ -1157,8 +1163,8 @@ mod tests {
         assert!(content.starts_with(user_yaml), "user content untouched");
         assert!(content.contains(HERMES_BLOCK_BEGIN));
         assert!(content.contains("pre_llm_call:"));
-        assert!(content.contains(" UserPromptSubmit\""));
-        assert!(content.contains(" PermissionRequest\""));
+        assert!(content.contains(" UserPromptSubmit"));
+        assert!(content.contains(" PermissionRequest"));
 
         drop(guard);
         let content = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
@@ -1253,8 +1259,8 @@ mod tests {
                 "{event}: command {cmd:?} must be recognized as paneflow-managed"
             );
             assert!(
-                cmd.ends_with(&format!(" {event}")),
-                "{event}: command {cmd:?} must end with the event name"
+                command_preserves_event_arg(cmd, event),
+                "{event}: command {cmd:?} must preserve the event name"
             );
         }
 
@@ -1700,8 +1706,8 @@ mod tests {
                 "resolve_hook_command output must be detectable: {cmd:?}"
             );
             assert!(
-                cmd.ends_with(&format!(" {event}")),
-                "resolve_hook_command output must end with the event name: {cmd:?}"
+                command_preserves_event_arg(&cmd, event),
+                "resolve_hook_command output must preserve the event name: {cmd:?}"
             );
         }
     }

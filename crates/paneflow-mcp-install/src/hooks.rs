@@ -69,7 +69,7 @@ fn managed_group(hook_path: &Path, event: &str) -> Value {
         "hooks": [
             {
                 "type": "command",
-                "command": format!("{} {event}", shell_program_path(hook_path)),
+                "command": hook_command(hook_path, event),
                 "timeout": 5,
             }
         ]
@@ -88,6 +88,31 @@ fn display_hook_program(path: &Path) -> String {
     }
 }
 
+fn hook_command(path: &Path, event: &str) -> String {
+    #[cfg(windows)]
+    {
+        windows_powershell_hook_command(path, event)
+    }
+    #[cfg(not(windows))]
+    {
+        format!("{} {event}", shell_program_path(path))
+    }
+}
+
+#[cfg(windows)]
+fn windows_powershell_hook_command(path: &Path, event: &str) -> String {
+    format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& {} {event}\"",
+        powershell_single_quoted(&display_hook_program(path))
+    )
+}
+
+#[cfg(windows)]
+fn powershell_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(not(windows))]
 fn shell_program_path(path: &Path) -> String {
     let rendered = display_hook_program(path);
     if rendered
@@ -104,14 +129,57 @@ fn shell_program_path(path: &Path) -> String {
 /// absolute-path form, Unix or Windows). Mirror of
 /// `paneflow-shim::hooks::is_paneflow_hook_command`.
 fn is_paneflow_hook_command(command: &str) -> bool {
-    let Some(program) = command_program_token(command) else {
-        return false;
-    };
+    paneflow_hook_program_token(command).is_some()
+}
+
+fn paneflow_hook_program_token(command: &str) -> Option<String> {
+    if let Some(program) = command_program_token(command) {
+        if is_paneflow_hook_program(&program) {
+            return Some(program);
+        }
+    }
+    embedded_paneflow_hook_program_token(command)
+        .filter(|program| is_paneflow_hook_program(program))
+}
+
+fn is_paneflow_hook_program(program: &str) -> bool {
     let base = Path::new(&program)
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or(&program);
+        .unwrap_or(program);
     base == "paneflow-ai-hook" || base == "paneflow-ai-hook.exe"
+}
+
+fn embedded_paneflow_hook_program_token(command: &str) -> Option<String> {
+    let needle = "paneflow-ai-hook";
+    let idx = command.find(needle)?;
+    let prefix = &command[..idx];
+    let (start, quote) = if let Some((pos, ch)) = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| matches!(ch, '\'' | '"'))
+    {
+        (pos + ch.len_utf8(), Some(ch))
+    } else {
+        let start = prefix
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| ch.is_whitespace() || *ch == '&')
+            .map_or(0, |(pos, ch)| pos + ch.len_utf8());
+        (start, None)
+    };
+
+    let suffix = &command[idx..];
+    let end = if let Some(quote) = quote {
+        suffix.find(quote).map_or(command.len(), |pos| idx + pos)
+    } else {
+        suffix
+            .char_indices()
+            .find(|(_, ch)| ch.is_whitespace())
+            .map_or(command.len(), |(pos, _)| idx + pos)
+    };
+    let program = command[start..end].trim();
+    (!program.is_empty()).then(|| program.to_string())
 }
 
 fn command_program_token(command: &str) -> Option<String> {
@@ -317,8 +385,9 @@ fn status(expected_hook_path: &Path) -> Result<StatusOutcome> {
     let Some(first) = commands.first() else {
         return Ok(StatusOutcome::NotInstalled);
     };
-    // The stored command is "<path> <event>" - compare the path token.
-    let found_path = command_program_token(first).unwrap_or_default();
+    // The stored command can be either "<path> <event>" or a Windows shell
+    // wrapper; compare the embedded ai-hook path token.
+    let found_path = paneflow_hook_program_token(first).unwrap_or_default();
     Ok(classify(&found_path, expected_hook_path))
 }
 
@@ -485,9 +554,18 @@ mod tests {
         let g = managed_group(Path::new("/bin/paneflow-ai-hook"), "Stop");
         assert_eq!(g[MANAGED_MARKER], json!(true));
         assert_eq!(g["hooks"][0]["type"], json!("command"));
+        #[cfg(not(windows))]
         assert_eq!(
             g["hooks"][0]["command"],
             json!("/bin/paneflow-ai-hook Stop")
+        );
+        #[cfg(windows)]
+        assert!(
+            g["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .starts_with("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '"),
+            "{g}"
         );
         assert_eq!(g["hooks"][0]["timeout"], json!(5));
         assert!(is_managed_group(&g));
@@ -498,18 +576,24 @@ mod tests {
         let path = Path::new("/tmp/Application Support/paneflow-ai-hook");
         let g = managed_group(path, "Stop");
         let command = g["hooks"][0]["command"].as_str().unwrap();
+        #[cfg(not(windows))]
         assert!(
             command.starts_with('\''),
             "space-bearing hook path must be shell quoted: {command}"
         );
+        #[cfg(windows)]
+        assert!(
+            command.starts_with("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '"),
+            "space-bearing hook path must be wrapped for PowerShell: {command}"
+        );
         let expected = display_hook_program(path);
         assert_eq!(
-            command_program_token(command).as_deref(),
+            paneflow_hook_program_token(command).as_deref(),
             Some(expected.as_str())
         );
         assert!(is_managed_group(&g));
         assert!(matches!(
-            classify(&command_program_token(command).unwrap(), path),
+            classify(&paneflow_hook_program_token(command).unwrap(), path),
             StatusOutcome::Installed { .. }
         ));
     }
@@ -523,6 +607,9 @@ mod tests {
         assert!(is_paneflow_hook_command(
             "'/tmp/with space/paneflow-ai-hook' Stop"
         ));
+        assert!(is_paneflow_hook_command(
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:/Program Files/PaneFlow/bin/paneflow-ai-hook.exe' Stop\""
+        ));
     }
 
     #[cfg(windows)]
@@ -533,6 +620,14 @@ mod tests {
         let command = g["hooks"][0]["command"].as_str().unwrap();
         assert!(!command.contains('\\'), "{command}");
         assert!(command.contains('/'), "{command}");
+        assert!(
+            command.starts_with("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '"),
+            "{command}"
+        );
+        assert_eq!(
+            paneflow_hook_program_token(command).as_deref(),
+            Some("C:/Users/Arthur/AppData/Local/paneflow/bin/paneflow-ai-hook.exe")
+        );
         assert!(is_managed_group(&g));
     }
 
@@ -602,7 +697,7 @@ mod tests {
         let root = read(&path);
         assert_eq!(
             root["hooks"]["Stop"][0]["hooks"][0]["command"],
-            json!("/v2/paneflow-ai-hook Stop")
+            json!(hook_command(Path::new("/v2/paneflow-ai-hook"), "Stop"))
         );
         // Exactly one managed group per event after the update (no stacking).
         assert_eq!(root["hooks"]["Stop"].as_array().unwrap().len(), 1);

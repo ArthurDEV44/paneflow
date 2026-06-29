@@ -547,6 +547,12 @@ impl Drop for HookConfigGuard {
 /// where the test binary lives in `target/debug/deps/`, exotic filesystems);
 /// the bare form is still recognized by `is_paneflow_hook_command` for
 /// detection and cleanup.
+#[cfg(windows)]
+pub(crate) fn resolve_hook_command(event: &str) -> String {
+    resolve_windows_hook_command(event)
+}
+
+#[cfg(not(windows))]
 pub(crate) fn resolve_hook_command(event: &str) -> String {
     match locate_sibling_hook_binary() {
         Some(path) => format!("{} {}", shell_program_path(&path), event),
@@ -556,6 +562,11 @@ pub(crate) fn resolve_hook_command(event: &str) -> String {
 
 #[cfg(windows)]
 pub(crate) fn resolve_hook_command_windows(event: &str) -> String {
+    resolve_windows_hook_command(event)
+}
+
+#[cfg(windows)]
+fn resolve_windows_hook_command(event: &str) -> String {
     match locate_sibling_hook_binary() {
         Some(path) => windows_powershell_hook_command(&path, event),
         None => format!(
@@ -563,11 +574,6 @@ pub(crate) fn resolve_hook_command_windows(event: &str) -> String {
             HOOK_COMMAND_PREFIX.trim_end()
         ),
     }
-}
-
-#[cfg(windows)]
-fn windows_plain_hook_command(path: &Path, event: &str) -> String {
-    format!("\"{}\" {event}", display_hook_program(path))
 }
 
 #[cfg(windows)]
@@ -584,16 +590,13 @@ fn powershell_single_quoted(value: &str) -> String {
 }
 
 /// Render a single `command` field for agents that do not document a
-/// Windows-specific override. On Windows, prefer double quotes because these
-/// fields may be executed by cmd.exe rather than a POSIX shell; forward
-/// slashes keep the same string usable by Git Bash-style runners too.
+/// Windows-specific override. On Windows, make the command self-contained:
+/// several hook runners execute the field through PowerShell, where a quoted
+/// executable path requires the `&` call operator.
 fn resolve_plain_hook_command(event: &str) -> String {
     #[cfg(windows)]
     {
-        match locate_sibling_hook_binary() {
-            Some(path) => windows_plain_hook_command(&path, event),
-            None => format!("{HOOK_COMMAND_PREFIX}{event}"),
-        }
+        resolve_windows_hook_command(event)
     }
     #[cfg(not(windows))]
     {
@@ -631,6 +634,7 @@ fn display_hook_program(path: &Path) -> String {
 /// writer in `paneflow-mcp-install`: macOS stable paths can live under
 /// `Application Support`, Windows users can have spaces in their profile path,
 /// and stale-hook detection already parses the single-quote escape form.
+#[cfg(not(windows))]
 fn shell_program_path(path: &Path) -> String {
     let rendered = display_hook_program(path);
     if rendered
@@ -1869,22 +1873,7 @@ pub(crate) fn remove_codex_hooks_win(root: &mut serde_json::Value) {
 
 #[cfg(windows)]
 fn codex_windows_hook_handler(event: &str) -> serde_json::Value {
-    let mut handler = hook_handler(event);
-    let command = match locate_sibling_hook_binary() {
-        // Codex 0.142.x on Windows executes the generic `command` field in
-        // the active shell. In a PowerShell session, `"path" Event` is a
-        // parse error, so make the fallback self-contained while keeping the
-        // `commandWindows` field from `hook_handler` for runners that honor it.
-        Some(path) => windows_powershell_hook_command(&path, event),
-        None => format!(
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '{}' {event}\"",
-            HOOK_COMMAND_PREFIX.trim_end()
-        ),
-    };
-    if let Some(obj) = handler.as_object_mut() {
-        obj.insert("command".into(), serde_json::Value::String(command));
-    }
-    handler
+    hook_handler(event)
 }
 
 /// Marker for the TOML comment placed above `hooks = true` in
@@ -2482,9 +2471,11 @@ pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> (ExitC
 
 #[cfg(test)]
 mod hooks_tests {
+    #[cfg(not(windows))]
+    use super::shell_program_path;
     use super::{
         command_program_token, display_hook_program, settings_managed_hook_state,
-        shell_program_path, PersistentHookState,
+        PersistentHookState,
     };
     // Only the `#[cfg(windows)]` round-trip test below references this; gating
     // the import keeps the non-Windows test build warning-free under `-D warnings`.
@@ -2530,19 +2521,7 @@ mod hooks_tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_plain_hook_command_quotes_program_files_path_for_cmd_fallback() {
-        let p = Path::new(r"C:\Program Files\PaneFlow\bin\paneflow-ai-hook.exe");
-        let cmd = super::windows_plain_hook_command(p, "UserPromptSubmit");
-        assert_eq!(
-            cmd,
-            "\"C:/Program Files/PaneFlow/bin/paneflow-ai-hook.exe\" UserPromptSubmit"
-        );
-        assert!(is_paneflow_hook_command(&cmd));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_powershell_hook_command_is_shell_safe_for_codex() {
+    fn windows_powershell_hook_command_is_shell_safe_for_program_files() {
         let p = Path::new(r"C:\Program Files\PaneFlow\bin\paneflow-ai-hook.exe");
         let cmd = super::windows_powershell_hook_command(p, "PreToolUse");
         assert_eq!(
@@ -2557,6 +2536,36 @@ mod hooks_tests {
             is_paneflow_hook_command(&cmd),
             "PowerShell-wrapped hook command must stay detectable: {cmd}"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_strict_hook_configs_use_shell_safe_command() {
+        use super::{is_paneflow_matcher_group, merge_codebuddy_hooks, CLAUDE_HOOK_EVENTS};
+
+        let mut root = json!({});
+        merge_codebuddy_hooks(&mut root);
+        for event in CLAUDE_HOOK_EVENTS {
+            let arr = root["hooks"][*event]
+                .as_array()
+                .unwrap_or_else(|| panic!("missing event {event}"));
+            assert_eq!(arr.len(), 1, "{event}: exactly one paneflow entry");
+            assert!(is_paneflow_matcher_group(&arr[0]), "{event}: detectable");
+            let handler = &arr[0]["hooks"][0];
+            let cmd = handler["command"].as_str().unwrap();
+            assert!(
+                cmd.starts_with("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '"),
+                "{event}: strict command must run through PowerShell explicitly, got {cmd}"
+            );
+            assert!(
+                cmd.ends_with(&format!(" {event}\"")),
+                "{event}: command must preserve the event arg, got {cmd}"
+            );
+            assert!(
+                handler.get("commandWindows").is_none(),
+                "{event}: strict clone schema must not grow commandWindows"
+            );
+        }
     }
 
     #[cfg(windows)]
@@ -2759,6 +2768,7 @@ mod hooks_tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn shell_program_path_quotes_paths_that_shell_would_split() {
         let path = Path::new("/tmp/Application Support/paneflow-ai-hook");
