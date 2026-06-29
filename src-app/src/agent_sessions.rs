@@ -1,12 +1,9 @@
-//! Shared types and helpers for the AI-agent session readers
-//! (`claude_sessions`, `codex_sessions`, `opencode_sessions`). Each reader
-//! sources sessions from its agent's native store - JSONL transcripts on
-//! disk for Claude / Codex, `opencode session list --format json` shell-out
-//! for OpenCode (whose backing SQLite schema is intentionally not exposed
-//! as a stable contract; see US-001 spike notes in
-//! `tasks/prd-opencode-sessions-decisions.md`). All three normalise to
-//! the unified [`SessionMeta`] below so the popover UI can render rows
-//! with a single template.
+//! Shared types and helpers for the AI-agent session readers. Each reader
+//! sources sessions from its agent's documented native contract - JSONL
+//! transcripts for agents that publish a file format, or CLI list commands
+//! where the vendor exposes one. All readers normalise to the unified
+//! [`SessionMeta`] below so the docked sidebar can render rows with a single
+//! template.
 
 /// Which AI agent created the session. Drives the row icon, the
 /// `--resume` command shape, and the popover tab the row sits under.
@@ -15,29 +12,70 @@ pub enum SessionAgent {
     Claude,
     Codex,
     OpenCode,
+    Pi,
+    Hermes,
+    Grok,
+    Cursor,
+    Gemini,
+    Kiro,
 }
 
 impl SessionAgent {
+    pub const ALL: [SessionAgent; 9] = [
+        SessionAgent::Claude,
+        SessionAgent::Codex,
+        SessionAgent::OpenCode,
+        SessionAgent::Pi,
+        SessionAgent::Hermes,
+        SessionAgent::Grok,
+        SessionAgent::Cursor,
+        SessionAgent::Gemini,
+        SessionAgent::Kiro,
+    ];
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            SessionAgent::Claude => 0,
+            SessionAgent::Codex => 1,
+            SessionAgent::OpenCode => 2,
+            SessionAgent::Pi => 3,
+            SessionAgent::Hermes => 4,
+            SessionAgent::Grok => 5,
+            SessionAgent::Cursor => 6,
+            SessionAgent::Gemini => 7,
+            SessionAgent::Kiro => 8,
+        }
+    }
+
+    pub(crate) fn terminal_agent(self) -> crate::agent_launcher::TerminalAgent {
+        use crate::agent_launcher::TerminalAgent;
+        match self {
+            SessionAgent::Claude => TerminalAgent::ClaudeCode,
+            SessionAgent::Codex => TerminalAgent::Codex,
+            SessionAgent::OpenCode => TerminalAgent::OpenCode,
+            SessionAgent::Pi => TerminalAgent::Pi,
+            SessionAgent::Hermes => TerminalAgent::Hermes,
+            SessionAgent::Grok => TerminalAgent::Grok,
+            SessionAgent::Cursor => TerminalAgent::Cursor,
+            SessionAgent::Gemini => TerminalAgent::Gemini,
+            SessionAgent::Kiro => TerminalAgent::Kiro,
+        }
+    }
+
     /// Brand glyph path (multicolor SVG - render via `img()`, not a tinted
     /// `svg()`). Shared by the sessions popover and the Review attribution badge
     /// (EP-004 US-015).
     pub(crate) fn icon_path(self) -> &'static str {
-        match self {
-            SessionAgent::Claude => "icons/claude-color.svg",
-            SessionAgent::Codex => "icons/codex-color.svg",
-            SessionAgent::OpenCode => "icons/opencode-color.svg",
-        }
+        self.terminal_agent().icon_path()
     }
 
     /// Human-readable agent name.
     pub(crate) fn label(self) -> &'static str {
-        match self {
-            SessionAgent::Claude => "Claude Code",
-            SessionAgent::Codex => "Codex",
-            SessionAgent::OpenCode => "OpenCode",
-        }
+        self.terminal_agent().display_name()
     }
 }
+
+pub(crate) const SESSION_AGENT_COUNT: usize = SessionAgent::ALL.len();
 
 /// EP-004 US-016: token usage aggregated across a session's assistant turns.
 /// Additive on [`SessionMeta`]; `None` when the agent records no usage
@@ -448,25 +486,47 @@ pub mod cache {
     }
 }
 
-/// Read user config and return the agents whose tab-bar button is currently
-/// visible, in display order (Claude → Codex → OpenCode). Both the popover
-/// tab strip and the on-open session scans filter through this so a hidden
-/// agent never appears in the UI and we don't pay the I/O cost of a scan
-/// the user can't see. An unset field is treated as visible (matches the
-/// behaviour in `pane.rs` where the buttons render by default).
+/// Read user config and return the agents whose AI Agent launcher is currently
+/// visible, in PaneFlow's launcher display order. Both the sidebar render and
+/// the on-open session scans filter through this so a hidden Settings → AI
+/// Agent row never appears in the UI and we don't pay the I/O cost of a scan
+/// the user can't see.
 pub fn enabled_session_agents() -> Vec<SessionAgent> {
     let cfg = paneflow_config::loader::load_config();
-    let mut agents = Vec::with_capacity(3);
-    if cfg.claude_code_button_visible.unwrap_or(true) {
-        agents.push(SessionAgent::Claude);
+    crate::agent_launcher::TerminalAgent::visible(&cfg)
+        .into_iter()
+        .filter_map(|agent| agent.session_agent())
+        .collect()
+}
+
+/// Blocking title-only session scan for the given agent and cwd. Call from
+/// inside `smol::unblock`.
+pub(crate) fn read_sessions_for_cwd(agent: SessionAgent, cwd: &str) -> Vec<SessionMeta> {
+    match agent {
+        SessionAgent::Claude => crate::claude_sessions::read_sessions_for_cwd(cwd),
+        SessionAgent::Codex => crate::codex_sessions::read_sessions_for_cwd(cwd),
+        SessionAgent::OpenCode => crate::opencode_sessions::read_sessions_for_cwd(cwd),
+        _ => read_sessions_for_cwd_with_omitted(agent, cwd).0,
     }
-    if cfg.codex_button_visible.unwrap_or(true) {
-        agents.push(SessionAgent::Codex);
+}
+
+/// Blocking title-only session scan plus retention metadata for the docked
+/// sidebar. Call from inside `smol::unblock`.
+pub(crate) fn read_sessions_for_cwd_with_omitted(
+    agent: SessionAgent,
+    cwd: &str,
+) -> (Vec<SessionMeta>, usize) {
+    match agent {
+        SessionAgent::Claude => crate::claude_sessions::read_sessions_for_cwd_with_omitted(cwd),
+        SessionAgent::Codex => crate::codex_sessions::read_sessions_for_cwd_with_omitted(cwd),
+        SessionAgent::OpenCode => crate::opencode_sessions::read_sessions_for_cwd_with_omitted(cwd),
+        SessionAgent::Pi => crate::pi_sessions::read_sessions_for_cwd_with_omitted(cwd),
+        SessionAgent::Cursor => crate::command_sessions::read_cursor_sessions_for_cwd(cwd),
+        SessionAgent::Gemini => crate::command_sessions::read_gemini_sessions_for_cwd(cwd),
+        SessionAgent::Kiro => crate::command_sessions::read_kiro_sessions_for_cwd(cwd),
+        SessionAgent::Grok => crate::command_sessions::read_grok_sessions_for_cwd(cwd),
+        SessionAgent::Hermes => crate::command_sessions::read_hermes_sessions_for_cwd(cwd),
     }
-    if cfg.opencode_button_visible.unwrap_or(true) {
-        agents.push(SessionAgent::OpenCode);
-    }
-    agents
 }
 
 /// EP-003: maximum session rows retained in the docked sessions sidebar for
@@ -480,11 +540,12 @@ pub(crate) const DIFF_ATTRIBUTION_MATCH_CAP: usize = 50;
 
 /// Strict allow-list guard for a session id before it is interpolated into a
 /// resume command (`claude --resume <id>`, `codex resume <id>`,
-/// `opencode --session <id>`) and sent to the user's PTY.
+/// `opencode --session <id>`, etc.) and sent to the user's PTY.
 ///
 /// Every supported agent's id format fits `^[A-Za-z0-9_-]+$`: Claude/Codex use
 /// UUIDs (`550e8400-e29b-41d4-a716-446655440000`), OpenCode uses
-/// `ses_<base62>` (`ses_1f80d49aeffeaKV4Lq4mc0c3cu`). Anything outside that set
+/// `ses_<base62>` (`ses_1f80d49aeffeaKV4Lq4mc0c3cu`), and several newer CLIs
+/// use short alphanumeric IDs. Anything outside that set
 /// a space, `;`, `$(…)`, a path separator, a control char - means the source
 /// record is malformed or the agent binary was tampered with. Rejecting here
 /// (and dropping the record at scan time) is defence-in-depth: a crafted
@@ -733,6 +794,15 @@ pub fn attribution_for_column(cwd: &str, branch: &str) -> Vec<SessionMeta> {
             SessionAgent::OpenCode => {
                 all.extend(crate::opencode_sessions::read_sessions_for_cwd(cwd))
             }
+            // These readers expose title-only metadata through documented
+            // local contracts. They have no token usage in PaneFlow today, so
+            // attribution degrades to agent + recency like OpenCode.
+            SessionAgent::Pi
+            | SessionAgent::Hermes
+            | SessionAgent::Grok
+            | SessionAgent::Cursor
+            | SessionAgent::Gemini
+            | SessionAgent::Kiro => all.extend(read_sessions_for_cwd(agent, cwd)),
         }
         all = match_sessions_to_column(all, cwd, branch);
     }

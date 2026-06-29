@@ -1256,12 +1256,7 @@ fn read_sessions_for(
     agent: crate::agent_sessions::SessionAgent,
     cwd: &str,
 ) -> Vec<crate::agent_sessions::SessionMeta> {
-    use crate::agent_sessions::SessionAgent;
-    match agent {
-        SessionAgent::Claude => crate::claude_sessions::read_sessions_for_cwd(cwd),
-        SessionAgent::Codex => crate::codex_sessions::read_sessions_for_cwd(cwd),
-        SessionAgent::OpenCode => crate::opencode_sessions::read_sessions_for_cwd(cwd),
-    }
+    crate::agent_sessions::read_sessions_for_cwd(agent, cwd)
 }
 
 /// US-005: where the agent picker creates its launched agent. Drives the

@@ -490,7 +490,7 @@ impl PaneFlowApp {
                 // Open + bind + scan, extracted to `sessions_sidebar.rs` so a
                 // workspace switch can re-target the open sidebar through the
                 // exact same path.
-                self.open_sessions_sidebar_for_pane(&pane, cx);
+                self.open_sessions_sidebar_for_pane(&pane, None, cx);
             }
             pane::PaneEvent::ToggleFilesSidebar => {
                 // Open/close the docked Files tree for the active workspace's

@@ -374,6 +374,7 @@ impl PaneFlowApp {
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let debounce = std::time::Duration::from_millis(100);
                 let ceiling = std::time::Duration::from_millis(500);
+                const FILES_EVENT_DRAIN_MAX_PER_TICK: usize = 512;
                 let mut first_pending: Option<std::time::Instant> = None;
                 let mut last_event = std::time::Instant::now();
                 let mut pending_dirs = std::collections::HashSet::<std::path::PathBuf>::new();
@@ -387,19 +388,51 @@ impl PaneFlowApp {
                         this.update(cx, |app: &mut Self, _cx: &mut Context<Self>| {
                             let mut dirs = Vec::new();
                             let mut rescan = false;
+                            let mut watcher_failed = false;
+                            let mut drained_events = 0usize;
                             if let Some(rx) = &app.files_event_rx {
-                                while let Ok(res) = rx.try_recv() {
-                                    if let Ok(ev) = res {
-                                        if ev.need_rescan() {
-                                            rescan = true;
-                                        }
-                                        for p in &ev.paths {
-                                            if let Some(parent) = p.parent() {
-                                                dirs.push(parent.to_path_buf());
+                                for _ in 0..FILES_EVENT_DRAIN_MAX_PER_TICK {
+                                    match rx.try_recv() {
+                                        Ok(Ok(ev)) => {
+                                            drained_events += 1;
+                                            if ev.need_rescan() {
+                                                rescan = true;
                                             }
+                                            for p in &ev.paths {
+                                                if let Some(parent) = p.parent() {
+                                                    dirs.push(parent.to_path_buf());
+                                                }
+                                            }
+                                        }
+                                        Ok(Err(err)) => {
+                                            drained_events += 1;
+                                            log::warn!(
+                                                "files watcher error: {err}; falling back to on-expand reads"
+                                            );
+                                            rescan = true;
+                                            watcher_failed = true;
+                                            break;
+                                        }
+                                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                            log::warn!(
+                                                "files watcher disconnected; falling back to on-expand reads"
+                                            );
+                                            watcher_failed = true;
+                                            break;
                                         }
                                     }
                                 }
+                                if drained_events == FILES_EVENT_DRAIN_MAX_PER_TICK {
+                                    tracing::debug!(
+                                        target: "paneflow_app::files_sidebar",
+                                        "files watcher drain capped at {FILES_EVENT_DRAIN_MAX_PER_TICK} events for this tick"
+                                    );
+                                }
+                            }
+                            if watcher_failed {
+                                app.files_watcher = None;
+                                app.files_event_rx = None;
                             }
                             (dirs, rescan)
                         })
@@ -841,16 +874,18 @@ impl PaneFlowApp {
             profile_menu_open: None,
             agent_sessions: crate::AgentSessionsState {
                 sessions_sidebar_open: false,
-                claude_sessions: Vec::new(),
-                codex_sessions: Vec::new(),
-                opencode_sessions: Vec::new(),
-                sessions_omitted: [0; 3],
-                claude_sessions_cwd: None,
-                claude_sessions_pane: None,
-                claude_sessions_scroll: gpui::ScrollHandle::new(),
-                sessions_group_collapsed: [false; 3],
-                sessions_group_show_all: [false; 3],
-                sessions_scanning: [false; 3],
+                sessions_sidebar_animation: None,
+                sessions_by_agent: std::array::from_fn(|_| Vec::new()),
+                sessions_omitted: [0; crate::agent_sessions::SESSION_AGENT_COUNT],
+                sessions_cwd: None,
+                sessions_pane: None,
+                sessions_scroll: gpui::ScrollHandle::new(),
+                sessions_scan_generation: 0,
+                sessions_selected: 0,
+                sessions_focus: cx.focus_handle(),
+                sessions_group_collapsed: [false; crate::agent_sessions::SESSION_AGENT_COUNT],
+                sessions_group_show_all: [false; crate::agent_sessions::SESSION_AGENT_COUNT],
+                sessions_scanning: [false; crate::agent_sessions::SESSION_AGENT_COUNT],
             },
             files_sidebar_open: false,
             files_tree: crate::app::files_tree::FilesTreeState::default(),

@@ -34,6 +34,7 @@ mod assets;
 mod claude_sessions;
 mod cli;
 mod codex_sessions;
+mod command_sessions;
 mod config_writer;
 mod diff;
 mod editor;
@@ -51,6 +52,7 @@ mod mouse;
 mod opencode_sessions;
 mod pane;
 mod pane_drag;
+mod pi_sessions;
 mod pricing;
 mod project;
 mod runtime_paths;
@@ -235,7 +237,7 @@ const STARTUP_SPLASH_SHIMMER_MS: u64 = 2600;
 const STARTUP_SPLASH_MIN_VISIBLE_MS: u64 = 900;
 
 #[derive(Clone, Copy)]
-struct PrimarySidebarAnimation {
+struct SidebarWidthAnimation {
     from_width: f32,
     to_width: f32,
     started_at: std::time::Instant,
@@ -340,7 +342,7 @@ impl Render for StartupSplashView {
     }
 }
 
-impl PrimarySidebarAnimation {
+impl SidebarWidthAnimation {
     fn width_at(self, now: std::time::Instant) -> f32 {
         let duration = std::time::Duration::from_millis(PRIMARY_SIDEBAR_ANIMATION_MS);
         let progress = (now.duration_since(self.started_at).as_secs_f32() / duration.as_secs_f32())
@@ -364,39 +366,45 @@ struct AgentSessionsState {
     /// tab-bar sessions button; the sidebar renders as a layout child of the
     /// root row, not a `deferred()` overlay.
     sessions_sidebar_open: bool,
-    /// Claude Code sessions for the active terminal's cwd. Filled
-    /// asynchronously by a background fs scan; stays empty while the scan is
-    /// pending and after it resolves with no matches.
-    claude_sessions: Vec<agent_sessions::SessionMeta>,
-    /// Codex CLI sessions for the same cwd, populated by a parallel scan.
-    codex_sessions: Vec<agent_sessions::SessionMeta>,
-    /// OpenCode CLI sessions for the same cwd, populated by a third parallel
-    /// scan that shells out to `opencode session list --format json` (see
-    /// `opencode_sessions.rs`).
-    opencode_sessions: Vec<agent_sessions::SessionMeta>,
+    /// Width animation for opening/closing the docked right sidebar. Reuses
+    /// the same duration and easing as the primary left sidebar.
+    sessions_sidebar_animation: Option<SidebarWidthAnimation>,
+    /// Cwd-scoped sessions per supported CLI, indexed by
+    /// [`agent_sessions::SessionAgent::index`]. Filled asynchronously by
+    /// per-agent background scans.
+    sessions_by_agent: [Vec<agent_sessions::SessionMeta>; agent_sessions::SESSION_AGENT_COUNT],
     /// Per-agent count of older sessions omitted by the EP-003 sidebar memory
     /// cap, indexed by `agent_index()`.
-    sessions_omitted: [usize; 3],
-    /// Working directory the sidebar was opened for. Used both to filter stale
-    /// scan results that resolve after the sidebar was closed and as the label
-    /// inside the sidebar header.
-    claude_sessions_cwd: Option<String>,
+    sessions_omitted: [usize; agent_sessions::SESSION_AGENT_COUNT],
+    /// Working directory the sidebar was opened for. Used to filter stale
+    /// scan results and as the compact wayfinding label inside the sidebar
+    /// header.
+    sessions_cwd: Option<String>,
     /// Weak handle to the pane whose tab-bar button opened the sidebar. Routes
-    /// `claude --resume <id>` back to the *originating* pane's terminal even if
-    /// focus shifts. Weak so the sidebar never keeps a closed pane alive.
-    claude_sessions_pane: Option<gpui::WeakEntity<crate::pane::Pane>>,
+    /// resume commands back to the *originating* pane's terminal even if focus
+    /// shifts. Weak so the sidebar never keeps a closed pane alive.
+    sessions_pane: Option<gpui::WeakEntity<crate::pane::Pane>>,
     /// Scroll state for the sessions list. Re-created on every open so a fresh
     /// sidebar starts at offset 0.
-    claude_sessions_scroll: gpui::ScrollHandle,
-    /// Per-agent sidebar group state, indexed by `agent_index()`
-    /// (Claude=0, Codex=1, OpenCode=2). All reset on close/open.
+    sessions_scroll: gpui::ScrollHandle,
+    /// Incremented on every open/retarget/close. Async scans must carry the
+    /// generation they were spawned under so a stale result for the same cwd
+    /// cannot overwrite a newer open.
+    sessions_scan_generation: u64,
+    /// Keyboard-selected visible session row. The index is over visible rows
+    /// only, not group headers or empty/loading states.
+    sessions_selected: usize,
+    /// Focus target for keyboard navigation inside the docked sidebar.
+    sessions_focus: FocusHandle,
+    /// Per-agent sidebar group state, indexed by
+    /// [`agent_sessions::SessionAgent::index`]. All reset on close/open.
     /// `collapsed`: the group's caret has hidden its rows (EP-002 US-006).
-    sessions_group_collapsed: [bool; 3],
+    sessions_group_collapsed: [bool; agent_sessions::SESSION_AGENT_COUNT],
     /// `show_all`: the group is past its 5-row cap via "Show more" (US-005).
-    sessions_group_show_all: [bool; 3],
+    sessions_group_show_all: [bool; agent_sessions::SESSION_AGENT_COUNT],
     /// `scanning`: a background scan for this agent is in flight, so an empty
     /// list should read as "loading" not "none" (US-004).
-    sessions_scanning: [bool; 3],
+    sessions_scanning: [bool; agent_sessions::SESSION_AGENT_COUNT],
 }
 
 /// US-053: Git Diff mode state (mounted single/multi-repo views + their
@@ -673,7 +681,7 @@ struct PaneFlowApp {
     /// Transient width interpolation for the primary rail. The boolean above is
     /// the target state; this keeps the rail mounted while its layout width
     /// eases open or closed.
-    primary_sidebar_animation: Option<PrimarySidebarAnimation>,
+    primary_sidebar_animation: Option<SidebarWidthAnimation>,
     /// Anchor for the `Files` menu in the custom title bar.
     title_bar_files_menu_open: Option<Point<Pixels>>,
     /// Anchor for the `Help` menu in the custom title bar.
@@ -1017,7 +1025,7 @@ impl PaneFlowApp {
 
         self.primary_sidebar_animation =
             if (from_width - to_width).abs() > PRIMARY_SIDEBAR_MIN_ANIMATION_DELTA {
-                Some(PrimarySidebarAnimation {
+                Some(SidebarWidthAnimation {
                     from_width,
                     to_width,
                     started_at: now,
@@ -1165,8 +1173,13 @@ impl Render for PaneFlowApp {
             || cfg!(target_os = "macos")
             || !self.primary_sidebar_visible;
         let settings_open = self.settings_section.is_some();
-        let secondary_sidebar_open =
-            self.agent_sessions.sessions_sidebar_open || self.files_sidebar_open;
+        let sessions_sidebar_width = self.rendered_sessions_sidebar_width(window);
+        let sessions_sidebar_mounted = self.agent_sessions.sessions_sidebar_open
+            || self.agent_sessions.sessions_sidebar_animation.is_some();
+        let sessions_sidebar_opacity = (sessions_sidebar_width
+            / crate::app::sessions_sidebar::SESSIONS_SIDEBAR_WIDTH.max(1.))
+        .clamp(0., 1.);
+        let secondary_sidebar_open = sessions_sidebar_mounted || self.files_sidebar_open;
         // Every mode now renders the right area as ONE rounded-clipped panel
         // (`panel_bg` fill + 16px rail-side radius + 5px inset), replacing the
         // old Cli/Diff corner-mask trick. GPUI clips the panel's bg fill to the
@@ -1624,13 +1637,16 @@ impl Render for PaneFlowApp {
                     // Docked agent-sessions sidebar (right edge). A layout child
                     // - not an overlay - so it reflows the content and persists
                     // while the user works (PRD agent-sessions-sidebar EP-001).
-                    .when(self.agent_sessions.sessions_sidebar_open, |row| {
+                    .when(sessions_sidebar_mounted, |row| {
                         row.child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .h_full()
+                                .w(px(sessions_sidebar_width))
                                 .flex_shrink_0()
+                                .overflow_hidden()
+                                .opacity(sessions_sidebar_opacity)
                                 // Keep the right rail below the full-width
                                 // title bar, aligned with the main panel.
                                 .when(title_bar_spans_window, |d| d.pt(title_bar_h))

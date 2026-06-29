@@ -11,18 +11,17 @@ use crate::pricing;
 use gpui::Hsla;
 
 /// Brand accent for a session agent's glyph - mirrors the sessions sidebar /
-/// launcher buttons (Claude orange, Codex blue; OpenCode rides the theme text
-/// color since its mark is monochrome).
+/// launcher buttons. Multi-color logos are rendered through `img()` and ignore
+/// this tint.
 fn agent_brand_color(
     agent: crate::agent_sessions::SessionAgent,
     ui: crate::theme::UiColors,
 ) -> Hsla {
-    use crate::agent_sessions::SessionAgent;
-    match agent {
-        SessionAgent::Claude => gpui::rgb(0xd97757).into(),
-        SessionAgent::Codex => gpui::rgb(0x7a9dff).into(),
-        SessionAgent::OpenCode => ui.text,
-    }
+    agent
+        .terminal_agent()
+        .accent()
+        .map(|accent| gpui::rgb(accent).into())
+        .unwrap_or(ui.text)
 }
 
 /// Compact model family label for the badge (the full id lands in the tooltip).
@@ -169,7 +168,19 @@ impl DiffView {
         }
         lines.push(format!("estimated · prices v{}", pricing::PRICING_TABLE_VERSION).into());
 
-        let brand = agent_brand_color(top.agent, ui);
+        let icon = if top.agent.terminal_agent().icon_multicolor() {
+            gpui::img(top.agent.icon_path())
+                .size(px(11.))
+                .flex_none()
+                .into_any_element()
+        } else {
+            gpui::svg()
+                .size(px(11.))
+                .flex_none()
+                .path(top.agent.icon_path())
+                .text_color(agent_brand_color(top.agent, ui))
+                .into_any_element()
+        };
         let mut pill = div()
             .id("diff-attribution-badge")
             .flex_none()
@@ -188,13 +199,7 @@ impl DiffView {
                 let lines = lines.clone();
                 cx.new(|_| AttributionTooltip { lines }).into()
             })
-            .child(
-                gpui::svg()
-                    .size(px(11.))
-                    .flex_none()
-                    .path(top.agent.icon_path())
-                    .text_color(brand),
-            );
+            .child(icon);
         // Model short name (when known).
         if let Some(model) = top.model.as_deref() {
             pill = pill.child(

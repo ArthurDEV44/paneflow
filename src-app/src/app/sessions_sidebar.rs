@@ -2,8 +2,8 @@
 //! EP-001).
 //!
 //! Docked panel that replaces the former anchored popover: it lists the active
-//! terminal's cwd-scoped sessions for every enabled agent (Claude Code / Codex
-//! / OpenCode) as stacked groups. Toggled by the tab-bar sessions button via
+//! terminal's cwd-scoped sessions for every enabled agent with a documented
+//! local list+resume contract as stacked groups. Toggled by the tab-bar sessions button via
 //! `PaneEvent::ToggleAgentSessions`; it stays open while you work because it is
 //! a layout child of the root row, not a `deferred()` overlay. Clicking a row
 //! issues the agent's `--resume` command into the bound pane and keeps the
@@ -16,7 +16,8 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Pixels, SharedString, Styled, Window, div, prelude::*, px, rgb, svg,
+    KeyDownEvent, ParentElement, Pixels, SharedString, Styled, Window, div, img, prelude::*, px,
+    rgb, svg,
 };
 
 use crate::PaneFlowApp;
@@ -25,7 +26,7 @@ use crate::pane_drag::{SessionDrag, TabDragPreview};
 
 /// Fixed sidebar width - between the CLI (220) and Agents (280) left sidebars,
 /// matching VS Code's secondary-bar default. Resizable width is deferred.
-const SIDEBAR_WIDTH: Pixels = px(300.);
+pub(crate) const SESSIONS_SIDEBAR_WIDTH: f32 = 300.;
 const ROW_HEIGHT: Pixels = px(30.);
 
 impl PaneFlowApp {
@@ -38,6 +39,7 @@ impl PaneFlowApp {
     pub(crate) fn open_sessions_sidebar_for_pane(
         &mut self,
         pane: &gpui::Entity<crate::pane::Pane>,
+        focus_window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
         // Resolve the active terminal's cwd: prefer the OSC 7 push
@@ -64,123 +66,98 @@ impl PaneFlowApp {
         self.workspace_menu_open = None;
         self.profile_menu_open = None;
 
-        self.agent_sessions.sessions_sidebar_open = true;
-        self.agent_sessions.claude_sessions_cwd = cwd_str.clone();
-        self.agent_sessions.claude_sessions_pane = Some(pane.downgrade());
-        self.agent_sessions.claude_sessions.clear();
-        self.agent_sessions.codex_sessions.clear();
-        self.agent_sessions.opencode_sessions.clear();
+        self.set_sessions_sidebar_open(true, cx);
+        self.agent_sessions.sessions_cwd = cwd_str.clone();
+        self.agent_sessions.sessions_pane = Some(pane.downgrade());
+        for sessions in &mut self.agent_sessions.sessions_by_agent {
+            sessions.clear();
+        }
         // Fresh per-group state for this open: all expanded, capped at 5,
         // not-yet-scanning (each spawned scan flips its own flag below).
-        self.agent_sessions.sessions_omitted = [0; 3];
-        self.agent_sessions.sessions_group_collapsed = [false; 3];
-        self.agent_sessions.sessions_group_show_all = [false; 3];
-        self.agent_sessions.sessions_scanning = [false; 3];
+        self.agent_sessions.sessions_omitted = [0; crate::agent_sessions::SESSION_AGENT_COUNT];
+        self.agent_sessions.sessions_group_collapsed =
+            [false; crate::agent_sessions::SESSION_AGENT_COUNT];
+        self.agent_sessions.sessions_group_show_all =
+            [false; crate::agent_sessions::SESSION_AGENT_COUNT];
+        self.agent_sessions.sessions_scanning = [false; crate::agent_sessions::SESSION_AGENT_COUNT];
+        self.agent_sessions.sessions_selected = 0;
+        self.agent_sessions.sessions_scan_generation =
+            self.agent_sessions.sessions_scan_generation.wrapping_add(1);
+        let scan_generation = self.agent_sessions.sessions_scan_generation;
         let enabled_agents = crate::agent_sessions::enabled_session_agents();
         // Fresh handle so a previous scroll offset doesn't bleed into the new
         // sidebar.
-        self.agent_sessions.claude_sessions_scroll = gpui::ScrollHandle::new();
+        self.agent_sessions.sessions_scroll = gpui::ScrollHandle::new();
+
+        if let Some(window) = focus_window {
+            self.agent_sessions.sessions_focus.focus(window, cx);
+        }
 
         if let Some(cwd) = cwd_str {
-            // Parallel scans - Claude Code under `~/.claude/projects/<slug>/`,
-            // Codex CLI under `~/.codex/sessions/YYYY/MM/DD/`, and OpenCode
-            // via a `opencode session list --format json` shell-out (the
-            // SQLite schema is unstable; the CLI is the published contract -
-            // see US-001 spike notes). Each task writes to its own Vec on the
-            // main thread. The sidebar may be closed or re-targeted against a
-            // different cwd before any scan finishes, so stale results are
-            // dropped by checking `claude_sessions_cwd` matches before
-            // applying.
+            // Parallel scans. Each supported agent owns a documented native
+            // contract (JSONL store or CLI list command) and writes to its own
+            // Vec on the main thread. The sidebar may be closed or re-targeted
+            // against a different cwd before any scan finishes, so stale
+            // results are dropped by checking the target cwd and scan
+            // generation before applying.
             //
             // Scans for agents the user has hidden in Settings → AI Agent are
             // skipped: with no UI to surface them the disk read would just be
             // wasted I/O.
-            let scan_claude = enabled_agents.contains(&SessionAgent::Claude);
-            let scan_codex = enabled_agents.contains(&SessionAgent::Codex);
-            let scan_opencode = enabled_agents.contains(&SessionAgent::OpenCode);
-
-            if scan_claude {
-                let idx = agent_index(SessionAgent::Claude);
-                self.agent_sessions.sessions_scanning[idx] = true;
-                let claude_cwd_scan = cwd.clone();
-                let claude_cwd_match = cwd.clone();
-                cx.spawn(async move |this, cx| {
-                    let (sessions, omitted) = smol::unblock(move || {
-                        crate::claude_sessions::read_sessions_for_cwd_with_omitted(&claude_cwd_scan)
-                    })
-                    .await;
-                    let _ = this.update(cx, |app, cx| {
-                        if app.agent_sessions.sessions_sidebar_open
-                            && app.agent_sessions.claude_sessions_cwd.as_deref()
-                                == Some(claude_cwd_match.as_str())
-                        {
-                            app.agent_sessions.claude_sessions = sessions;
-                            app.agent_sessions.sessions_omitted[idx] = omitted;
-                            app.agent_sessions.sessions_scanning[idx] = false;
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
-            }
-
-            if scan_codex {
-                let idx = agent_index(SessionAgent::Codex);
-                self.agent_sessions.sessions_scanning[idx] = true;
-                let codex_cwd_scan = cwd.clone();
-                let codex_cwd_match = cwd.clone();
-                cx.spawn(async move |this, cx| {
-                    let (sessions, omitted) = smol::unblock(move || {
-                        crate::codex_sessions::read_sessions_for_cwd_with_omitted(&codex_cwd_scan)
-                    })
-                    .await;
-                    let _ = this.update(cx, |app, cx| {
-                        if app.agent_sessions.sessions_sidebar_open
-                            && app.agent_sessions.claude_sessions_cwd.as_deref()
-                                == Some(codex_cwd_match.as_str())
-                        {
-                            app.agent_sessions.codex_sessions = sessions;
-                            app.agent_sessions.sessions_omitted[idx] = omitted;
-                            app.agent_sessions.sessions_scanning[idx] = false;
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
-            }
-
-            if scan_opencode {
-                let idx = agent_index(SessionAgent::OpenCode);
-                self.agent_sessions.sessions_scanning[idx] = true;
-                let opencode_cwd_scan = cwd.clone();
-                let opencode_cwd_match = cwd;
-                cx.spawn(async move |this, cx| {
-                    let (sessions, omitted) = smol::unblock(move || {
-                        crate::opencode_sessions::read_sessions_for_cwd_with_omitted(
-                            &opencode_cwd_scan,
-                        )
-                    })
-                    .await;
-                    let _ = this.update(cx, |app, cx| {
-                        if app.agent_sessions.sessions_sidebar_open
-                            && app.agent_sessions.claude_sessions_cwd.as_deref()
-                                == Some(opencode_cwd_match.as_str())
-                        {
-                            app.agent_sessions.opencode_sessions = sessions;
-                            app.agent_sessions.sessions_omitted[idx] = omitted;
-                            app.agent_sessions.sessions_scanning[idx] = false;
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
+            for agent in enabled_agents {
+                self.spawn_sessions_scan(agent, cwd.clone(), scan_generation, cx);
             }
         }
         cx.notify();
     }
 
+    fn spawn_sessions_scan(
+        &mut self,
+        agent: SessionAgent,
+        cwd: String,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let idx = agent_index(agent);
+        self.agent_sessions.sessions_scanning[idx] = true;
+        cx.spawn(async move |this, cx| {
+            let scan_cwd = cwd.clone();
+            let started = std::time::Instant::now();
+            let (sessions, omitted) = smol::unblock(move || {
+                crate::agent_sessions::read_sessions_for_cwd_with_omitted(agent, &scan_cwd)
+            })
+            .await;
+            let elapsed = started.elapsed();
+            let retained = sessions.len();
+            log::debug!(
+                "agent sessions scan {:?} cwd={} retained={} omitted={} elapsed={:?}",
+                agent,
+                cwd,
+                retained,
+                omitted,
+                elapsed
+            );
+            let _ = this.update(cx, |app, cx| {
+                if should_apply_scan_result(
+                    app.agent_sessions.sessions_sidebar_open,
+                    app.agent_sessions.sessions_cwd.as_deref(),
+                    &cwd,
+                    app.agent_sessions.sessions_scan_generation,
+                    generation,
+                ) {
+                    *app.sessions_for_mut(agent) = sessions;
+                    app.agent_sessions.sessions_omitted[idx] = omitted;
+                    app.agent_sessions.sessions_scanning[idx] = false;
+                    app.clamp_sessions_selection();
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Render the docked sessions sidebar (right edge of the root `flex_row`).
-    /// Only called when `sessions_sidebar_open` is true.
+    /// Only called while the sidebar is open or animating closed.
     pub(crate) fn render_sessions_sidebar(
         &self,
         window: &Window,
@@ -192,9 +169,11 @@ impl PaneFlowApp {
             .id("sessions-sidebar")
             .flex()
             .flex_col()
-            .w(SIDEBAR_WIDTH)
+            .w(px(SESSIONS_SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
+            .track_focus(&self.agent_sessions.sessions_focus)
+            .on_key_down(cx.listener(Self::handle_sessions_sidebar_key_down))
             // Match the app's other navigation rails: theme-aware native
             // material on Windows/macOS and a light/dark tint on Linux.
             .bg(crate::app::constants::cockpit_chrome_background(
@@ -218,21 +197,41 @@ impl PaneFlowApp {
             .justify_between()
             .gap(px(8.))
             // Quiet header - no divider (Codex: separation by spacing, not
-            // borders). 36px matches the unified chrome row height.
-            .h(px(36.))
+            // borders). Slightly taller to carry the cwd wayfinding line.
+            .h(px(46.))
             .flex_none()
             .px(px(12.))
             .child(
                 div()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .gap(px(2.))
                     .flex_1()
                     .min_w_0()
-                    .overflow_x_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ui.text)
-                    .child("Agent sessions"),
+                    .child(
+                        div()
+                            .overflow_x_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ui.text)
+                            .child("Agent sessions"),
+                    )
+                    .when_some(self.agent_sessions.sessions_cwd.as_deref(), |d, cwd| {
+                        d.child(
+                            div()
+                                .id("sessions-sidebar-cwd")
+                                .overflow_x_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(10.))
+                                .text_color(ui.muted)
+                                .tooltip(crate::ui_primitives::text_tooltip(cwd.to_string()))
+                                .child(compact_cwd_label(cwd)),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -264,7 +263,7 @@ impl PaneFlowApp {
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.agent_sessions.claude_sessions_cwd.is_none() {
+        if self.agent_sessions.sessions_cwd.is_none() {
             return div()
                 .flex()
                 .flex_col()
@@ -309,10 +308,33 @@ impl PaneFlowApp {
             // panel into horizontal scrolling.
             .overflow_x_hidden()
             .overflow_y_scroll()
-            .track_scroll(&self.agent_sessions.claude_sessions_scroll);
+            .track_scroll(&self.agent_sessions.sessions_scroll);
 
+        let selected = self.selected_session_target();
+        let mut groups_rendered = 0usize;
+        let mut scanning_any = false;
         for agent in enabled {
-            body = body.child(self.sessions_group(agent, ui, cx));
+            let idx = agent_index(agent);
+            let scanning = self.agent_sessions.sessions_scanning[idx];
+            scanning_any |= scanning;
+            if scanning || !self.sessions_for(agent).is_empty() {
+                groups_rendered += 1;
+                body = body.child(self.sessions_group(agent, ui, selected.as_ref(), cx));
+            }
+        }
+        if groups_rendered == 0 {
+            let message = if scanning_any {
+                "Scanning sessions..."
+            } else {
+                "No sessions for this directory yet."
+            };
+            body = body.child(
+                div()
+                    .p(px(14.))
+                    .text_size(px(12.))
+                    .text_color(ui.muted)
+                    .child(message),
+            );
         }
         body.into_any_element()
     }
@@ -321,6 +343,7 @@ impl PaneFlowApp {
         &self,
         agent: SessionAgent,
         ui: crate::theme::UiColors,
+        selected: Option<&SessionNavTarget>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let idx = agent_index(agent);
@@ -355,18 +378,14 @@ impl PaneFlowApp {
             .pt(px(12.))
             .pb(px(4.))
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.agent_sessions.sessions_focus.focus(window, cx);
                 this.agent_sessions.sessions_group_collapsed[idx] =
                     !this.agent_sessions.sessions_group_collapsed[idx];
+                this.clamp_sessions_selection();
                 cx.notify();
             }))
-            .child(
-                svg()
-                    .size(px(14.))
-                    .flex_none()
-                    .path(agent_icon_path(agent))
-                    .text_color(agent_brand_color(agent, ui)),
-            )
+            .child(agent_icon_element(agent, px(14.), ui))
             .child(
                 div()
                     .text_size(px(11.))
@@ -410,7 +429,14 @@ impl PaneFlowApp {
             // US-005: cap at 5, reveal the rest behind "Show N more".
             let (visible, remaining) = visible_window(sessions.len(), show_all, CAP);
             for session in sessions.iter().take(visible) {
-                group = group.child(self.sessions_row(session, ui, cx));
+                group = group.child(self.sessions_row(
+                    session,
+                    ui,
+                    selected.is_some_and(|target| {
+                        target.agent == agent && target.session_id == session.session_id
+                    }),
+                    cx,
+                ));
             }
             if sessions.len() > CAP {
                 let label: SharedString = if show_all {
@@ -436,9 +462,11 @@ impl PaneFlowApp {
                             s.bg(crate::app::constants::sidebar_tab_hover_background())
                                 .text_color(ui.text)
                         })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.agent_sessions.sessions_focus.focus(window, cx);
                             this.agent_sessions.sessions_group_show_all[idx] =
                                 !this.agent_sessions.sessions_group_show_all[idx];
+                            this.clamp_sessions_selection();
                             cx.notify();
                         }))
                         .child(label),
@@ -461,11 +489,11 @@ impl PaneFlowApp {
     }
 
     fn sessions_for(&self, agent: SessionAgent) -> &[SessionMeta] {
-        match agent {
-            SessionAgent::Claude => &self.agent_sessions.claude_sessions,
-            SessionAgent::Codex => &self.agent_sessions.codex_sessions,
-            SessionAgent::OpenCode => &self.agent_sessions.opencode_sessions,
-        }
+        &self.agent_sessions.sessions_by_agent[agent_index(agent)]
+    }
+
+    fn sessions_for_mut(&mut self, agent: SessionAgent) -> &mut Vec<SessionMeta> {
+        &mut self.agent_sessions.sessions_by_agent[agent_index(agent)]
     }
 
     fn sessions_omitted_for(&self, agent: SessionAgent) -> usize {
@@ -476,6 +504,7 @@ impl PaneFlowApp {
         &self,
         session: &SessionMeta,
         ui: crate::theme::UiColors,
+        selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let agent = session.agent;
@@ -518,25 +547,24 @@ impl PaneFlowApp {
                     icon: drag.icon.clone(),
                 })
             })
-            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+            .when(selected, |d| {
+                d.bg(crate::app::constants::sidebar_tab_hover_background())
+            })
+            .when(!selected, |d| {
+                d.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+            })
             // US-007 (partial): resume into the bound pane; the docked sidebar
             // stays open (unlike the old popover).
-            .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                if let Some(cmd) = resume_command(agent, &session_id) {
-                    this.send_command_to_sessions_pane(&cmd, cx);
-                }
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.agent_sessions.sessions_focus.focus(window, cx);
+                this.select_session_row(agent, &session_id);
+                this.resume_session_from_sidebar(agent, &session_id, cx);
                 cx.stop_propagation();
             }))
             // Per-session agent glyph in its brand accent - a touch smaller
             // than the group-header mark so the header still reads as the
             // section anchor.
-            .child(
-                svg()
-                    .size(px(13.))
-                    .flex_none()
-                    .path(agent_icon_path(agent))
-                    .text_color(agent_brand_color(agent, ui)),
-            )
+            .child(agent_icon_element(agent, px(13.), ui))
             // Title takes the slack and ellipsizes; the relative time is pinned
             // to the trailing edge on the same line (US-009 row stays one line).
             .child(
@@ -560,53 +588,277 @@ impl PaneFlowApp {
             .into_any_element()
     }
 
-    /// Send a shell command to the pane that opened the sidebar. Silently
-    /// no-ops when that pane was dropped (closed/replaced while the sidebar was
-    /// open) or no longer has a terminal tab.
-    fn send_command_to_sessions_pane(&self, command: &str, cx: &mut Context<Self>) {
-        let Some(pane_handle) = self.agent_sessions.claude_sessions_pane.as_ref() else {
+    fn resume_session_from_sidebar(
+        &mut self,
+        agent: SessionAgent,
+        session_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(command) = resume_command(agent, session_id) else {
+            self.show_toast("Could not resume session - invalid session id", cx);
             return;
         };
+        if !self.send_command_to_sessions_pane(&command, cx) {
+            self.show_toast("Could not resume session - target pane is gone", cx);
+        }
+    }
+
+    /// Send a shell command to the pane that opened the sidebar. Returns false
+    /// when that pane was dropped (closed/replaced while the sidebar was open)
+    /// or no longer has a terminal tab.
+    fn send_command_to_sessions_pane(&self, command: &str, cx: &mut Context<Self>) -> bool {
+        let Some(pane_handle) = self.agent_sessions.sessions_pane.as_ref() else {
+            return false;
+        };
         let Some(pane) = pane_handle.upgrade() else {
-            return;
+            return false;
         };
         let pane_ref = pane.read(cx);
         if let Some(terminal) = pane_ref.active_terminal_opt() {
             terminal.read(cx).send_command(command);
+            true
+        } else {
+            false
         }
     }
 
-    /// Tear down all sidebar state in one place - used by the header close
-    /// button and the tab-bar toggle (in `event_handlers`).
-    pub(crate) fn close_sessions_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.agent_sessions.sessions_sidebar_open = false;
-        self.agent_sessions.claude_sessions.clear();
-        self.agent_sessions.codex_sessions.clear();
-        self.agent_sessions.opencode_sessions.clear();
-        self.agent_sessions.sessions_omitted = [0; 3];
-        self.agent_sessions.claude_sessions_cwd = None;
-        self.agent_sessions.claude_sessions_pane = None;
-        // US-006: per-group state is in-memory only - reset so a reopen starts
-        // expanded and capped, never stale.
-        self.agent_sessions.sessions_group_collapsed = [false; 3];
-        self.agent_sessions.sessions_group_show_all = [false; 3];
-        self.agent_sessions.sessions_scanning = [false; 3];
+    fn handle_sessions_sidebar_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows = self.sessions_nav_targets();
+        let len = rows.len();
+        match event.keystroke.key.as_str() {
+            "escape" => self.close_sessions_sidebar(cx),
+            "enter" | "space" if len > 0 => {
+                let selected = self.agent_sessions.sessions_selected.min(len - 1);
+                let target = rows[selected].clone();
+                self.resume_session_from_sidebar(target.agent, &target.session_id, cx);
+            }
+            "up" if len > 0 => {
+                self.agent_sessions.sessions_selected = moved_session_selection(
+                    self.agent_sessions.sessions_selected,
+                    len,
+                    SessionSelectionMove::Previous,
+                );
+                cx.notify();
+            }
+            "down" if len > 0 => {
+                self.agent_sessions.sessions_selected = moved_session_selection(
+                    self.agent_sessions.sessions_selected,
+                    len,
+                    SessionSelectionMove::Next,
+                );
+                cx.notify();
+            }
+            "home" if len > 0 => {
+                self.agent_sessions.sessions_selected = moved_session_selection(
+                    self.agent_sessions.sessions_selected,
+                    len,
+                    SessionSelectionMove::First,
+                );
+                cx.notify();
+            }
+            "end" if len > 0 => {
+                self.agent_sessions.sessions_selected = moved_session_selection(
+                    self.agent_sessions.sessions_selected,
+                    len,
+                    SessionSelectionMove::Last,
+                );
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    fn sessions_nav_targets(&self) -> Vec<SessionNavTarget> {
+        let mut rows = Vec::new();
+        for agent in crate::agent_sessions::enabled_session_agents() {
+            let idx = agent_index(agent);
+            if self.agent_sessions.sessions_group_collapsed[idx] {
+                continue;
+            }
+            let sessions = self.sessions_for(agent);
+            let (visible, _) = visible_window(
+                sessions.len(),
+                self.agent_sessions.sessions_group_show_all[idx],
+                CAP,
+            );
+            rows.extend(
+                sessions
+                    .iter()
+                    .take(visible)
+                    .map(|session| SessionNavTarget {
+                        agent,
+                        session_id: session.session_id.clone(),
+                    }),
+            );
+        }
+        rows
+    }
+
+    fn selected_session_target(&self) -> Option<SessionNavTarget> {
+        let rows = self.sessions_nav_targets();
+        rows.get(
+            self.agent_sessions
+                .sessions_selected
+                .min(rows.len().saturating_sub(1)),
+        )
+        .cloned()
+    }
+
+    fn select_session_row(&mut self, agent: SessionAgent, session_id: &str) {
+        if let Some(idx) = self
+            .sessions_nav_targets()
+            .iter()
+            .position(|target| target.agent == agent && target.session_id == session_id)
+        {
+            self.agent_sessions.sessions_selected = idx;
+        }
+    }
+
+    fn clamp_sessions_selection(&mut self) {
+        let len = self.sessions_nav_targets().len();
+        if len == 0 {
+            self.agent_sessions.sessions_selected = 0;
+        } else if self.agent_sessions.sessions_selected >= len {
+            self.agent_sessions.sessions_selected = len - 1;
+        }
+    }
+
+    fn sessions_sidebar_width_at(&self, now: std::time::Instant) -> f32 {
+        if let Some(animation) = self.agent_sessions.sessions_sidebar_animation {
+            animation.width_at(now)
+        } else if self.agent_sessions.sessions_sidebar_open {
+            SESSIONS_SIDEBAR_WIDTH
+        } else {
+            0.
+        }
+    }
+
+    pub(crate) fn rendered_sessions_sidebar_width(&mut self, window: &mut Window) -> f32 {
+        let now = std::time::Instant::now();
+        if let Some(animation) = self.agent_sessions.sessions_sidebar_animation {
+            if animation.is_finished(now) {
+                self.agent_sessions.sessions_sidebar_animation = None;
+                if !self.agent_sessions.sessions_sidebar_open {
+                    self.clear_sessions_sidebar_state();
+                }
+                animation.to_width
+            } else {
+                window.request_animation_frame();
+                animation.width_at(now)
+            }
+        } else if self.agent_sessions.sessions_sidebar_open {
+            SESSIONS_SIDEBAR_WIDTH
+        } else {
+            0.
+        }
+    }
+
+    fn set_sessions_sidebar_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        let from_width = self.sessions_sidebar_width_at(now);
+        self.agent_sessions.sessions_sidebar_open = open;
+        let to_width = if open { SESSIONS_SIDEBAR_WIDTH } else { 0. };
+
+        self.agent_sessions.sessions_sidebar_animation =
+            if (from_width - to_width).abs() > crate::PRIMARY_SIDEBAR_MIN_ANIMATION_DELTA {
+                Some(crate::SidebarWidthAnimation {
+                    from_width,
+                    to_width,
+                    started_at: now,
+                })
+            } else {
+                None
+            };
+
+        if !open && self.agent_sessions.sessions_sidebar_animation.is_none() {
+            self.clear_sessions_sidebar_state();
+        }
         cx.notify();
+    }
+
+    fn clear_sessions_sidebar_state(&mut self) {
+        for sessions in &mut self.agent_sessions.sessions_by_agent {
+            sessions.clear();
+        }
+        self.agent_sessions.sessions_omitted = [0; crate::agent_sessions::SESSION_AGENT_COUNT];
+        self.agent_sessions.sessions_cwd = None;
+        self.agent_sessions.sessions_pane = None;
+        self.agent_sessions.sessions_selected = 0;
+        self.agent_sessions.sessions_group_collapsed =
+            [false; crate::agent_sessions::SESSION_AGENT_COUNT];
+        self.agent_sessions.sessions_group_show_all =
+            [false; crate::agent_sessions::SESSION_AGENT_COUNT];
+        self.agent_sessions.sessions_scanning = [false; crate::agent_sessions::SESSION_AGENT_COUNT];
+    }
+
+    pub(crate) fn close_sessions_sidebar_immediate(&mut self, cx: &mut Context<Self>) {
+        self.agent_sessions.sessions_sidebar_open = false;
+        self.agent_sessions.sessions_sidebar_animation = None;
+        self.agent_sessions.sessions_scan_generation =
+            self.agent_sessions.sessions_scan_generation.wrapping_add(1);
+        self.clear_sessions_sidebar_state();
+        cx.notify();
+    }
+
+    /// Start closing the sidebar and invalidate in-flight scans immediately.
+    /// The visible rows are cleared only after the width animation reaches
+    /// zero, so the closing panel never flashes an empty-state body.
+    pub(crate) fn close_sessions_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.agent_sessions.sessions_scan_generation =
+            self.agent_sessions.sessions_scan_generation.wrapping_add(1);
+        self.set_sessions_sidebar_open(false, cx);
     }
 }
 
 /// Default per-group row cap before "Show more" (US-005).
 const CAP: usize = 5;
 
-/// Stable group index for the per-group `[bool; 3]` state arrays
-/// (Claude=0, Codex=1, OpenCode=2). Shared with `event_handlers` so the
-/// scan-in-flight flag and the render read the same slot.
-pub(crate) fn agent_index(agent: SessionAgent) -> usize {
-    match agent {
-        SessionAgent::Claude => 0,
-        SessionAgent::Codex => 1,
-        SessionAgent::OpenCode => 2,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SessionNavTarget {
+    agent: SessionAgent,
+    session_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionSelectionMove {
+    First,
+    Last,
+    Previous,
+    Next,
+}
+
+fn moved_session_selection(current: usize, len: usize, movement: SessionSelectionMove) -> usize {
+    if len == 0 {
+        return 0;
     }
+    match movement {
+        SessionSelectionMove::First => 0,
+        SessionSelectionMove::Last => len - 1,
+        SessionSelectionMove::Previous => current.saturating_sub(1),
+        SessionSelectionMove::Next => (current + 1).min(len - 1),
+    }
+}
+
+fn should_apply_scan_result(
+    sidebar_open: bool,
+    current_cwd: Option<&str>,
+    expected_cwd: &str,
+    current_generation: u64,
+    expected_generation: u64,
+) -> bool {
+    sidebar_open && current_cwd == Some(expected_cwd) && current_generation == expected_generation
+}
+
+/// Stable group index for the per-agent state arrays. Shared with
+/// `event_handlers` so the scan-in-flight flag and the render read the same
+/// slot.
+pub(crate) fn agent_index(agent: SessionAgent) -> usize {
+    agent.index()
 }
 
 /// Given a group of `len` rows, the cap, and whether the group is expanded,
@@ -628,16 +880,21 @@ fn older_sessions_hidden_label(omitted: usize) -> SharedString {
     }
 }
 
-fn empty_message(agent: SessionAgent) -> SharedString {
-    match agent {
-        SessionAgent::Claude => {
-            SharedString::from("No Claude Code sessions for this directory yet.")
-        }
-        SessionAgent::Codex => SharedString::from("No Codex CLI sessions for this directory yet."),
-        SessionAgent::OpenCode => {
-            SharedString::from("No OpenCode sessions for this directory yet.")
-        }
+fn compact_cwd_label(cwd: &str) -> SharedString {
+    let trimmed = cwd.trim_end_matches(['/', '\\']);
+    let label = trimmed
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(trimmed);
+    if label.is_empty() {
+        cwd.into()
+    } else {
+        label.into()
     }
+}
+
+fn empty_message(agent: SessionAgent) -> SharedString {
+    format!("No {} sessions for this directory yet.", agent_label(agent)).into()
 }
 
 fn short_session_id(id: &str) -> String {
@@ -645,40 +902,44 @@ fn short_session_id(id: &str) -> String {
 }
 
 fn agent_id_prefix(agent: SessionAgent) -> &'static str {
-    match agent {
-        SessionAgent::Claude => "claude",
-        SessionAgent::Codex => "codex",
-        SessionAgent::OpenCode => "opencode",
-    }
+    agent.terminal_agent().tag()
 }
 
 /// Display name for a group header.
 fn agent_label(agent: SessionAgent) -> &'static str {
-    match agent {
-        SessionAgent::Claude => "Claude Code",
-        SessionAgent::Codex => "Codex",
-        SessionAgent::OpenCode => "OpenCode",
-    }
+    agent.label()
 }
 
 /// Brand glyph for a group/session - the same monochrome (`currentColor`) SVGs
 /// the tab-bar launcher buttons use, tinted at the call site.
 fn agent_icon_path(agent: SessionAgent) -> &'static str {
-    match agent {
-        SessionAgent::Claude => "icons/claude-color.svg",
-        SessionAgent::Codex => "icons/codex-color.svg",
-        SessionAgent::OpenCode => "icons/opencode-color.svg",
-    }
+    agent.icon_path()
 }
 
 /// Accent for a group's brand glyph - matches the launcher buttons in
 /// `pane.rs` (Claude orange, Codex blue). OpenCode's mark is monochrome, so it
 /// rides the theme text color to stay legible on dark and light surfaces.
 fn agent_brand_color(agent: SessionAgent, ui: crate::theme::UiColors) -> Hsla {
-    match agent {
-        SessionAgent::Claude => rgb(0xd97757).into(),
-        SessionAgent::Codex => rgb(0x7a9dff).into(),
-        SessionAgent::OpenCode => ui.text,
+    agent
+        .terminal_agent()
+        .accent()
+        .map(|accent| rgb(accent).into())
+        .unwrap_or(ui.text)
+}
+
+fn agent_icon_element(agent: SessionAgent, size: Pixels, ui: crate::theme::UiColors) -> AnyElement {
+    if agent.terminal_agent().icon_multicolor() {
+        img(agent_icon_path(agent))
+            .size(size)
+            .flex_none()
+            .into_any_element()
+    } else {
+        svg()
+            .size(size)
+            .flex_none()
+            .path(agent_icon_path(agent))
+            .text_color(agent_brand_color(agent, ui))
+            .into_any_element()
     }
 }
 
@@ -713,6 +974,12 @@ pub(crate) fn resume_command(agent: SessionAgent, session_id: &str) -> Option<St
         }
         SessionAgent::Codex => format!("codex resume {session_id}"),
         SessionAgent::OpenCode => format!("opencode --session {session_id}"),
+        SessionAgent::Pi => format!("pi --session {session_id}"),
+        SessionAgent::Hermes => format!("hermes --resume {session_id}"),
+        SessionAgent::Grok => format!("grok --resume {session_id}"),
+        SessionAgent::Cursor => format!("cursor-agent --resume={session_id}"),
+        SessionAgent::Gemini => format!("gemini --resume {session_id}"),
+        SessionAgent::Kiro => format!("kiro-cli chat --resume-id {session_id}"),
     })
 }
 
@@ -722,9 +989,9 @@ mod tests {
 
     #[test]
     fn agent_index_is_stable() {
-        assert_eq!(agent_index(SessionAgent::Claude), 0);
-        assert_eq!(agent_index(SessionAgent::Codex), 1);
-        assert_eq!(agent_index(SessionAgent::OpenCode), 2);
+        for (idx, agent) in SessionAgent::ALL.into_iter().enumerate() {
+            assert_eq!(agent_index(agent), idx);
+        }
     }
 
     #[test]
@@ -736,11 +1003,7 @@ mod tests {
         // the builder boundary - the call sites skip the send on `None`.
         // This proves the integration, not just the predicate
         // (`agent_sessions::valid_session_id_rejects_leading_dash_*`).
-        for agent in [
-            SessionAgent::Claude,
-            SessionAgent::Codex,
-            SessionAgent::OpenCode,
-        ] {
+        for agent in SessionAgent::ALL {
             assert_eq!(
                 resume_command(agent, "--dangerously-skip-permissions"),
                 None,
@@ -752,9 +1015,9 @@ mod tests {
         }
         // A legitimate UUID session id still builds a command for every agent.
         let valid = "019dc9ea-38d7-7372-9cc4-253ce944d41b";
-        assert!(resume_command(SessionAgent::Claude, valid).is_some());
-        assert!(resume_command(SessionAgent::Codex, valid).is_some());
-        assert!(resume_command(SessionAgent::OpenCode, valid).is_some());
+        for agent in SessionAgent::ALL {
+            assert!(resume_command(agent, valid).is_some());
+        }
     }
 
     #[test]
@@ -783,5 +1046,52 @@ mod tests {
     fn older_sessions_hidden_label_pluralizes() {
         assert_eq!(older_sessions_hidden_label(1), "1 older session hidden");
         assert_eq!(older_sessions_hidden_label(2), "2 older sessions hidden");
+    }
+
+    #[test]
+    fn scan_result_requires_matching_generation() {
+        assert!(should_apply_scan_result(true, Some("/repo"), "/repo", 2, 2));
+        assert!(
+            !should_apply_scan_result(true, Some("/repo"), "/repo", 3, 2),
+            "a stale same-cwd scan must not overwrite a newer open"
+        );
+        assert!(!should_apply_scan_result(
+            false,
+            Some("/repo"),
+            "/repo",
+            2,
+            2
+        ));
+        assert!(!should_apply_scan_result(
+            true,
+            Some("/other"),
+            "/repo",
+            2,
+            2
+        ));
+    }
+
+    #[test]
+    fn moved_session_selection_clamps_to_visible_rows() {
+        assert_eq!(
+            moved_session_selection(0, 3, SessionSelectionMove::Previous),
+            0
+        );
+        assert_eq!(moved_session_selection(0, 3, SessionSelectionMove::Next), 1);
+        assert_eq!(moved_session_selection(2, 3, SessionSelectionMove::Next), 2);
+        assert_eq!(
+            moved_session_selection(1, 3, SessionSelectionMove::First),
+            0
+        );
+        assert_eq!(moved_session_selection(1, 3, SessionSelectionMove::Last), 2);
+        assert_eq!(moved_session_selection(7, 0, SessionSelectionMove::Last), 0);
+    }
+
+    #[test]
+    fn compact_cwd_label_uses_last_path_component() {
+        assert_eq!(compact_cwd_label("/home/arthur/paneflow"), "paneflow");
+        assert_eq!(compact_cwd_label("/home/arthur/paneflow/"), "paneflow");
+        assert_eq!(compact_cwd_label(r"C:\dev\paneflow"), "paneflow");
+        assert_eq!(compact_cwd_label("/"), "/");
     }
 }

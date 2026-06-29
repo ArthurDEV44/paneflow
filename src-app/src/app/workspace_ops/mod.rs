@@ -100,12 +100,17 @@ impl PaneFlowApp {
             // resuming into - the PREVIOUS workspace. Closed only if the new
             // workspace somehow has no pane.
             if self.agent_sessions.sessions_sidebar_open {
+                let keep_sidebar_focus = self.agent_sessions.sessions_focus.is_focused(window);
                 match self.workspaces[idx]
                     .root
                     .as_ref()
                     .and_then(|root| root.first_leaf())
                 {
-                    Some(pane) => self.open_sessions_sidebar_for_pane(&pane, cx),
+                    Some(pane) => self.open_sessions_sidebar_for_pane(
+                        &pane,
+                        keep_sidebar_focus.then_some(window),
+                        cx,
+                    ),
                     None => self.close_sessions_sidebar(cx),
                 }
             }
