@@ -40,6 +40,8 @@ const GUTTER_PAD_L: f32 = 8.0; // left breathing room inside the derived gutter
 const STICKY_HEADER_HEIGHT: f32 = 24.0;
 // Zed's gutter diff-hunk strip width: floor(0.275 * line_height) = 4px at ROW_HEIGHT 18.
 const BAR_W: f32 = 4.0; // colored hunk-indicator bar
+const DELETED_BAR_DASH_H: f32 = 1.0;
+const DELETED_BAR_DASH_STEP: f32 = 2.0;
 const PAD2: f32 = 6.0; // gap between the hunk bar and the line-number gutter
 
 /// The row source for one column - either unified or side-by-side.
@@ -409,6 +411,56 @@ impl DiffElement {
             .shape_line(text, self.font_size, &runs, None)
     }
 
+    fn push_hunk_bar(
+        origin: Point<Pixels>,
+        height: Pixels,
+        color: Hsla,
+        dashed: bool,
+        quads: &mut Vec<Quad>,
+    ) {
+        if !dashed {
+            quads.push(Quad {
+                bounds: Bounds::new(origin, size(px(BAR_W), height)),
+                color,
+            });
+            return;
+        }
+
+        let height = f32::from(height).max(0.0);
+        let mut y = 0.0;
+        while y < height {
+            let dash_h = DELETED_BAR_DASH_H.min(height - y);
+            quads.push(Quad {
+                bounds: Bounds::new(
+                    point(origin.x, origin.y + px(y)),
+                    size(px(BAR_W), px(dash_h)),
+                ),
+                color,
+            });
+            y += DELETED_BAR_DASH_STEP;
+        }
+    }
+
+    fn push_phantom_hatches(
+        &self,
+        window: &mut Window,
+        bounds: Bounds<Pixels>,
+        glyphs: &mut Vec<Glyphs>,
+    ) {
+        if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+            return;
+        }
+
+        let count = ((f32::from(bounds.size.width) / 4.0).ceil() as usize).max(1) + 8;
+        let phase = (f32::from(bounds.origin.y) / 3.0).rem_euclid(8.0);
+        let pattern: SharedString = "/".repeat(count).into();
+        glyphs.push(Glyphs {
+            origin: point(bounds.origin.x - px(phase), bounds.origin.y),
+            line: self.shape_plain(window, pattern, self.palette.phantom_hatch),
+            clip: Some(bounds),
+        });
+    }
+
     /// Emit draw commands for one unified row at top-left `origin`.
     #[allow(clippy::too_many_arguments)]
     fn layout_unified(
@@ -474,10 +526,20 @@ impl DiffElement {
                 // (row-bg wash, opaque hunk-bar color, word-diff bg). EP-002
                 // US-007: context now gets a faint document wash instead of the
                 // bare window background.
-                let (bg, bar_color, word_bg) = match row.kind {
-                    RowKind::Added => (Some(p.add_bg), Some(p.add_bar), Some(p.add_word_bg)),
-                    RowKind::Removed => (Some(p.del_bg), Some(p.del_bar), Some(p.del_word_bg)),
-                    _ => (Some(p.context_bg), None, None),
+                let (bg, gutter_bg, bar_color, word_bg) = match row.kind {
+                    RowKind::Added => (
+                        Some(p.add_bg),
+                        p.add_gutter_bg,
+                        Some(p.add_bar),
+                        Some(p.add_word_bg),
+                    ),
+                    RowKind::Removed => (
+                        Some(p.del_bg),
+                        p.del_gutter_bg,
+                        Some(p.del_bar),
+                        Some(p.del_word_bg),
+                    ),
+                    _ => (Some(p.context_bg), p.gutter_bg, None, None),
                 };
                 if let Some(bg) = bg {
                     quads.push(Quad {
@@ -490,14 +552,11 @@ impl DiffElement {
                 // reads as a structural rail on every content row.
                 quads.push(Quad {
                     bounds: Bounds::new(origin, size(px(BAR_W + PAD2) + self.gutter_w, row_h)),
-                    color: p.gutter_bg,
+                    color: gutter_bg,
                 });
                 // Zed-style colored hunk-indicator bar at the far left.
                 if let Some(c) = bar_color {
-                    quads.push(Quad {
-                        bounds: Bounds::new(origin, size(px(BAR_W), lh)),
-                        color: c,
-                    });
+                    Self::push_hunk_bar(origin, lh, c, row.kind == RowKind::Removed, quads);
                 }
                 // One line-number gutter (Zed shows a single merged display-row
                 // number: new line for adds/context, old line for deletes).
@@ -639,12 +698,22 @@ impl DiffElement {
         let p = &self.palette;
         let lh = self.line_height;
         let half_bounds = Bounds::new(origin, size(width, lh));
-        let (bg, bar_color, word_bg) = match cell.kind {
-            CellKind::Added => (Some(p.add_bg), Some(p.add_bar), Some(p.add_word_bg)),
-            CellKind::Removed => (Some(p.del_bg), Some(p.del_bar), Some(p.del_word_bg)),
-            CellKind::Phantom => (Some(p.phantom_bg), None, None),
+        let (bg, gutter_bg, bar_color, word_bg) = match cell.kind {
+            CellKind::Added => (
+                Some(p.add_bg),
+                p.add_gutter_bg,
+                Some(p.add_bar),
+                Some(p.add_word_bg),
+            ),
+            CellKind::Removed => (
+                Some(p.del_bg),
+                p.del_gutter_bg,
+                Some(p.del_bar),
+                Some(p.del_word_bg),
+            ),
+            CellKind::Phantom => (Some(p.phantom_bg), p.gutter_bg, None, None),
             // EP-002 US-007: faint document wash on unchanged code.
-            CellKind::Context => (Some(p.context_bg), None, None),
+            CellKind::Context => (Some(p.context_bg), p.gutter_bg, None, None),
         };
         if let Some(bg) = bg {
             quads.push(Quad {
@@ -653,19 +722,23 @@ impl DiffElement {
             });
         }
         if matches!(cell.kind, CellKind::Phantom) {
-            return; // dimmed empty gap, no bar/gutter/text
+            let hatch_x = origin.x + px(BAR_W + HALF_PAD) + self.gutter_w;
+            let hatch_w = (half_bounds.right() - hatch_x).max(px(0.));
+            self.push_phantom_hatches(
+                window,
+                Bounds::new(point(hatch_x, origin.y), size(hatch_w, lh)),
+                glyphs,
+            );
+            return; // empty gap: no hunk bar, number, or code text
         }
         // EP-002 US-007: gutter rail over this half's line-number column.
         quads.push(Quad {
             bounds: Bounds::new(origin, size(px(BAR_W + HALF_PAD) + self.gutter_w, lh)),
-            color: p.gutter_bg,
+            color: gutter_bg,
         });
         // Zed-style colored hunk-indicator bar at the half's left edge.
         if let Some(c) = bar_color {
-            quads.push(Quad {
-                bounds: Bounds::new(origin, size(px(BAR_W), lh)),
-                color: c,
-            });
+            Self::push_hunk_bar(origin, lh, c, cell.kind == CellKind::Removed, quads);
         }
         let num_color = match cell.kind {
             CellKind::Added => p.gutter_add,

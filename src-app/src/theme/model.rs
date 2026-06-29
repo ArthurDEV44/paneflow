@@ -399,8 +399,8 @@ impl UiColors {
             deleted: h(0xfa423e),
             added_background: h(0x1f3124),
             deleted_background: h(0x3b1f1a),
-            added_gutter_background: h(0x1c291f),
-            deleted_gutter_background: h(0x311c18),
+            added_gutter_background: h(0x132017),
+            deleted_gutter_background: h(0x28130e),
         }
     }
 

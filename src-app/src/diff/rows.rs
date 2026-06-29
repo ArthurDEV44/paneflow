@@ -339,6 +339,7 @@ pub struct RowPalette {
     pub del_bar: Hsla,
     /// Background for balancing phantom cells in the side-by-side view.
     pub phantom_bg: Hsla,
+    pub phantom_hatch: Hsla,
     /// Stronger backgrounds for word-diff-highlighted spans (US-010).
     pub add_word_bg: Hsla,
     pub del_word_bg: Hsla,
@@ -348,6 +349,8 @@ pub struct RowPalette {
     /// EP-002 US-007: persistent line-number-rail tint, painted over every
     /// content row's gutter region so the gutter reads as a structural column.
     pub gutter_bg: Hsla,
+    pub add_gutter_bg: Hsla,
+    pub del_gutter_bg: Hsla,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -428,20 +431,19 @@ pub fn palette(ui: crate::theme::UiColors) -> RowPalette {
         del_bg: diff.deleted_background,
         add_fg: diff.added,
         del_fg: diff.deleted,
-        // Gutter numbers for changed lines: the status hue softened toward
-        // the gutter's muted baseline so they tint without shouting over the
-        // line wash they sit on.
-        gutter_add: ui.muted.blend(diff.added.opacity(0.75)),
-        gutter_del: ui.muted.blend(diff.deleted.opacity(0.75)),
+        // Gutter numbers for changed lines use the sampled colors directly to
+        // match the reference diff gutters.
+        gutter_add: diff.added,
+        gutter_del: diff.deleted,
         mod_fg: ui.vc_modified,
         // Zed paints the gutter hunk strip as `editor_background.blend(version_control_*)`
         // so it reads solid; pre-blend against the diff body surface (`ui.base`,
         // what context lines sit on) so the bar is opaque, not faint at the wash alpha.
         add_bar: ui.base.blend(diff.added),
         del_bar: ui.base.blend(diff.deleted),
-        // Neutral alignment-row fill, derived from `muted` so it tracks the
-        // theme instead of a hardcoded slate hex.
-        phantom_bg: ui.muted.opacity(0.12),
+        // Empty split-side cells: base fill plus subtle diagonal hatches.
+        phantom_bg: ui.base,
+        phantom_hatch: ui.surface,
         // EP-002 US-007: intra-line word emphasis. Light keeps the theme's 0.40
         // `vc_word_*` alpha; dark drops to 0.28 - 0.40 read too hot over the
         // Codex-sampled dark line wash.
@@ -452,6 +454,8 @@ pub fn palette(ui: crate::theme::UiColors) -> RowPalette {
         // structural line-number column. Derived from `muted` to track theme.
         context_bg: ui.muted.opacity(0.025),
         gutter_bg: ui.muted.opacity(0.045),
+        add_gutter_bg: diff.added_gutter_background,
+        del_gutter_bg: diff.deleted_gutter_background,
     }
 }
 
