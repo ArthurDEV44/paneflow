@@ -43,7 +43,7 @@ Release builds are attached to the
 [latest GitHub release](https://github.com/ArthurDEV44/paneflow/releases/latest).
 You do not need Rust unless you are building from source.
 Asset filenames use the version without the leading `v` from the Git tag
-(`paneflow-0.7.1-x86_64.AppImage`, not `paneflow-v0.7.1-...`).
+(`paneflow-0.7.2-x86_64.AppImage`, not `paneflow-v0.7.2-...`).
 
 | Platform | Recommended path | Status |
 |---|---|---|
