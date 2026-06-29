@@ -120,6 +120,10 @@ const LEADING_SLOT_SIZE: f32 = 15.0;
 const SECTION_PX: f32 = 6.0;
 /// Square size shared by tab-bar icon buttons.
 const ACTION_BUTTON_SIZE: f32 = 22.0;
+/// Square size of the new-tab affordance that trails the last tab chip.
+const ADD_TAB_BUTTON_SIZE: f32 = TAB_HEIGHT;
+/// Plus glyph size inside the new-tab affordance.
+const ADD_TAB_ICON_SIZE: f32 = 16.0;
 /// Approximate width of the compact zoom badge in the action cluster.
 const ZOOM_BADGE_WIDTH: f32 = 18.0;
 /// Duration for folding/unfolding the tab-bar action cluster.
@@ -979,6 +983,35 @@ impl Pane {
         )
     }
 
+    /// Render the plus button that sits directly after the last tab chip.
+    fn new_tab_button(cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = tab_colors();
+        div()
+            .id("pane-btn-new-tab")
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .w(px(ADD_TAB_BUTTON_SIZE))
+            .h(px(ADD_TAB_BUTTON_SIZE))
+            .rounded(px(TAB_RADIUS))
+            .cursor_pointer()
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+            .on_click(cx.listener(|_this, _e: &ClickEvent, _window, cx| {
+                // See `PaneEvent::NewTerminalTab`: spawning in the app gives
+                // the new terminal the workspace cwd + app-level subscriptions.
+                cx.emit(PaneEvent::NewTerminalTab);
+                cx.stop_propagation();
+            }))
+            .child(
+                svg()
+                    .size(px(ADD_TAB_ICON_SIZE))
+                    .flex_none()
+                    .path("icons/plus.svg")
+                    .text_color(ui.muted),
+            )
+    }
+
     /// A 14px tab-bar icon. Monochrome logos render as a `text_color`-tinted
     /// `svg()` mask; multi-color logos render via `img()`, which rasterizes
     /// the SVG (resvg) and keeps every native fill/gradient - a `text_color`
@@ -1360,9 +1393,10 @@ impl Pane {
         for i in 0..tab_count {
             tabs_row = tabs_row.child(self.render_tab(i, ui, cx));
         }
+        tabs_row = tabs_row.child(Self::new_tab_button(cx));
 
         // Trailing drop zone (EP-001 US-002): the leftover strip space after
-        // the last tab. `flex_1` claims whatever width the tabs don't, so a
+        // the last tab control. `flex_1` claims whatever width the tabs don't, so a
         // drop here moves the dragged tab to the last slot. When the strip
         // overflows (overflow_x_scroll), this collapses to zero width and is
         // simply not a drop target - which is correct, there is no trailing
@@ -1832,7 +1866,7 @@ impl Pane {
     }
 
     /// Trailing action-button cluster of the tab bar (US-051: code-motion out
-    /// of `render_tab_bar`). Zoom badge + surface-ref / new-tab / split / files
+    /// of `render_tab_bar`). Zoom badge + surface-ref / split / files
     /// / sessions buttons, the built-in agent launchers, and the per-workspace
     /// custom buttons. Self-contained - recomputes the palette it needs.
     fn render_end_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1905,7 +1939,7 @@ impl Pane {
         let config = &self.cached_config;
         let visible_agents = crate::agent_launcher::TerminalAgent::visible(config);
         let show_sessions_button = !crate::agent_sessions::enabled_session_agents().is_empty();
-        let fixed_button_count = 5 + usize::from(show_sessions_button);
+        let fixed_button_count = 4 + usize::from(show_sessions_button);
         let action_cluster_width = Self::tab_bar_action_cluster_width(
             self.zoomed,
             fixed_button_count,
@@ -1954,16 +1988,6 @@ impl Pane {
                     };
                     let surface_id = terminal.entity_id().as_u64();
                     cx.emit(PaneEvent::CopySurfaceRef(surface_id));
-                }),
-            ))
-            // New terminal tab
-            .child(Self::action_button(
-                "pane-btn-new-tab",
-                "icons/terminal.svg",
-                cx.listener(|_this, _, _window, cx| {
-                    // See `PaneEvent::NewTerminalTab`: spawning in the app gives
-                    // the new terminal the workspace cwd + app-level subscriptions.
-                    cx.emit(PaneEvent::NewTerminalTab);
                 }),
             ))
             // Split vertical (panes side by side)
