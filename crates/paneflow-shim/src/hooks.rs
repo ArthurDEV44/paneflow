@@ -556,16 +556,13 @@ pub(crate) fn resolve_hook_command(event: &str) -> String {
 
 #[cfg(windows)]
 pub(crate) fn resolve_hook_command_windows(event: &str) -> String {
-    let command = match locate_sibling_hook_binary() {
-        Some(path) => windows_cmd_hook_command(&path, event),
-        None => format!("\"{HOOK_COMMAND_PREFIX}{event}\""),
-    };
-    format!("cmd.exe /D /C {command}")
-}
-
-#[cfg(windows)]
-fn windows_cmd_hook_command(path: &Path, event: &str) -> String {
-    format!("\"\"{}\" {event}\"", display_hook_program(path))
+    match locate_sibling_hook_binary() {
+        Some(path) => windows_powershell_hook_command(&path, event),
+        None => format!(
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '{}' {event}\"",
+            HOOK_COMMAND_PREFIX.trim_end()
+        ),
+    }
 }
 
 #[cfg(windows)]
@@ -2584,8 +2581,8 @@ mod hooks_tests {
 
     /// Windows Codex hooks (June 2026): `.codex/hooks.json` must carry one
     /// paneflow matcher-group per Codex event, with a PowerShell-safe generic
-    /// command plus a cmd.exe `commandWindows` fallback - and must NOT register
-    /// `Notification` (not a Codex event). Round-trips to empty on removal.
+    /// command and Windows override - and must NOT register `Notification`
+    /// (not a Codex event). Round-trips to empty on removal.
     #[cfg(not(unix))]
     #[test]
     fn codex_win_merge_writes_shell_safe_matcher_groups() {
@@ -2625,13 +2622,9 @@ mod hooks_tests {
                 "{event}: command fallback must remain detectable if the marker is stripped"
             );
             let win_cmd = handler["commandWindows"].as_str().unwrap();
-            assert!(
-                win_cmd.starts_with("cmd.exe /D /C "),
-                "{event}: commandWindows must use native cmd.exe, got {win_cmd}"
-            );
-            assert!(
-                win_cmd.ends_with(&format!(" {event}\"")),
-                "{event}: commandWindows must preserve the event arg, got {win_cmd}"
+            assert_eq!(
+                win_cmd, cmd,
+                "{event}: commandWindows must stay as shell-safe as command"
             );
         }
         assert!(
