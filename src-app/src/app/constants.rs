@@ -10,7 +10,8 @@ use gpui::{Hsla, Pixels, WindowBackgroundAppearance, px};
 /// Sidebar width in pixels - shared between sidebar and title bar for alignment.
 pub(crate) const SIDEBAR_WIDTH: f32 = 240.;
 
-/// Dark cockpit tint used while the window is inactive.
+/// Dark cockpit tint used as a Linux readability veil over native blur.
+#[cfg(target_os = "linux")]
 const DARK_CHROME_TINT: u32 = 0x141414;
 /// Linux-only: opacity of the neutral `#141414` veil applied over native blur
 /// while the window is active (see `cockpit_chrome_background`). Only referenced
@@ -162,11 +163,10 @@ fn windows_supports_system_backdrop() -> bool {
 
 /// Background used by the title bar and navigation rails.
 ///
-/// Windows keeps PaneFlow's original solid `#141414` while inactive and leaves
-/// active chrome transparent for standard Mica. macOS always stays transparent
-/// so AppKit's semantic material can perform its native, subtler active/inactive
-/// transition. Linux adds a theme-aware tint because its Wayland/X11 blur
-/// protocols define regions, not semantic light/dark materials.
+/// Windows and macOS keep the app chrome transparent so the platform-owned
+/// material, including any inactive-window fallback, remains unobscured. Linux
+/// adds a theme-aware tint because its Wayland/X11 blur protocols define
+/// regions, not semantic light/dark materials.
 pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool) -> Hsla {
     if background.l > 0.5 {
         if cfg!(any(target_os = "windows", target_os = "macos")) {
@@ -187,14 +187,11 @@ pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool
         return background;
     }
 
-    if cfg!(target_os = "macos") {
+    #[cfg(not(target_os = "linux"))]
+    let _ = is_window_active;
+
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
         return gpui::transparent_black();
-    } else if cfg!(target_os = "windows") {
-        return if is_window_active {
-            gpui::transparent_black()
-        } else {
-            Hsla::from(gpui::rgb(DARK_CHROME_TINT))
-        };
     }
 
     #[cfg(target_os = "linux")]
