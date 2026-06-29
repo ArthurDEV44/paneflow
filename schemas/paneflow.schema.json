@@ -150,7 +150,7 @@
         },
         "scroll_multiplier": {
           "type": ["number", "null"],
-          "description": "Scroll-wheel multiplier outside mouse-reporting and alternate-screen modes.",
+          "description": "Scroll-wheel multiplier outside mouse-reporting and alternate-screen modes. Applied when a terminal view is constructed.",
           "minimum": 0.1,
           "maximum": 10.0,
           "default": 1.0

@@ -628,8 +628,8 @@ pub struct TerminalConfig {
     /// up trackpad/wheel scrollback and `< 1.0` slows it. Forced to `1.0` in
     /// mouse-reporting mode (the PTY owns scroll there; altering the delta would
     /// corrupt the report) and in the alt-screen alternate-scroll path. `None`
-    /// resolves to `1.0`. Clamped to `[0.1, 10.0]`. Read live on each scroll
-    /// event, so a config reload takes effect without a restart.
+    /// resolves to `1.0`. Clamped to `[0.1, 10.0]`. Read when a TerminalView is
+    /// constructed, so existing terminals keep their current scroll feel.
     pub scroll_multiplier: Option<f32>,
 }
 

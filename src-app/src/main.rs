@@ -135,14 +135,12 @@ pub(crate) enum ThemeMode {
 }
 
 /// Which Terminal-page enum dropdown is currently open (only one at a time).
-/// `None` = all closed. Distinct from `font_dropdown_open` (the Terminal
-/// page's searchable font picker) so only one popover is active at a time.
+/// `None` = all closed. Distinct from `font_dropdown_open` (the Terminal page's
+/// searchable font picker) so only one popover is active at a time.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum TerminalDropdown {
     CursorShape,
-    CursorBlink,
     Bell,
-    Scrollback,
 }
 
 /// Which General-page select dropdown is currently open (only one at a time).

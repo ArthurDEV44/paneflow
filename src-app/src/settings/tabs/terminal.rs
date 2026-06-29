@@ -1,21 +1,18 @@
-//! "Terminal" settings tab (US-016) - cursor shape/blink, bell mode,
-//! scrollback, font family, font size, line height, ligatures, and
-//! option-as-meta.
+//! "Terminal" settings tab (US-016) - the small set of terminal preferences
+//! worth keeping in the primary Settings UI: cursor shape, bell mode, font
+//! family, and font size.
 //!
 //! Controls map to config like so:
-//! - **cursor_shape / cursor_blink / bell / scrollback_lines** → enum/preset
-//!   dropdowns (deferred popovers), persisted into the `terminal` block via
+//! - **cursor_shape / bell** -> enum/preset dropdowns (deferred popovers),
+//!   persisted into the `terminal` block via
 //!   [`config_writer::save_terminal_field`].
-//! - **font_family** → searchable monospace-font dropdown, persisted as a
+//! - **font_family** -> searchable monospace-font dropdown, persisted as a
 //!   top-level field via [`config_writer::save_config_value`].
-//! - **font_size / line_height** → `−`/`+` steppers that clamp by construction
-//!   (so an out-of-range value can never be entered), persisted as top-level
-//!   fields via [`config_writer::save_config_value`].
-//! - **ligatures** (terminal block) / **option_as_meta** (top-level) → toggle
-//!   pills.
+//! - **font_size** -> a `−`/`+` stepper that clamps by construction, persisted
+//!   as a top-level field via [`config_writer::save_config_value`].
 //!
-//! Cursor/bell/blink/scrollback/ligatures are read once at terminal spawn, so
-//! their rows note "next new terminal"; font size and line height hot-reload.
+//! Other advanced terminal knobs remain supported in `paneflow.json`, but are
+//! intentionally not mirrored here to keep Settings focused.
 
 use gpui::{
     ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, MouseButton, ParentElement,
@@ -23,11 +20,11 @@ use gpui::{
 };
 use serde_json::{Value, json};
 
-use paneflow_config::schema::{CursorBlinkConfig, CursorShapeConfig, TerminalBellMode};
+use paneflow_config::schema::{CursorShapeConfig, TerminalBellMode};
 
 use crate::settings::components::{
     SETTINGS_CONTROL_CORNER_RADIUS, deferred_select_menu, hairline, section_header, select_chevron,
-    select_item, select_menu, select_trigger, setting_card, setting_text, toggle_pill,
+    select_item, select_menu, select_trigger, setting_card, setting_text,
 };
 
 use crate::{PaneFlowApp, TerminalDropdown};
@@ -41,28 +38,16 @@ impl PaneFlowApp {
 
         // ── current values ──────────────────────────────────────────────
         let shape = terminal.cursor_shape.unwrap_or_default();
-        let blink = terminal.cursor_blink.unwrap_or_default();
         let bell = terminal.bell.unwrap_or_default();
-        let scrollback = terminal.resolved_scrollback_lines();
-        let ligatures_on = terminal.ligatures.unwrap_or(false);
         let current_font =
             crate::terminal::element::resolve_font_family(config.font_family.as_deref());
-        let meta_on = config
-            .option_as_meta
-            .unwrap_or_else(crate::keys::default_option_as_meta);
         let font_size = config.font_size.unwrap_or(14.0) as f64;
-        let line_height = config.line_height.unwrap_or(1.3) as f64;
 
         let shape_label = match shape {
             CursorShapeConfig::Block => "Block",
             CursorShapeConfig::Beam => "Beam",
             CursorShapeConfig::Underline => "Underline",
             CursorShapeConfig::Hollow => "Hollow",
-        };
-        let blink_label = match blink {
-            CursorBlinkConfig::On => "Always blink",
-            CursorBlinkConfig::Off => "Never blink",
-            CursorBlinkConfig::TerminalControlled => "Terminal controlled",
         };
         let bell_label = match bell {
             TerminalBellMode::Visual => "Visual flash",
@@ -93,23 +78,6 @@ impl PaneFlowApp {
                 shape == CursorShapeConfig::Hollow,
             ),
         ];
-        let blink_opts: Vec<(String, Value, bool)> = vec![
-            (
-                "Terminal controlled".into(),
-                json!("terminal_controlled"),
-                blink == CursorBlinkConfig::TerminalControlled,
-            ),
-            (
-                "Always blink".into(),
-                json!("on"),
-                blink == CursorBlinkConfig::On,
-            ),
-            (
-                "Never blink".into(),
-                json!("off"),
-                blink == CursorBlinkConfig::Off,
-            ),
-        ];
         let bell_opts: Vec<(String, Value, bool)> = vec![
             (
                 "Visual flash".into(),
@@ -124,37 +92,19 @@ impl PaneFlowApp {
             ("Both".into(), json!("both"), bell == TerminalBellMode::Both),
             ("Off".into(), json!("off"), bell == TerminalBellMode::Off),
         ];
-        let scrollback_opts: Vec<(String, Value, bool)> =
-            [1_000usize, 5_000, 10_000, 25_000, 50_000, 100_000]
-                .into_iter()
-                .map(|n| (n.to_string(), json!(n), n == scrollback))
-                .collect();
 
         // ── Cursor ──────────────────────────────────────────────────────
-        let cursor_card = setting_card(ui)
-            .child(self.terminal_enum_row(
-                TerminalDropdown::CursorShape,
-                "Cursor shape",
-                "Default shape before any app-driven DECSCUSR escape. Takes effect on the next new terminal.",
-                shape_label.to_string(),
-                shape_opts,
-                "cursor_shape",
-                true,
-                ui,
-                cx,
-            ))
-            .child(hairline(ui))
-            .child(self.terminal_enum_row(
-                TerminalDropdown::CursorBlink,
-                "Cursor blink",
-                "Override the program's DECSCUSR blink preference. Takes effect on the next new terminal.",
-                blink_label.to_string(),
-                blink_opts,
-                "cursor_blink",
-                true,
-                ui,
-                cx,
-            ));
+        let cursor_card = setting_card(ui).child(self.terminal_enum_row(
+            TerminalDropdown::CursorShape,
+            "Cursor shape",
+            "Default shape before any app-driven DECSCUSR escape. Takes effect on the next new terminal.",
+            shape_label.to_string(),
+            shape_opts,
+            "cursor_shape",
+            true,
+            ui,
+            cx,
+        ));
 
         // ── Bell ────────────────────────────────────────────────────────
         let bell_card = setting_card(ui).child(self.terminal_enum_row(
@@ -171,18 +121,6 @@ impl PaneFlowApp {
 
         // ── Display ─────────────────────────────────────────────────────
         let display_card = setting_card(ui)
-            .child(self.terminal_enum_row(
-                TerminalDropdown::Scrollback,
-                "Scrollback lines",
-                "Max history kept per terminal. Takes effect on the next new terminal.",
-                scrollback.to_string(),
-                scrollback_opts,
-                "scrollback_lines",
-                true,
-                ui,
-                cx,
-            ))
-            .child(hairline(ui))
             .child(self.terminal_font_family_row(current_font, ui, cx))
             .child(hairline(ui))
             .child(self.terminal_stepper_row(
@@ -197,44 +135,7 @@ impl PaneFlowApp {
                 "font_size",
                 ui,
                 cx,
-            ))
-            .child(hairline(ui))
-            .child(self.terminal_stepper_row(
-                "term-line-height",
-                "Line height",
-                "Line height multiplier (1.0-2.5). Hot-reloads.",
-                line_height,
-                1.0,
-                2.5,
-                0.1,
-                1,
-                "line_height",
-                ui,
-                cx,
-            ))
-            .child(hairline(ui))
-            .child(self.terminal_toggle_row(
-                "term-ligatures",
-                "Ligatures",
-                "Render programming-font ligatures (=> != ===). Takes effect on the next new terminal.",
-                ligatures_on,
-                "ligatures",
-                true,
-                ui,
-                cx,
             ));
-
-        // ── Input ───────────────────────────────────────────────────────
-        let input_card = setting_card(ui).child(self.terminal_toggle_row(
-            "term-option-as-meta",
-            "Option as Meta",
-            "Send an ESC prefix for Alt/Option chords. Disable on macOS to type Unicode via Option.",
-            meta_on,
-            "option_as_meta",
-            false,
-            ui,
-            cx,
-        ));
 
         div()
             .flex()
@@ -246,8 +147,6 @@ impl PaneFlowApp {
             .child(bell_card)
             .child(section_header(ui, "Display"))
             .child(display_card)
-            .child(section_header(ui, "Input"))
-            .child(input_card)
     }
 
     fn terminal_font_family_row(
@@ -581,42 +480,6 @@ impl PaneFlowApp {
                         button(format!("{id}-inc"), "+", at_max)
                             .when(!at_max, move |b| b.on_click(inc)),
                     ),
-            )
-    }
-
-    /// A toggle row - only the switch is interactive (the row itself does not
-    /// hover or click). `nested` routes the write to the `terminal` block (e.g.
-    /// `ligatures`) vs. a top-level key (`option_as_meta`).
-    #[allow(clippy::too_many_arguments)]
-    fn terminal_toggle_row(
-        &self,
-        id: &'static str,
-        title: &'static str,
-        description: &'static str,
-        current: bool,
-        config_key: &'static str,
-        nested: bool,
-        ui: crate::theme::UiColors,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(16.))
-            .px(px(12.))
-            .py(px(10.))
-            .child(setting_text(ui, title, description))
-            .child(
-                div()
-                    .id(id)
-                    .flex_shrink_0()
-                    .cursor(CursorStyle::PointingHand)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                        // US-016: cache-mutate + notify + off-thread persist.
-                        this.persist_setting(nested, config_key, Value::Bool(!current), cx);
-                    }))
-                    .child(toggle_pill(current, ui)),
             )
     }
 }
