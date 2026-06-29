@@ -100,12 +100,31 @@ const NAV_GROUPS: &[NavGroup] = &[
     },
     NavGroup {
         label: "Terminal",
-        items: &[NavItem {
-            section: SettingsSection::Terminal,
-            label: "Terminal",
-            icon: "icons/terminal.svg",
-            keywords: &["cursor", "bell", "font", "font family", "font size"],
-        }],
+        items: &[
+            NavItem {
+                section: SettingsSection::Terminal,
+                label: "Terminal",
+                icon: "icons/terminal.svg",
+                keywords: &["cursor", "bell", "font", "font family", "font size"],
+            },
+            NavItem {
+                section: SettingsSection::Workspaces,
+                label: "Workspaces",
+                icon: "icons/layout-grid.svg",
+                keywords: &[
+                    "workspace",
+                    "workspaces",
+                    "project",
+                    "layout",
+                    "pane",
+                    "panes",
+                    "flow",
+                    "toml",
+                    "agent",
+                    "command",
+                ],
+            },
+        ],
     },
     NavGroup {
         label: "Integrations",
@@ -146,6 +165,7 @@ pub(crate) fn section_title(section: SettingsSection) -> &'static str {
         SettingsSection::Notifications => "Notifications",
         SettingsSection::AiAgent => "AI Agent",
         SettingsSection::McpServers => "MCP Servers",
+        SettingsSection::Workspaces => "Workspaces",
     }
 }
 
@@ -400,6 +420,7 @@ impl PaneFlowApp {
             }
             SettingsSection::AiAgent => self.render_ai_agent_content(cx).into_any_element(),
             SettingsSection::McpServers => self.render_mcp_servers_content(cx).into_any_element(),
+            SettingsSection::Workspaces => self.render_workspaces_content(cx).into_any_element(),
         };
 
         let ipc_banner = self.ipc_status.is_disabled().then(|| {
@@ -544,6 +565,8 @@ impl PaneFlowApp {
         self.font_search.clear();
         self.terminal_dropdown = None;
         self.general_dropdown = None;
+        self.workspace_template_dropdown = None;
+        self.workspace_template_detail_open = false;
         if self.recording_shortcut_idx.is_some() {
             self.recording_shortcut_idx = None;
             let config = paneflow_config::loader::load_config();
@@ -551,6 +574,9 @@ impl PaneFlowApp {
         }
         if section == SettingsSection::McpServers {
             self.refresh_mcp_status(cx);
+        }
+        if section == SettingsSection::Workspaces {
+            self.sync_workspace_template_inputs(cx);
         }
         self.settings_focus.focus(window, cx);
         cx.notify();

@@ -11,3 +11,4 @@ pub mod mcp;
 pub mod notifications;
 pub mod shortcuts;
 pub mod terminal;
+pub mod workspaces;

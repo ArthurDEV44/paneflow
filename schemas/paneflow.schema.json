@@ -394,6 +394,11 @@
           "type": ["string", "null"],
           "description": "Default working directory for the workspace."
         },
+        "layout_preset": {
+          "type": ["string", "null"],
+          "enum": ["even_h", "even_v", "main_vertical", "tiled", null],
+          "description": "Visual workspace-builder preset. Mirrors paneflow up layout presets."
+        },
         "color": {
           "type": ["string", "null"],
           "description": "Workspace accent color as a 6-digit lowercase hex string (no leading #).",
@@ -469,6 +474,10 @@
         "command": {
           "type": ["string", "null"],
           "description": "Shell command to run on surface creation."
+        },
+        "prompt": {
+          "type": ["string", "null"],
+          "description": "Prompt text to prefill after launching an agent command."
         },
         "cwd": {
           "type": ["string", "null"],

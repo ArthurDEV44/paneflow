@@ -1426,7 +1426,7 @@ impl PaneFlowApp {
     ///
     /// Atomic: every pane's cwd is canonicalized BEFORE anything spawns, so a
     /// bad directory returns -32602 with no half-built workspace (US-012).
-    fn handle_workspace_up(
+    pub(crate) fn handle_workspace_up(
         &mut self,
         params: &serde_json::Value,
         cx: &mut Context<Self>,

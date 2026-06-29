@@ -103,6 +103,7 @@ impl LayoutTree {
                             // surface_id is not restart-stable).
                             custom_name: tv_ref.terminal.custom_name.clone(),
                             command: None,
+                            prompt: None,
                             cwd,
                             env: None,
                             focus: if i == active_terminal_idx {

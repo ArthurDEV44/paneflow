@@ -292,6 +292,18 @@ pub fn with_agent_panel_field(
     serde_json::from_value(json).unwrap_or_else(|_| config.clone())
 }
 
+/// In-memory companion for [`save_commands_checked`]. Replaces the full
+/// user-defined command/template list while preserving every other config
+/// field.
+pub fn with_commands(
+    config: &paneflow_config::schema::PaneFlowConfig,
+    commands: Vec<paneflow_config::schema::CommandDefinition>,
+) -> paneflow_config::schema::PaneFlowConfig {
+    let mut next = config.clone();
+    next.commands = commands;
+    next
+}
+
 /// Save a single field inside the `"terminal": { ... }` block in `paneflow.json`
 /// (US-016 Terminal settings tab). A `Null` value removes the key (restoring
 /// the schema default on next load); the `"terminal"` object itself is left in
@@ -317,6 +329,28 @@ pub fn save_agent_panel_field_checked(key: &str, value: serde_json::Value) -> bo
     let _guard = config_write_guard();
     let mut json = load_raw_config(&path);
     apply_agent_panel_field(&mut json, key, value);
+    write_config_checked(&path, &json)
+}
+
+/// Save the full `commands` array in `paneflow.json`, preserving unknown
+/// top-level keys and sibling settings.
+pub fn save_commands_checked(commands: Vec<paneflow_config::schema::CommandDefinition>) -> bool {
+    let Some(path) = paneflow_config::loader::config_path() else {
+        log::warn!("config: cannot determine config path, not saving");
+        return false;
+    };
+    let value = match serde_json::to_value(commands) {
+        Ok(value) => value,
+        Err(e) => {
+            log::warn!("config: failed to serialize commands: {e}");
+            return false;
+        }
+    };
+    let _guard = config_write_guard();
+    let mut json = load_raw_config(&path);
+    if let Some(root) = json.as_object_mut() {
+        root.insert("commands".to_string(), value);
+    }
     write_config_checked(&path, &json)
 }
 

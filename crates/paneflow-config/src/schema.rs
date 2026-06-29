@@ -980,6 +980,13 @@ pub struct WorkspaceDefinition {
     pub name: Option<String>,
     /// Default working directory for the workspace.
     pub cwd: Option<String>,
+    /// Layout preset used by the visual workspace builder.
+    ///
+    /// Accepted values mirror `paneflow up`: `"even_h"`, `"even_v"`,
+    /// `"main_vertical"`, and `"tiled"`. Older configs may omit this and rely
+    /// on `layout` alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_preset: Option<String>,
     /// Color as a 6-digit hex string (e.g. "ff6600").
     pub color: Option<String>,
     /// Root layout node describing pane arrangement.
@@ -1345,6 +1352,12 @@ pub struct SurfaceDefinition {
     pub custom_name: Option<String>,
     /// Shell command to run in this surface.
     pub command: Option<String>,
+    /// Prompt text to prefill after launching an agent command.
+    ///
+    /// Kept optional so session persistence and plain command panes do not
+    /// carry template-only state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     /// Working directory override for this surface.
     pub cwd: Option<String>,
     /// Extra environment variables.

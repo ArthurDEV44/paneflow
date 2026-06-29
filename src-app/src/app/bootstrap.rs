@@ -743,6 +743,30 @@ impl PaneFlowApp {
             cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Search settings…", cx));
         cx.observe(&settings_search_input, |_, _, cx| cx.notify())
             .detach();
+        let workspace_template_name_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Workspace name", cx));
+        cx.observe(&workspace_template_name_input, |_, _, cx| cx.notify())
+            .detach();
+        let workspace_template_project_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Project path", cx));
+        cx.observe(&workspace_template_project_input, |_, _, cx| cx.notify())
+            .detach();
+        let workspace_pane_name_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Pane name", cx));
+        cx.observe(&workspace_pane_name_input, |_, _, cx| cx.notify())
+            .detach();
+        let workspace_pane_cwd_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Pane cwd", cx));
+        cx.observe(&workspace_pane_cwd_input, |_, _, cx| cx.notify())
+            .detach();
+        let workspace_pane_command_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "clear && bun dev", cx));
+        cx.observe(&workspace_pane_command_input, |_, _, cx| cx.notify())
+            .detach();
+        let workspace_pane_prompt_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Prompt to prefill", cx));
+        cx.observe(&workspace_pane_prompt_input, |_, _, cx| cx.notify())
+            .detach();
 
         let cached_config = paneflow_config::loader::load_config();
         let effective_shortcuts = keybindings::effective_shortcuts(&cached_config.shortcuts);
@@ -775,6 +799,17 @@ impl PaneFlowApp {
             settings_search_input,
             terminal_dropdown: None,
             general_dropdown: None,
+            workspace_template_dropdown: None,
+            workspace_template_selected: None,
+            workspace_template_detail_open: false,
+            workspace_template_selected_pane: 0,
+            workspace_template_status: None,
+            workspace_template_name_input,
+            workspace_template_project_input,
+            workspace_pane_name_input,
+            workspace_pane_cwd_input,
+            workspace_pane_command_input,
+            workspace_pane_prompt_input,
             mcp_status: None,
             mcp_install: None,
             mcp_busy: false,
