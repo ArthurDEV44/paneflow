@@ -171,7 +171,7 @@ pub fn setting_text(
 }
 
 /// Filled secondary button (agents cancel-button style): `ui.subtle` bg,
-/// no border, hover lifts to `ui.border`. Used for "Reset to defaults"
+/// no border, whisper-soft text wash on hover. Used for "Reset to defaults"
 /// and similar inline actions inside section headers.
 pub fn secondary_button(
     id: &'static str,
@@ -189,7 +189,7 @@ pub fn secondary_button(
         .text_size(px(12.))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(ui.text)
-        .hover(|s| s.bg(ui.border))
+        .hover(move |s| s.bg(with_alpha(ui.text, 0.06)))
         .child(label)
         .on_click(on_click)
 }

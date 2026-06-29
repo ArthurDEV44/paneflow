@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use gpui::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, SharedString, Styled, Window, deferred, div, prelude::*, px,
+    MouseButton, ParentElement, SharedString, Styled, Window, deferred, div, prelude::*, px, rgb,
 };
 
 use crate::app::files_tree;
@@ -105,6 +105,47 @@ impl PaneFlowApp {
             })
     }
 
+    fn render_primary_select_menu_item(
+        &self,
+        id: SharedString,
+        label: &str,
+        ui: crate::theme::UiColors,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        let blue = if ui.base.l > 0.5 {
+            gpui::Hsla::from(rgb(0x007aff))
+        } else {
+            gpui::Hsla::from(rgb(0x0a84ff))
+        };
+        let blue_hover = gpui::Hsla::from(rgb(0x339cff));
+        let white = gpui::Hsla::from(rgb(0xffffff));
+
+        div()
+            .id(id)
+            .h(px(28.))
+            .px(px(8.))
+            .rounded(px(7.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .bg(blue)
+            .text_size(px(12.))
+            .text_color(white)
+            .cursor_pointer()
+            .hover(move |s| s.bg(blue_hover))
+            .on_click(on_click)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_x_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(label.to_string()),
+            )
+    }
+
     /// Build the deferred element that paints the right-click workspace
     /// context menu. Caller is responsible for the
     /// `if let Some(menu) = self.workspace_menu_open && menu.idx < self.workspaces.len()`
@@ -118,6 +159,7 @@ impl PaneFlowApp {
     ) -> AnyElement {
         let idx = menu.idx;
         let can_delete = !self.workspaces.is_empty();
+        let workflow_template = self.workspace_template_for_workspace(idx);
 
         // Data-driven editor entries: (id, label, command, shortcut_description)
         let editors: &[(&str, &str, &str, &str)] = &[
@@ -132,8 +174,10 @@ impl PaneFlowApp {
             ),
         ];
 
-        // Estimated menu height: 8 items × 28px + 2 separators × 9px + 8px padding
-        let menu_height = px(250.);
+        let workflow_rows = usize::from(workflow_template.is_some());
+        let separator_rows = 2 + workflow_rows;
+        let menu_rows = editors.len() + 4 + workflow_rows;
+        let menu_height = px(8. + menu_rows as f32 * 28. + separator_rows as f32 * 9.);
         let win_h = window.window_bounds().get_bounds().size.height;
         // Flip: if not enough space below the click, show the menu above it
         let menu_y = if menu.position.y + menu_height > win_h {
@@ -153,6 +197,26 @@ impl PaneFlowApp {
                 cx.notify();
             }))
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+
+        if let Some(template_idx) = workflow_template {
+            context_menu = context_menu.child(self.render_primary_select_menu_item(
+                "workspace-context-run-workflow".into(),
+                "Run Workflow",
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.workspace_menu_open = None;
+                    this.run_saved_workspace_template_for_workspace(idx, template_idx, cx);
+                    cx.stop_propagation();
+                }),
+            ));
+            context_menu = context_menu.child(
+                div()
+                    .mx(px(6.))
+                    .my(px(4.))
+                    .h(px(1.))
+                    .bg(menu_divider_color(ui)),
+            );
+        }
 
         for &(id, label, command, shortcut_desc) in editors {
             let shortcut = self

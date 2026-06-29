@@ -116,9 +116,13 @@ fn parse_terminal_profile(value: Option<&serde_json::Value>) -> TerminalSurfaceP
 /// Build the layout tree for `workspace.up` from a preset name. Mirrors the
 /// keyboard layout presets (`handle_layout_*`): `even_h` = side by side
 /// (Vertical divider), `even_v` = stacked (Horizontal divider), `main_vertical`
-/// = the focused pane at 60% with the rest stacked, `tiled` = tmux grid.
+/// = the focused pane on the left with the rest stacked, `tiled` = tmux grid.
 /// Unknown names fall back to `even_h`.
-fn build_up_layout(preset: &str, panes: Vec<Entity<Pane>>, focus_idx: usize) -> Option<LayoutTree> {
+pub(crate) fn build_up_layout(
+    preset: &str,
+    panes: Vec<Entity<Pane>>,
+    focus_idx: usize,
+) -> Option<LayoutTree> {
     match preset {
         "even_v" => LayoutTree::from_panes_equal(SplitDirection::Horizontal, panes),
         "main_vertical" => {
@@ -1654,7 +1658,7 @@ impl PaneFlowApp {
         .detach();
     }
 
-    fn schedule_launch_command(
+    pub(crate) fn schedule_launch_command(
         terminal: &Entity<TerminalView>,
         command: String,
         prompt: Option<String>,

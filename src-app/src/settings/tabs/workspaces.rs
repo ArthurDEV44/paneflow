@@ -11,16 +11,19 @@ use gpui::{
     div, img, prelude::*, px, rgb, svg,
 };
 use paneflow_config::schema::{
-    CommandDefinition, LayoutNode, SurfaceDefinition, WorkspaceDefinition,
+    CommandDefinition, LayoutNode, SurfaceDefinition, TerminalSurfaceProfile, WorkspaceDefinition,
 };
 use serde_json::{Value, json};
 
 use crate::agent_launcher::TerminalAgent;
+use crate::app::ipc_handler::{build_up_layout, canonicalize_workspace_cwd, sanitize_pane_name};
+use crate::layout::MAX_PANES;
 use crate::settings::components::{
     SETTINGS_CONTROL_CORNER_RADIUS, card_colors, deferred_select_menu, hairline,
     section_header_with_action, select_chevron, select_item, select_menu, select_trigger,
     setting_card, with_alpha,
 };
+use crate::terminal::TerminalView;
 use crate::{PaneFlowApp, WorkspaceTemplateDropdown};
 
 const LAYOUT_PRESETS: &[(&str, &str)] = &[
@@ -35,6 +38,16 @@ enum PaneKind {
     Empty,
     Agent,
     Command,
+}
+
+struct ExistingWorkspacePanePlan {
+    cwd: Option<std::path::PathBuf>,
+    command: Option<String>,
+    prompt: Option<String>,
+    env: Option<std::collections::HashMap<String, String>>,
+    profile: TerminalSurfaceProfile,
+    focus: bool,
+    label: Option<String>,
 }
 
 impl PaneFlowApp {
@@ -174,7 +187,7 @@ impl PaneFlowApp {
                                 .when(pane_count > 0, |b| {
                                     b.on_click(cx.listener(
                                         move |this, _: &ClickEvent, _window, cx| {
-                                            this.run_workspace_template(idx, cx);
+                                            this.run_workspace_template_in_open_project(idx, cx);
                                         },
                                     ))
                                 }),
@@ -368,21 +381,20 @@ impl PaneFlowApp {
 
         let panes_card = self.render_workspace_panes_card(idx, &panes, selected_pane, ui, cx);
         let inspector = self.render_workspace_pane_inspector(idx, panes.get(selected_pane), ui, cx);
-        let status = self.workspace_template_status.as_ref().map(|message| {
-            let is_error = message.starts_with("Error:");
-            div()
-                .px(px(12.))
-                .py(px(8.))
-                .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
-                .bg(if is_error {
-                    with_alpha(apple_red(), 0.12)
-                } else {
-                    with_alpha(switch_blue(), 0.12)
-                })
-                .text_size(px(12.))
-                .text_color(if is_error { apple_red() } else { ui.text })
-                .child(message.clone())
-        });
+        let status = self
+            .workspace_template_status
+            .as_ref()
+            .filter(|message| message.starts_with("Error:"))
+            .map(|message| {
+                div()
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
+                    .bg(with_alpha(apple_red(), 0.12))
+                    .text_size(px(12.))
+                    .text_color(apple_red())
+                    .child(message.clone())
+            });
 
         div()
             .flex()
@@ -543,7 +555,19 @@ impl PaneFlowApp {
                                         .child(surface_detail(pane)),
                                 ),
                         )
-                        .child(kind_badge(kind, ui)),
+                        .child(kind_badge(kind, ui))
+                        .child(
+                            pane_delete_button(
+                                SharedString::from(format!("workspace-pane-delete-{pane_idx}")),
+                                ui,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _: &ClickEvent, _window, cx| {
+                                    this.remove_workspace_template_pane_at(pane_idx, cx);
+                                    cx.stop_propagation();
+                                },
+                            )),
+                        ),
                 );
             }
         }
@@ -571,21 +595,6 @@ impl PaneFlowApp {
                                 this.add_workspace_template_pane(idx, cx);
                             },
                         )),
-                    )
-                    .child(
-                        icon_button(
-                            "workspace-pane-remove",
-                            "Remove selected",
-                            "icons/trash.svg",
-                            ui,
-                            false,
-                            !panes.is_empty(),
-                        )
-                        .when(!panes.is_empty(), |b| {
-                            b.on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                                this.remove_workspace_template_pane(cx);
-                            }))
-                        }),
                     ),
             )
             .into_any_element()
@@ -1046,7 +1055,7 @@ impl PaneFlowApp {
         self.sync_workspace_pane_inputs(cx);
     }
 
-    fn remove_workspace_template_pane(&mut self, cx: &mut Context<Self>) {
+    fn remove_workspace_template_pane_at(&mut self, remove_idx: usize, cx: &mut Context<Self>) {
         let Some(idx) = self.selected_workspace_template_index() else {
             return;
         };
@@ -1058,12 +1067,22 @@ impl PaneFlowApp {
         if panes.is_empty() {
             return;
         }
-        let remove_idx = self.workspace_template_selected_pane.min(panes.len() - 1);
+        let remove_idx = remove_idx.min(panes.len() - 1);
+        let selected_idx = self.workspace_template_selected_pane;
         panes.remove(remove_idx);
+        let next_selected_pane = if panes.is_empty() {
+            0
+        } else if selected_idx == remove_idx {
+            remove_idx.saturating_sub(1).min(panes.len() - 1)
+        } else if selected_idx > remove_idx {
+            selected_idx - 1
+        } else {
+            selected_idx.min(panes.len() - 1)
+        };
         let preset = workspace_layout_preset(workspace).to_string();
         workspace.layout_preset = Some(preset.clone());
         workspace.layout = build_layout_from_surfaces(&preset, panes);
-        self.workspace_template_selected_pane = remove_idx.saturating_sub(1);
+        self.workspace_template_selected_pane = next_selected_pane;
         self.workspace_template_status = Some("Pane removed.".to_string());
         self.persist_workspace_commands(commands, cx);
         self.sync_workspace_pane_inputs(cx);
@@ -1169,35 +1188,201 @@ impl PaneFlowApp {
         self.sync_workspace_template_inputs(cx);
     }
 
-    fn run_workspace_template(&mut self, idx: usize, cx: &mut Context<Self>) {
+    fn run_workspace_template_in_open_project(&mut self, idx: usize, cx: &mut Context<Self>) {
         self.workspace_template_selected = Some(idx);
         let mut commands = self.cached_config.commands.clone();
         let result = self
             .apply_workspace_inputs(&mut commands, cx)
             .and_then(|idx| self.apply_pane_inputs(&mut commands, idx, cx).map(|_| idx))
-            .and_then(|idx| self.workspace_up_params(&commands, idx));
+            .and_then(|idx| {
+                let params = self.workspace_up_params(&commands, idx)?;
+                let project = commands
+                    .get(idx)
+                    .and_then(|command| command.workspace.as_ref())
+                    .and_then(|workspace| workspace.cwd.as_deref())
+                    .ok_or_else(|| "project path is required".to_string())?;
+                let target_idx = self
+                    .open_workspace_index_for_project(project)
+                    .ok_or_else(|| "open this project first".to_string())?;
+                self.launch_workspace_params_in_open_workspace(&params, target_idx, cx)
+            });
 
-        let params = match result {
-            Ok(params) => params,
+        match result {
+            Ok(_) => {
+                self.persist_workspace_commands(commands, cx);
+                self.close_settings(cx);
+            }
             Err(message) => {
                 self.workspace_template_status = Some(format!("Error: {message}"));
                 cx.notify();
-                return;
             }
-        };
-
-        self.persist_workspace_commands(commands, cx);
-        let reply = self.handle_workspace_up(&params, cx);
-        if let Some(error) = reply.get(crate::app::ipc_handler::JSONRPC_ERROR_KEY) {
-            let message = error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("workspace launch failed");
-            self.workspace_template_status = Some(format!("Error: {message}"));
-            cx.notify();
-            return;
         }
-        self.close_settings(cx);
+    }
+
+    pub(crate) fn workspace_template_for_workspace(&self, workspace_idx: usize) -> Option<usize> {
+        let workspace = self.workspaces.get(workspace_idx)?;
+        let project = canonicalize_workspace_cwd(&workspace.cwd).ok()?;
+        self.cached_config
+            .commands
+            .iter()
+            .enumerate()
+            .find_map(|(idx, command)| {
+                let workflow = command.workspace.as_ref()?;
+                if template_surfaces(workflow).is_empty() {
+                    return None;
+                }
+                let workflow_cwd = workflow.cwd.as_deref()?.trim();
+                if workflow_cwd.is_empty() {
+                    return None;
+                }
+                let workflow_project = canonicalize_workspace_cwd(workflow_cwd).ok()?;
+                paths_equal(&project, &workflow_project).then_some(idx)
+            })
+    }
+
+    pub(crate) fn run_saved_workspace_template_for_workspace(
+        &mut self,
+        workspace_idx: usize,
+        template_idx: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let commands = self.cached_config.commands.clone();
+        let name = commands
+            .get(template_idx)
+            .map(|command| command.name.clone())
+            .unwrap_or_else(|| "Workflow".to_string());
+        let result = self
+            .workspace_up_params(&commands, template_idx)
+            .and_then(|params| {
+                self.launch_workspace_params_in_open_workspace(&params, workspace_idx, cx)
+            });
+
+        match result {
+            Ok(_) => self.show_toast(format!("{name} started"), cx),
+            Err(message) => self.show_toast(format!("Workflow failed: {message}"), cx),
+        }
+    }
+
+    fn open_workspace_index_for_project(&self, project: &str) -> Option<usize> {
+        let project = canonicalize_workspace_cwd(project).ok()?;
+        if let Some(active) = self.workspaces.get(self.active_idx)
+            && workspace_cwd_matches(&active.cwd, &project)
+        {
+            return Some(self.active_idx);
+        }
+        self.workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(idx, workspace)| {
+                workspace_cwd_matches(&workspace.cwd, &project).then_some(idx)
+            })
+    }
+
+    fn launch_workspace_params_in_open_workspace(
+        &mut self,
+        params: &Value,
+        target_idx: usize,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let preset = params
+            .get("layout")
+            .and_then(Value::as_str)
+            .unwrap_or("even_h");
+        let pane_specs = params
+            .get("panes")
+            .and_then(Value::as_array)
+            .filter(|panes| !panes.is_empty())
+            .ok_or_else(|| "add at least one pane before running".to_string())?;
+        let Some(workspace) = self.workspaces.get(target_idx) else {
+            return Err("open project workspace no longer exists".to_string());
+        };
+        if workspace.is_zoomed() {
+            return Err("unzoom the project before running the template here".to_string());
+        }
+        if pane_specs.len() > MAX_PANES {
+            return Err(format!("maximum pane count reached ({MAX_PANES})"));
+        }
+
+        let mut planned = Vec::with_capacity(pane_specs.len());
+        for spec in pane_specs {
+            let cwd = match spec.get("cwd").and_then(Value::as_str) {
+                Some(raw) => Some(canonicalize_workspace_cwd(raw).map_err(|err| err.message)?),
+                None => None,
+            };
+            planned.push(ExistingWorkspacePanePlan {
+                cwd,
+                command: spec
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .filter(|command| !command.is_empty())
+                    .map(str::to_string),
+                prompt: spec
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .filter(|prompt| !prompt.is_empty())
+                    .map(str::to_string),
+                env: launch_env_from_value(spec.get("env")),
+                profile: launch_profile_from_value(spec.get("profile")),
+                focus: spec.get("focus").and_then(Value::as_bool).unwrap_or(false),
+                label: spec
+                    .get("label")
+                    .or_else(|| spec.get("name"))
+                    .and_then(Value::as_str)
+                    .and_then(sanitize_pane_name),
+            });
+        }
+
+        let ws_id = self.workspaces[target_idx].id;
+        let focus_idx = planned.iter().position(|plan| plan.focus).unwrap_or(0);
+        let mut launches = Vec::with_capacity(planned.len());
+        let mut panes = Vec::with_capacity(planned.len());
+        for plan in planned {
+            let terminal = cx.new(|cx| {
+                TerminalView::with_cwd_env_and_profile(
+                    ws_id,
+                    plan.cwd.clone(),
+                    None,
+                    plan.env.clone(),
+                    plan.profile,
+                    cx,
+                )
+            });
+            if let Some(label) = plan.label {
+                terminal.update(cx, |view, _cx| {
+                    view.terminal.custom_name = Some(label);
+                });
+            }
+            let new_pane = self.create_pane(terminal.clone(), ws_id, cx);
+            launches.push((terminal, plan.command, plan.prompt));
+            panes.push(new_pane);
+        }
+        let tree = build_up_layout(preset, panes, focus_idx)
+            .ok_or_else(|| "could not build layout from panes".to_string())?;
+        if let Some(workspace) = self.workspaces.get_mut(target_idx) {
+            workspace.root = Some(tree);
+            workspace.saved_layout = None;
+            if let Some(first_cwd) = launches
+                .iter()
+                .find_map(|(terminal, _, _)| terminal.read(cx).terminal.cwd_now())
+            {
+                workspace.cwd = first_cwd.display().to_string();
+            }
+        }
+
+        if self.active_idx != target_idx {
+            self.active_idx = target_idx;
+            self.reroot_files_tree(cx);
+        }
+        for (pane_idx, (terminal, command, prompt)) in launches.into_iter().enumerate() {
+            if let Some(command) = command {
+                Self::schedule_launch_command(&terminal, command, prompt, pane_idx, cx);
+            } else if let Some(prompt) = prompt {
+                Self::schedule_prompt_prefill(&terminal, prompt, pane_idx, cx);
+            }
+        }
+        self.save_session(cx);
+        cx.notify();
+        Ok(())
     }
 
     fn persist_workspace_commands(
@@ -1485,6 +1670,43 @@ fn settings_label(
         )
 }
 
+fn workspace_cwd_matches(cwd: &str, project: &std::path::Path) -> bool {
+    canonicalize_workspace_cwd(cwd)
+        .ok()
+        .is_some_and(|cwd| paths_equal(&cwd, project))
+}
+
+fn paths_equal(left: &std::path::Path, right: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn launch_env_from_value(
+    value: Option<&Value>,
+) -> Option<std::collections::HashMap<String, String>> {
+    let object = value?.as_object()?;
+    let env = object
+        .iter()
+        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+        .collect::<std::collections::HashMap<_, _>>();
+    (!env.is_empty()).then_some(env)
+}
+
+fn launch_profile_from_value(value: Option<&Value>) -> TerminalSurfaceProfile {
+    match value.and_then(Value::as_str) {
+        Some("agent") => TerminalSurfaceProfile::Agent,
+        Some("review") => TerminalSurfaceProfile::Review,
+        Some("cached") => TerminalSurfaceProfile::Cached,
+        _ => TerminalSurfaceProfile::Normal,
+    }
+}
+
 fn switch_blue() -> Hsla {
     Hsla::from(rgb(0x339cff))
 }
@@ -1614,7 +1836,7 @@ fn icon_button(
                 s.bg(if primary {
                     with_alpha(bg, 0.86)
                 } else {
-                    ui.border
+                    with_alpha(ui.text, 0.06)
                 })
             })
         })
@@ -1626,6 +1848,32 @@ fn icon_button(
                 .text_color(if enabled { fg } else { disabled_fg }),
         )
         .child(label.into())
+}
+
+fn pane_delete_button(id: impl Into<ElementId>, ui: crate::theme::UiColors) -> Stateful<gpui::Div> {
+    let icon_color = ui.muted;
+    let hover_bg = with_alpha(ui.text, 0.06);
+
+    div()
+        .id(id)
+        .flex_none()
+        .w(px(26.))
+        .h(px(26.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.))
+        .text_color(icon_color)
+        .cursor(CursorStyle::PointingHand)
+        .hover(move |s| s.bg(hover_bg))
+        .tooltip(crate::ui_primitives::text_tooltip("Delete pane"))
+        .child(
+            svg()
+                .size(px(13.))
+                .flex_none()
+                .path("icons/trash.svg")
+                .text_color(icon_color),
+        )
 }
 
 fn destructive_icon_button(
@@ -1970,7 +2218,7 @@ fn main_vertical_layout(mut leaves: Vec<LayoutNode>) -> LayoutNode {
     } else {
         split("horizontal", leaves, None)
     };
-    split("vertical", vec![main, side], Some(vec![0.6, 0.4]))
+    split("vertical", vec![main, side], Some(vec![0.5, 0.5]))
 }
 
 fn tiled_layout(leaves: Vec<LayoutNode>) -> LayoutNode {
