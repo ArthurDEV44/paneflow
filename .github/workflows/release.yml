@@ -1848,6 +1848,8 @@ jobs:
         # libzypp's default transfer timeout from GitHub-hosted runners.
         run: |
           set -euo pipefail
+          mkdir -p /etc/zypp
+          touch /etc/zypp/zypp.conf
           sed -i \
             -e 's/^#\?[[:space:]]*download.connect_timeout.*/download.connect_timeout = 120/' \
             -e 's/^#\?[[:space:]]*download.transfer_timeout.*/download.transfer_timeout = 600/' \
