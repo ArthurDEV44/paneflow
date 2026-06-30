@@ -181,8 +181,8 @@ else
     git -C "${REPO_ROOT}" worktree add --detach "${WORKTREE_PATH}" "${OLD_TAG}"
     # `rust-toolchain.toml` was introduced in commit 1884237 (post-v0.2.11),
     # so the OLD worktree at v0.2.10 / v0.2.11 has no toolchain pin. In CI
-    # the dtolnay/rust-toolchain action installs 1.95 but does NOT set a
-    # rustup default - running plain `cargo` in a directory without a
+    # the dtolnay/rust-toolchain action installs the pinned toolchain but does
+    # NOT set a rustup default - running plain `cargo` in a directory without a
     # toolchain file fails with "rustup could not choose a version of cargo
     # to run, because one wasn't specified explicitly".
     #

@@ -8,8 +8,8 @@ mid-release (the failure mode that broke CI on v0.2.11).
 ## Where the pin lives
 
 - `rust-toolchain.toml` (repo root) - `channel`, `components`, `profile`
-- `.github/workflows/release.yml` - every `dtolnay/rust-toolchain@master` step
-  passes the same `toolchain: "1.95"` input. Both must move together.
+- `.github/workflows/*.yml` - every explicit `dtolnay/rust-toolchain@master`
+  step passes the same `toolchain: "1.96.1"` input. Both must move together.
 
 ## Quarterly bump procedure
 
@@ -32,20 +32,20 @@ forces a sooner bump).
 3. If `cargo fmt` produced any diff, commit it as a single
    `style: apply rustfmt for stable <new-version> / rustfmt <fmt-version>`
    commit *before* the toolchain bump, so the bump itself is mechanical.
-4. Update the pin in two places, in the same commit:
+4. Update the pin and workflow inputs in the same commit:
    - `rust-toolchain.toml` -> `channel = "<new-version>"`
-   - `.github/workflows/release.yml` -> every `toolchain: "<new-version>"`
+   - `.github/workflows/*.yml` -> every explicit `toolchain: "<new-version>"`
 5. Open the PR titled `chore(rust): bump pinned toolchain to <new-version>`
    and let CI run. Both fmt and clippy must be green; if not, fix in the
    same PR.
 
-## Why pin to a specific minor (not `stable`)
+## Why pin to a specific release (not `stable`)
 
 `dtolnay/rust-toolchain@stable` resolves at job runtime. When a new Rust
 release ships (every 6 weeks) the next CI run silently picks it up; if
 `rustfmt` changes formatting, the very next push fails `cargo fmt --check`
 even though no application code changed. That happened on v0.2.11. Pinning
-to a specific minor moves the bump from "automatic and surprising" to
+to a specific release moves the bump from "automatic and surprising" to
 "explicit and reviewed".
 
 ## When to override locally

@@ -141,6 +141,10 @@ const ACTION_CLUSTER_ANIMATION_MS: u64 = 280;
 const OVERLAY_MARGIN: f32 = 8.0;
 /// Corner radius (px) of the drop-to-split preview overlay.
 const OVERLAY_RADIUS: f32 = 8.0;
+/// Apple system blue (#007AFF), used for the CLI drop placement preview.
+const DROP_OVERLAY_BLUE: u32 = 0x007aff;
+/// Low-alpha fill so the placement card stays visible without washing the pane.
+const DROP_OVERLAY_BACKGROUND_ALPHA: f32 = 0.10;
 /// Hard upper bound on tab title length in characters. Mirrors Zed's
 /// `MAX_TAB_TITLE_LEN` (`zed/crates/editor/src/items.rs:64`). Anything past
 /// this is replaced with a trailing ellipsis before the CSS ellipsis layer.
@@ -2249,18 +2253,13 @@ impl Render for Pane {
         // is likewise `.invisible()` + `group_drag_over` + `on_drop`. The
         // hitbox is `HitboxBehavior::Normal`, so it never blocks the terminal's
         // mouse input behind it (Risk #3).
-        // Bright "tech" blue (Tailwind sky-500, #0EA5E9) for the border, so the
-        // translucent fill reads as a crisp framed panel rather than a flat
-        // wash. Fixed rather than accent-derived: darkening the accent landed on
-        // navy, which read as muddy. Alpha ~0.75 so the border is present but
-        // not harsh.
-        let border_blue = gpui::rgba(0x0ea5e9bf);
+        let overlay_blue = Hsla::from(rgb(DROP_OVERLAY_BLUE));
         let overlay = div()
             .absolute()
-            .bg(accent.opacity(0.22))
+            .bg(overlay_blue.opacity(DROP_OVERLAY_BACKGROUND_ALPHA))
             .rounded(px(OVERLAY_RADIUS))
             .border_2()
-            .border_color(border_blue)
+            .border_color(overlay_blue)
             .invisible()
             .group_drag_over::<TabDrag>(group_name.clone(), |s| s.visible())
             // A session dragged from the sidebar lights up the same overlay.

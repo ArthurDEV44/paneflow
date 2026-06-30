@@ -6,7 +6,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ArthurDEV44/paneflow"></a>
   <a href="https://github.com/ArthurDEV44/paneflow/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/ArthurDEV44/paneflow/total"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-informational">
-  <img alt="Rust" src="https://img.shields.io/badge/Rust-1.95-orange?logo=rust">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-1.96.1-orange?logo=rust">
 </p>
 
 **A native GPUI workspace for running coding agents in parallel.**
@@ -201,7 +201,7 @@ Paneflow is intentionally local-first.
 
 ## Build from source
 
-Paneflow pins Rust 1.95 through [rust-toolchain.toml](rust-toolchain.toml).
+Paneflow pins Rust 1.96.1 through [rust-toolchain.toml](rust-toolchain.toml).
 
 ```bash
 git clone https://github.com/ArthurDEV44/paneflow.git
