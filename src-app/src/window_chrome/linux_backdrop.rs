@@ -14,6 +14,8 @@ use anyhow::{Context as _, Result, anyhow};
 use gpui::{Window, WindowBackgroundAppearance};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 
+const LINUX_NATIVE_BACKDROP_ENV: &str = "PANEFLOW_LINUX_NATIVE_BACKDROP";
+
 static NATIVE_BLUR_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
@@ -25,8 +27,28 @@ pub(crate) fn native_blur_active() -> bool {
     NATIVE_BLUR_ACTIVE.load(Ordering::Relaxed)
 }
 
+fn native_backdrop_enabled() -> bool {
+    match std::env::var(LINUX_NATIVE_BACKDROP_ENV) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
 /// Detects and installs the best native blur mechanism for the active session.
 pub(crate) fn apply_subtle_chrome_material(window: &mut Window) {
+    if !native_backdrop_enabled() {
+        BACKDROP.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        NATIVE_BLUR_ACTIVE.store(false, Ordering::Relaxed);
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        window.refresh();
+        return;
+    }
+
     let backdrop = match LinuxBackdrop::new(window) {
         Ok(backdrop) => backdrop,
         Err(error) => {
@@ -53,6 +75,15 @@ pub(crate) fn apply_subtle_chrome_material(window: &mut Window) {
 /// Refreshes compositor regions after resize and processes Wayland capability
 /// changes. The blur is confined to the sidebar plus title bar.
 pub(crate) fn refresh_blur_region(window: &mut Window) {
+    if !native_backdrop_enabled() {
+        BACKDROP.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        NATIVE_BLUR_ACTIVE.store(false, Ordering::Relaxed);
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        return;
+    }
+
     BACKDROP.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(backdrop) = slot.as_mut() else {

@@ -73,7 +73,7 @@ use gpui::{
     Animation, AnimationExt, App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle,
     Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render,
     ResizeEdge, SharedString, Styled, Window, WindowBounds, WindowDecorations, WindowOptions,
-    canvas, div, point, prelude::*, px, size, transparent_black,
+    canvas, div, point, prelude::*, px, size,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -295,6 +295,11 @@ fn startup_splash_shimmer_color(base_color: gpui::Hsla, index: usize, delta: f32
 
 impl Render for StartupSplashView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match window.window_decorations() {
+            Decorations::Client { .. } => window.set_client_inset(RESIZE_BORDER),
+            Decorations::Server => window.set_client_inset(px(0.0)),
+        }
+
         if !self.mount_scheduled {
             self.mount_scheduled = true;
             cx.spawn_in(window, async move |_, cx| {
@@ -318,7 +323,9 @@ impl Render for StartupSplashView {
         div()
             .font_family("IBM Plex Sans")
             .size_full()
-            .bg(transparent_black())
+            .bg(crate::app::constants::cockpit_backdrop_background(
+                crate::theme::active_theme().title_bar_background,
+            ))
             .flex()
             .items_center()
             .justify_center()
@@ -1838,7 +1845,9 @@ impl Render for PaneFlowApp {
         // Outer backdrop div - provides the invisible resize border zone for CSD
         div()
             .id("window-backdrop")
-            .bg(transparent_black())
+            .bg(crate::app::constants::cockpit_backdrop_background(
+                theme.title_bar_background,
+            ))
             .size_full()
             .map(|d| match decorations {
                 Decorations::Server => d,

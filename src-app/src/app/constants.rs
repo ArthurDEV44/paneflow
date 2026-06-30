@@ -50,8 +50,8 @@ pub(crate) const WORKSPACE_CARD_CORNER_RADIUS: Pixels = px(12.);
 ///
 /// Windows delegates to GPUI's system backdrop support. On macOS PaneFlow
 /// installs a semantic AppKit sidebar material after the native window opens.
-/// Linux starts opaque and switches to a transparent surface only after the
-/// compositor advertises a supported blur protocol.
+/// Linux stays opaque: compositor blur/transparency protocols are too uneven
+/// across Wayland/X11 stacks to make rounded CSD borders look intentional.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowBackdropPreference {
     Auto,
@@ -88,6 +88,12 @@ pub(crate) fn window_background_appearance(
     config_value: Option<&str>,
 ) -> WindowBackgroundAppearance {
     let preference = window_backdrop_preference(config_value);
+    window_background_appearance_for_preference(preference)
+}
+
+fn window_background_appearance_for_preference(
+    preference: WindowBackdropPreference,
+) -> WindowBackgroundAppearance {
     #[cfg(target_os = "windows")]
     {
         match preference {
@@ -115,11 +121,8 @@ pub(crate) fn window_background_appearance(
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        match preference {
-            WindowBackdropPreference::Transparent => WindowBackgroundAppearance::Transparent,
-            WindowBackdropPreference::Blurred => WindowBackgroundAppearance::Blurred,
-            _ => WindowBackgroundAppearance::Opaque,
-        }
+        let _ = preference;
+        WindowBackgroundAppearance::Opaque
     }
 }
 
@@ -274,3 +277,25 @@ pub(crate) const MAX_CLOSED_PANE_SCROLLBACK_BYTES: usize = 2 * 1024 * 1024;
 
 /// Width of the invisible border zone used for CSD edge/corner resize handles.
 pub(crate) const RESIZE_BORDER: Pixels = px(10.0);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_window_background_stays_opaque_for_translucent_preferences() {
+        for preference in [
+            WindowBackdropPreference::Auto,
+            WindowBackdropPreference::Mica,
+            WindowBackdropPreference::Blurred,
+            WindowBackdropPreference::Transparent,
+            WindowBackdropPreference::Opaque,
+        ] {
+            assert_eq!(
+                window_background_appearance_for_preference(preference),
+                WindowBackgroundAppearance::Opaque
+            );
+        }
+    }
+}
