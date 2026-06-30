@@ -135,6 +135,17 @@ impl PaneFlowApp {
     /// background thread, and an OSC-title subscription keeps the tab label in
     /// sync with the running process.
     pub(crate) fn spawn_bottom_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let terminal = self.create_bottom_terminal(cx);
+        let id = terminal.id;
+        let view = terminal.view.clone();
+        self.agents_view.bottom_terminals.push(terminal);
+        self.agents_view.bottom_panel_active = Some(id);
+        self.prune_bottom_terminal_cache(Some(id), false, cx);
+        view.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn create_bottom_terminal(&mut self, cx: &mut Context<Self>) -> crate::BottomTerminal {
         let cwd = self.bottom_panel_cwd();
         let seq = self.agents_view.bottom_terminal_seq + 1;
         self.agents_view.bottom_terminal_seq = seq;
@@ -156,7 +167,7 @@ impl PaneFlowApp {
             )
         });
 
-        // OSC 0/2 title → tab label, so a tab reads "zsh" / "claude" / a cwd
+        // OSC 0/2 title -> tab label, so a tab reads "zsh" / "claude" / a cwd
         // rather than a frozen "Terminal N". Detached: the entity owns its
         // lifecycle and the listener drops when the tab (and entity) is removed.
         cx.subscribe(
@@ -170,17 +181,11 @@ impl PaneFlowApp {
         )
         .detach();
 
-        self.agents_view
-            .bottom_terminals
-            .push(crate::BottomTerminal {
-                id,
-                title: format!("Terminal {seq}"),
-                view: view.clone(),
-            });
-        self.agents_view.bottom_panel_active = Some(id);
-        self.prune_bottom_terminal_cache(Some(id), false, cx);
-        view.read(cx).focus_handle(cx).focus(window, cx);
-        cx.notify();
+        crate::BottomTerminal {
+            id,
+            title: format!("Terminal {seq}"),
+            view,
+        }
     }
 
     /// Select a terminal tab and route the keyboard to its PTY.
@@ -199,6 +204,32 @@ impl PaneFlowApp {
         {
             term.view.read(cx).focus_handle(cx).focus(window, cx);
         }
+        cx.notify();
+    }
+
+    pub(crate) fn restart_active_bottom_terminal(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(active_id) = self.agents_view.bottom_panel_active else {
+            return;
+        };
+        let Some(pos) = self
+            .agents_view
+            .bottom_terminals
+            .iter()
+            .position(|term| term.id == active_id)
+        else {
+            return;
+        };
+        let terminal = self.create_bottom_terminal(cx);
+        let id = terminal.id;
+        let view = terminal.view.clone();
+        self.agents_view.bottom_terminals[pos] = terminal;
+        self.agents_view.bottom_panel_active = Some(id);
+        view.read(cx).focus_handle(cx).focus(window, cx);
+        self.show_toast("Terminal restarted with current shell", cx);
         cx.notify();
     }
 
@@ -449,7 +480,7 @@ fn render_bottom_tab_strip(
     // instead of pinning to the far edge, so it reads as "append another".
     scroll = scroll.child(render_bottom_add_button(ui, cx));
 
-    div()
+    let mut strip = div()
         .id("agents-bottom-tabstrip")
         .flex_none()
         .h(px(40.))
@@ -461,7 +492,11 @@ fn render_bottom_tab_strip(
         .pl(px(8.))
         .pr(px(6.))
         .bg(ui.base)
-        .child(scroll)
+        .child(scroll);
+    if active.is_some() {
+        strip = strip.child(render_bottom_restart_button(ui, cx));
+    }
+    strip
         .child(render_bottom_panel_close_button(ui, cx))
         .into_any_element()
 }
@@ -541,6 +576,35 @@ fn render_bottom_tab_close_button(
                 .path("icons/close.svg")
                 .text_color(ui.muted),
         )
+        .into_any_element()
+}
+
+fn render_bottom_restart_button(
+    ui: crate::theme::UiColors,
+    cx: &mut Context<PaneFlowApp>,
+) -> AnyElement {
+    div()
+        .id("agents-bottom-restart")
+        .flex_none()
+        .size(px(28.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.))
+        .cursor(CursorStyle::PointingHand)
+        .hover(move |d| d.bg(with_alpha(ui.text, 0.08)))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(|this, _e: &ClickEvent, window, cx| {
+            this.restart_active_bottom_terminal(window, cx);
+        }))
+        .child(
+            svg()
+                .size(px(14.))
+                .flex_none()
+                .path("icons/refresh.svg")
+                .text_color(ui.muted),
+        )
+        .tooltip(crate::ui_primitives::text_tooltip("Restart terminal"))
         .into_any_element()
 }
 

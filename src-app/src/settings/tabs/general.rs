@@ -121,7 +121,7 @@ impl PaneFlowApp {
         let shell_row = self.general_select_row(
             GeneralDropdown::Shell,
             "Shell in the integrated terminal",
-            "Choose which shell opens in the integrated terminal.",
+            "Choose which shell opens in new integrated terminals. Existing terminals keep their shell until restarted.",
             shell_label,
             None,
             shell_opts,

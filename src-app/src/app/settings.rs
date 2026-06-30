@@ -91,10 +91,17 @@ impl PaneFlowApp {
         value: serde_json::Value,
         cx: &mut Context<Self>,
     ) {
+        let default_shell_changed = !nested
+            && key == "default_shell"
+            && normalized_shell_setting(self.cached_config.default_shell.as_deref())
+                != normalized_shell_setting(value.as_str());
         self.cached_config =
             config_writer::with_field(&self.cached_config, nested, key, value.clone());
         if key.starts_with("rosetta_") {
             self.sync_rosetta_config_state();
+        }
+        if default_shell_changed {
+            self.handle_default_shell_changed(cx);
         }
         cx.notify();
         cx.background_spawn(async move {
@@ -114,6 +121,71 @@ impl PaneFlowApp {
             .await;
         })
         .detach();
+    }
+
+    fn handle_default_shell_changed(&mut self, cx: &mut Context<Self>) {
+        let exited_thread_ids: Vec<u64> = self
+            .agents_view
+            .agents_terminal_view_cache
+            .iter()
+            .filter_map(|(thread_id, view)| {
+                view.read(cx)
+                    .terminal
+                    .exited
+                    .is_some()
+                    .then_some(*thread_id)
+            })
+            .collect();
+        let released_threads = exited_thread_ids.len();
+        for thread_id in exited_thread_ids {
+            self.remove_agents_terminal_cache_entry(thread_id);
+        }
+
+        let mut released_bottom = 0;
+        self.agents_view.bottom_terminals.retain(|term| {
+            let keep = term.view.read(cx).terminal.exited.is_none();
+            if !keep {
+                released_bottom += 1;
+            }
+            keep
+        });
+        if self.agents_view.bottom_panel_active.is_some_and(|active| {
+            !self
+                .agents_view
+                .bottom_terminals
+                .iter()
+                .any(|term| term.id == active)
+        }) {
+            self.agents_view.bottom_panel_active =
+                self.agents_view.bottom_terminals.last().map(|term| term.id);
+        }
+
+        let running_threads = self
+            .agents_view
+            .agents_terminal_view_cache
+            .values()
+            .filter(|view| view.read(cx).terminal.exited.is_none())
+            .count();
+        let running_bottom = self
+            .agents_view
+            .bottom_terminals
+            .iter()
+            .filter(|term| term.view.read(cx).terminal.exited.is_none())
+            .count();
+        let released = released_threads + released_bottom;
+        if running_threads + running_bottom > 0 {
+            self.show_toast(
+                "Shell updated. Restart running Agents terminals to switch.",
+                cx,
+            );
+        } else if released > 0 {
+            self.show_toast(
+                "Shell updated. Finished Agents terminals will reopen with it.",
+                cx,
+            );
+        } else {
+            self.show_toast("Shell updated. New terminals will use it.", cx);
+        }
     }
 
     /// Apply an Agents-panel-scoped settings change. This keeps
@@ -245,4 +317,8 @@ impl PaneFlowApp {
         self.recording_shortcut_idx = None;
         cx.notify();
     }
+}
+
+fn normalized_shell_setting(shell: Option<&str>) -> &str {
+    shell.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("")
 }

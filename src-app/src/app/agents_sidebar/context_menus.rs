@@ -182,7 +182,7 @@ impl PaneFlowApp {
     }
 
     /// Thread/chat-row right-click menu: Pin/Unpin, Rename, Duplicate,
-    /// Reveal, Delete.
+    /// Restart terminal, Reveal, Delete.
     ///
     /// US-008/US-014: parameterized by [`crate::project::AgentsTarget`] so the
     /// project-thread row and the free-chat row share one menu renderer (no
@@ -197,9 +197,9 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // 5 items (Pin, Rename, Duplicate, Reveal, Delete) + 1 separator +
-        // 8px padding => ~195px.
-        let menu_height = px(200.);
+        // 6 items (Pin, Rename, Duplicate, Restart, Reveal, Delete) +
+        // 1 separator + 8px padding => ~225px.
+        let menu_height = px(228.);
         let win_h = window.window_bounds().get_bounds().size.height;
         let menu_y = if position.y + menu_height > win_h {
             (position.y - menu_height).max(px(0.))
@@ -269,6 +269,17 @@ impl PaneFlowApp {
             cx.listener(move |this, _: &ClickEvent, _w, cx| {
                 this.close_agents_menu(cx);
                 this.duplicate_agents_target(target, cx);
+                cx.stop_propagation();
+            }),
+        ));
+
+        menu = menu.child(self.render_select_menu_item(
+            "agents-thread-restart-terminal".into(),
+            "Restart terminal",
+            None,
+            ui,
+            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.restart_agents_target_terminal(target, cx);
                 cx.stop_propagation();
             }),
         ));

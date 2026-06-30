@@ -590,6 +590,31 @@ impl PaneFlowApp {
         }
     }
 
+    /// Restart the target's mounted PTY so the next render spawns it with the
+    /// current terminal settings, including `default_shell`.
+    pub(crate) fn restart_agents_target_terminal(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread_id) = self.thread_for_target(target).map(|thread| thread.id) else {
+            return;
+        };
+        let selected = self.agents_target == Some(target);
+        let mounted = self
+            .agents_view
+            .agents_terminal_view_cache
+            .contains_key(&thread_id);
+        self.agents_view.agents_menu_open = None;
+        self.remove_agents_terminal_cache_entry(thread_id);
+        if selected || mounted {
+            self.show_toast("Terminal restarting with current shell", cx);
+        } else {
+            self.show_toast("Terminal will start with current shell", cx);
+        }
+        cx.notify();
+    }
+
     /// US-006: toggle the pin flag on the target's thread/chat and persist.
     /// Idempotent per-click (a re-pin just flips back). Pinned threads are
     /// aggregated into the rail's PINNED section across both sources.
