@@ -148,6 +148,7 @@ actions!(
         // (US-005) is the worktree + split + agent + prefill one-gesture
         // modal.
         ToggleRosettaSurface,
+        ToggleFilesSidebar,
         OpenAttentionQueue,
         OpenLaunchPad
     ]

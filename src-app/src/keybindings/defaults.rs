@@ -325,6 +325,14 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "open_diff_view",
         context: None,
     },
+    // Files right-sidebar toggle. Uses `secondary-alt-f` instead of
+    // `secondary-shift-f` so it never shadows the terminal search chord
+    // (`ctrl-shift-f` on Linux/Windows).
+    DefaultBinding {
+        key: "secondary-alt-f",
+        action_name: "toggle_files_sidebar",
+        context: None,
+    },
     // US-003 (prd-ai-in-diff-2026-Q3.md): copy the hunk under the cursor as a
     // unified diff, only while the Git Diff view holds focus. Same chord as the
     // terminal / markdown copies - disambiguated by the `DiffView` context.
@@ -457,6 +465,7 @@ mod tests {
             "split_equalize",
             "swap_pane",
             "undo_close_pane",
+            "toggle_files_sidebar",
         ] {
             assert!(
                 action_names.contains(name),

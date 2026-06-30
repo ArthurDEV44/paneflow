@@ -14,6 +14,7 @@
 //! in `view.rs`, and the pure tree model + fs helpers in `files_tree.rs`.
 
 mod context_menu;
+mod keyboard;
 mod row;
 mod view;
 mod watch;
@@ -25,12 +26,13 @@ use gpui::{
     div, prelude::*, px,
 };
 
-use crate::PaneFlowApp;
 use crate::app::files_tree::{self, FilesTreeState};
+use crate::{PaneFlowApp, ToggleFilesSidebar};
 
 /// Fixed sidebar width - matches the sessions sidebar (a resizable width is
 /// deferred per the PRD non-goals).
-pub(super) const SIDEBAR_WIDTH: Pixels = px(300.);
+pub(crate) const FILES_SIDEBAR_WIDTH: f32 = 300.;
+pub(super) const SIDEBAR_WIDTH: Pixels = px(FILES_SIDEBAR_WIDTH);
 pub(super) const ROW_HEIGHT: Pixels = px(28.);
 /// Per-depth indentation added to the row's left padding.
 pub(super) const INDENT_STEP: f32 = 12.;
@@ -41,6 +43,18 @@ impl PaneFlowApp {
     /// Toggle the Files sidebar. Opening resolves the active workspace's `cwd`
     /// to the tree root, reads + auto-expands it, and closes the sessions
     /// sidebar (mutual exclusion). Re-clicking closes and releases the tree.
+    pub(crate) fn handle_toggle_files_sidebar(
+        &mut self,
+        _: &ToggleFilesSidebar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_files_sidebar(cx);
+        if self.files_sidebar_open {
+            self.files_focus.focus(window, cx);
+        }
+    }
+
     pub(crate) fn toggle_files_sidebar(&mut self, cx: &mut Context<Self>) {
         if self.files_sidebar_open {
             self.close_files_sidebar(cx);
@@ -64,29 +78,88 @@ impl PaneFlowApp {
         self.workspace_menu_open = None;
         self.profile_menu_open = None;
 
-        self.files_sidebar_open = true;
+        self.set_files_sidebar_open(true, cx);
         self.files_tree_scroll = gpui::ScrollHandle::new();
+        self.files_selected = 0;
         // US-018: hydrate the tree + install the recursive watcher OFF the
         // render thread - a recursive `notify` walk over a repo carrying a
         // `target/` (~23k dirs) otherwise froze Wayland. A root shell paints
         // this frame; `sync_files_expansion` runs (and reconciles stale
         // persisted paths back into `session.json`) once hydration lands.
         self.spawn_files_hydration(root, persisted, cx);
-        cx.notify();
     }
 
     /// Close the sidebar and release the per-open tree cache + watcher. The
     /// per-workspace expansion lives on the `Workspace`, so it is NOT reset
     /// here (US-007) - reopening restores it.
     pub(crate) fn close_files_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.files_sidebar_open = false;
-        self.files_tree = FilesTreeState::default();
         // US-005: drop the recursive watch + its channel while closed.
         self.files_watcher = None;
         self.files_event_rx = None;
         // Close any open row context menu so it can't outlive the tree.
         self.files_menu_open = None;
+        self.set_files_sidebar_open(false, cx);
+    }
+
+    fn files_sidebar_width_at(&self, now: std::time::Instant) -> f32 {
+        if let Some(animation) = self.files_sidebar_animation {
+            animation.width_at(now)
+        } else if self.files_sidebar_open {
+            FILES_SIDEBAR_WIDTH
+        } else {
+            0.
+        }
+    }
+
+    pub(crate) fn rendered_files_sidebar_width(&mut self, window: &mut Window) -> f32 {
+        let now = std::time::Instant::now();
+        if let Some(animation) = self.files_sidebar_animation {
+            if animation.is_finished(now) {
+                self.files_sidebar_animation = None;
+                if !self.files_sidebar_open {
+                    self.clear_files_sidebar_state();
+                }
+                animation.to_width
+            } else {
+                window.request_animation_frame();
+                animation.width_at(now)
+            }
+        } else if self.files_sidebar_open {
+            FILES_SIDEBAR_WIDTH
+        } else {
+            0.
+        }
+    }
+
+    fn set_files_sidebar_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        let from_width = self.files_sidebar_width_at(now);
+        self.files_sidebar_open = open;
+        let to_width = if open { FILES_SIDEBAR_WIDTH } else { 0. };
+
+        self.files_sidebar_animation =
+            if (from_width - to_width).abs() > crate::PRIMARY_SIDEBAR_MIN_ANIMATION_DELTA {
+                Some(crate::SidebarWidthAnimation {
+                    from_width,
+                    to_width,
+                    started_at: now,
+                })
+            } else {
+                None
+            };
+
+        if !open && self.files_sidebar_animation.is_none() {
+            self.clear_files_sidebar_state();
+        }
         cx.notify();
+    }
+
+    fn clear_files_sidebar_state(&mut self) {
+        self.files_tree = FilesTreeState::default();
+        self.files_watcher = None;
+        self.files_event_rx = None;
+        self.files_menu_open = None;
+        self.files_selected = 0;
     }
 
     /// Re-root the tree on the active workspace's `cwd` when it changed while
@@ -128,6 +201,7 @@ impl PaneFlowApp {
             }
         }
         self.sync_files_expansion();
+        self.clamp_files_selection();
         self.save_session(cx);
         cx.notify();
     }
@@ -178,6 +252,8 @@ impl PaneFlowApp {
             .w(SIDEBAR_WIDTH)
             .flex_shrink_0()
             .h_full()
+            .track_focus(&self.files_focus)
+            .on_key_down(cx.listener(Self::handle_files_sidebar_key_down))
             // Match the app's other navigation rails: theme-aware native
             // material on Windows/macOS and a light/dark tint on Linux.
             .bg(crate::app::constants::cockpit_chrome_background(

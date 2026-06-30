@@ -17,6 +17,7 @@ impl PaneFlowApp {
     pub(super) fn files_row(
         &self,
         row: &VisibleRow,
+        selected: bool,
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -77,18 +78,23 @@ impl PaneFlowApp {
             .rounded(px(6.))
             .pl(indent)
             .pr(px(8.))
+            .when(selected, |s| {
+                s.bg(crate::app::constants::sidebar_tab_active_background())
+            })
             .when(dimmed, |s| s.opacity(DIMMED_OPACITY));
 
         // US-009: right-click any row (markdown, greyed file, or directory) to
         // open the copy-path menu. Sits on the base row so it works regardless
         // of actionability.
         let menu_path = path.clone();
-        el = el.on_aux_click(cx.listener(move |this, e: &ClickEvent, _window, cx| {
+        el = el.on_aux_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
             if e.is_right_click()
                 && let Some(position) = e.mouse_position()
             {
                 this.workspace_menu_open = None;
                 this.profile_menu_open = None;
+                this.files_focus.focus(window, cx);
+                this.select_files_row(&menu_path);
                 this.files_menu_open = Some(crate::FilesContextMenu {
                     path: menu_path.clone(),
                     position,
@@ -105,6 +111,8 @@ impl PaneFlowApp {
                 .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()));
             let click_path = path.clone();
             el = el.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.files_focus.focus(window, cx);
+                this.select_files_row(&click_path);
                 if is_dir {
                     this.toggle_dir(&click_path, cx);
                 } else {

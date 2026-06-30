@@ -425,6 +425,12 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         context: "",
         description: "Toggle Git Diff view",
     },
+    ActionMeta {
+        name: "toggle_files_sidebar",
+        factory: || Box::new(crate::ToggleFilesSidebar),
+        context: "",
+        description: "Toggle Files sidebar",
+    },
     // US-003 (prd-ai-in-diff-2026-Q3.md): copy the hunk under the cursor as a
     // unified diff. Scoped to the DiffView context so Ctrl+Shift+C there never
     // collides with the global markdown / terminal copy bindings.
@@ -537,6 +543,7 @@ mod tests {
         assert!(action_from_name("swap_pane").is_some());
         assert!(action_from_name("split_equalize").is_some());
         assert!(action_from_name("toggle_copy_mode").is_some());
+        assert!(action_from_name("toggle_files_sidebar").is_some());
     }
 
     #[test]
@@ -551,6 +558,7 @@ mod tests {
         assert_eq!(context_for_action("toggle_copy_mode"), Some("Terminal"));
         assert_eq!(context_for_action("toggle_search"), Some("Terminal"));
         assert_eq!(context_for_action("split_horizontally"), None);
+        assert_eq!(context_for_action("toggle_files_sidebar"), None);
     }
 
     #[test]

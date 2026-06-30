@@ -73,6 +73,7 @@ impl PaneFlowApp {
                         if app.files_sidebar_open && app.files_tree.root == root {
                             app.files_tree = tree;
                             app.sync_files_expansion();
+                            app.clamp_files_selection();
                             cx.notify();
                             true
                         } else {
@@ -135,6 +136,7 @@ impl PaneFlowApp {
             }
         }
         if changed {
+            self.clamp_files_selection();
             cx.notify();
         }
     }

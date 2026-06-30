@@ -773,12 +773,19 @@ struct PaneFlowApp {
     /// `prd-files-tree-sidebar-2026-Q3`, EP-001). Mutually exclusive with
     /// `sessions_sidebar_open`. Never persisted - always `false` on launch.
     files_sidebar_open: bool,
+    /// Width animation for opening/closing the docked Files right sidebar.
+    /// Matches the agent-sessions sidebar animation.
+    files_sidebar_animation: Option<SidebarWidthAnimation>,
     /// In-memory tree state for the open Files sidebar (root + expanded set +
     /// lazily-cached directory listings). Empty when the sidebar is closed.
     files_tree: app::files_tree::FilesTreeState,
     /// Scroll state for the Files tree body. Re-created on every open so a
     /// fresh sidebar starts at offset 0.
     files_tree_scroll: gpui::ScrollHandle,
+    /// Keyboard-selected visible Files row. The index is over visible rows only.
+    files_selected: usize,
+    /// Focus target for keyboard navigation inside the docked Files sidebar.
+    files_focus: FocusHandle,
     /// Recursive `notify` watcher on the Files tree root (EP-002 US-005).
     /// `None` when the sidebar is closed or the watch could not be installed
     /// (US-006 graceful degradation - the tree then refreshes on expand).
@@ -1179,7 +1186,13 @@ impl Render for PaneFlowApp {
         let sessions_sidebar_opacity = (sessions_sidebar_width
             / crate::app::sessions_sidebar::SESSIONS_SIDEBAR_WIDTH.max(1.))
         .clamp(0., 1.);
-        let secondary_sidebar_open = sessions_sidebar_mounted || self.files_sidebar_open;
+        let files_sidebar_width = self.rendered_files_sidebar_width(window);
+        let files_sidebar_mounted =
+            self.files_sidebar_open || self.files_sidebar_animation.is_some();
+        let files_sidebar_opacity = (files_sidebar_width
+            / crate::app::files_sidebar::FILES_SIDEBAR_WIDTH.max(1.))
+        .clamp(0., 1.);
+        let secondary_sidebar_open = sessions_sidebar_mounted || files_sidebar_mounted;
         // Every mode now renders the right area as ONE rounded-clipped panel
         // (`panel_bg` fill + 16px rail-side radius + 5px inset), replacing the
         // old Cli/Diff corner-mask trick. GPUI clips the panel's bg fill to the
@@ -1443,6 +1456,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_dismiss_update))
             .on_action(cx.listener(Self::handle_open_agents_view))
             .on_action(cx.listener(Self::handle_toggle_rosetta_surface))
+            .on_action(cx.listener(Self::handle_toggle_files_sidebar))
             // US-011: title-bar `⋯` overflow menu for the current Agents thread.
             .on_action(cx.listener(Self::handle_open_agents_thread_menu))
             // EP-001 (cli-cockpit): Composer + broadcast groups.
@@ -1657,13 +1671,16 @@ impl Render for PaneFlowApp {
                     // Docked Files sidebar (right edge) - same layout child as
                     // the sessions sidebar, mutually exclusive with it (PRD
                     // files-tree EP-001).
-                    .when(self.files_sidebar_open, |row| {
+                    .when(files_sidebar_mounted && !sessions_sidebar_mounted, |row| {
                         row.child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .h_full()
+                                .w(px(files_sidebar_width))
                                 .flex_shrink_0()
+                                .overflow_hidden()
+                                .opacity(files_sidebar_opacity)
                                 // Keep the right rail below the full-width
                                 // title bar, aligned with the main panel.
                                 .when(title_bar_spans_window, |d| d.pt(title_bar_h))

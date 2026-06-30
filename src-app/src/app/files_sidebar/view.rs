@@ -9,7 +9,6 @@ use gpui::{
 };
 
 use crate::PaneFlowApp;
-use crate::app::files_tree;
 
 struct FilesSidebarRenderTimeCanary {
     start: std::time::Instant,
@@ -111,11 +110,7 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let canary = FilesSidebarRenderTimeCanary::new();
-        let rows = files_tree::flatten_visible(
-            &self.files_tree.root,
-            &self.files_tree.expanded,
-            &self.files_tree.children,
-        );
+        let rows = self.files_visible_rows();
         canary.set_row_count(rows.len());
 
         if rows.is_empty() {
@@ -144,8 +139,9 @@ impl PaneFlowApp {
             .overflow_x_hidden()
             .overflow_y_scroll()
             .track_scroll(&self.files_tree_scroll);
-        for row in &rows {
-            body = body.child(self.files_row(row, ui, cx));
+        let selected = self.files_selected.min(rows.len().saturating_sub(1));
+        for (idx, row) in rows.iter().enumerate() {
+            body = body.child(self.files_row(row, idx == selected, ui, cx));
         }
         body.into_any_element()
     }
