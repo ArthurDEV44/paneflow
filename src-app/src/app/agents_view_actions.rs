@@ -990,11 +990,9 @@ impl PaneFlowApp {
             }
         }
         for project in &mut self.projects {
-            if project.cwd == cwd {
-                if project.git_stats != stats {
-                    project.git_stats = stats.clone();
-                    changed = true;
-                }
+            if project.cwd == cwd && project.git_stats != stats {
+                project.git_stats = stats.clone();
+                changed = true;
             }
         }
         changed
