@@ -1843,9 +1843,19 @@ jobs:
     steps:
       - name: Refresh zypper repos (retry on transient mirror flake)
         # Tumbleweed's container image ships with stale repo metadata
-        # roughly half the time; refresh once, retry on flake.
+        # roughly half the time; refresh once, retry on flake. The OSS
+        # repo also serves a large AppStream metadata blob that can exceed
+        # libzypp's default transfer timeout from GitHub-hosted runners.
         run: |
           set -euo pipefail
+          sed -i \
+            -e 's/^#\?[[:space:]]*download.connect_timeout.*/download.connect_timeout = 120/' \
+            -e 's/^#\?[[:space:]]*download.transfer_timeout.*/download.transfer_timeout = 600/' \
+            /etc/zypp/zypp.conf
+          grep -q '^download.connect_timeout = 120' /etc/zypp/zypp.conf || \
+            echo 'download.connect_timeout = 120' >> /etc/zypp/zypp.conf
+          grep -q '^download.transfer_timeout = 600' /etc/zypp/zypp.conf || \
+            echo 'download.transfer_timeout = 600' >> /etc/zypp/zypp.conf
           for attempt in 1 2 3; do
             if zypper --non-interactive --gpg-auto-import-keys refresh; then
               break
