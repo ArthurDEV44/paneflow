@@ -18,11 +18,11 @@ Je fais tourner beaucoup d'agents de code en parallèle sur mes projets, notamme
 
 Dans une grille tmux, ou dans une dizaine de fenêtres Ghostty avec plusieurs sessions dans chacune, la charge mentale monte vite. À un moment, ce n'est plus un problème de terminal : c'est un problème de coordination. Ghostty est très bien, mais chaque fenêtre relance son propre renderer GPU, donc cette façon de travailler finit aussi par peser sur la machine.
 
-Alors je l'ai construit. Paneflow, un workspace natif en Rust sur GPUI, le framework de Zed. Il tourne sur Linux, macOS et Windows, sans WSL ni Electron. Il est pensé pour alléger à la fois la charge mentale et la charge machine.
+Alors je l'ai construit. Paneflow, un workspace natif en Rust sur GPUI, le framework de Zed. Il tourne aujourd'hui sur Linux, macOS Apple Silicon et Windows x64 ; macOS Intel et Windows ARM64 ne sont pas encore livrés. Pas de WSL, pas d'Electron. Il est pensé pour alléger à la fois la charge mentale et la charge machine. Sur ma machine, juste lancé, Paneflow tourne autour de 50 Mo de mémoire et 0,2 % CPU, contre environ 963 Mo et 0,6 % CPU pour Codex App.
 
-Le vrai pari est la coordination. J'ai appelé ce système Paneflow Conductor : tout ce que je peux faire dans Paneflow, un agent peut le faire aussi par la même CLI et le même socket local. Je peux tout piloter à la main, ou laisser un agent en coordonner trois autres pendant que je supervise et reprends la main sur n'importe quelle pane. Quand plusieurs agents travaillent sur la même branche, ils ne restent pas chacun dans leur coin : Paneflow détecte les changements du repo, expose l'état de chaque pane, et permet à un agent de lire la sortie d'un autre avant d'agir pour réduire les chevauchements.
+Le vrai pari est la coordination. J'ai appelé ce système Paneflow Conductor : pour le moment, ce que j'expose aux agents passe volontairement dans l'interface CLI. Les actions de coordination dont j'ai besoin passent par la CLI publique et le socket local, tandis que la GUI reste l'endroit où je supervise et reprends la main sur n'importe quelle pane. Je peux tout piloter à la main, ou laisser un agent en coordonner trois autres sous supervision. Quand plusieurs agents travaillent sur la même branche, ils ne restent pas chacun dans leur coin : Paneflow détecte les changements du repo, expose l'état de chaque pane, et permet à un agent de lire la sortie d'un autre avant d'agir pour réduire les chevauchements.
 
-Si tu connais les Agent Teams de Claude Code ou les workflows de type swarm, le modèle mental est proche : un leader qui délègue. La différence, c'est que Paneflow Conductor n'est pas un swarm fermé dans un seul outil. Il transforme chaque pane en terminal pilotable et observable. Par exemple Claude Code peut piloter un pane Codex CLI, un OpenCode, un Droid CLI ou une autre CLI prise en charge dans Paneflow.
+Si tu connais les Agent Teams de Claude Code ou les workflows de type swarm, le modèle mental est proche : un leader qui délègue. La différence, c'est que Paneflow Conductor n'est pas un swarm fermé dans un seul outil. Il transforme chaque pane en terminal pilotable et observable. Par exemple Claude Code peut piloter un pane Codex CLI, OpenCode, Grok Builder, ou n'importe quelle autre CLI qui tourne dans un terminal.
 
 `paneflow ps` liste les panes et agents en cours avec leur état réel. `paneflow watch` streame les changements en JSONL, poussés par les hooks et l'event bus, sans polling. Un agent peut donc voir ce qui tourne, lire l'état d'un pane, envoyer un prompt à un autre agent et attendre un event, le tout via la CLI publique.
 
@@ -30,12 +30,14 @@ Par défaut, les prompts sont pré-remplis et c'est moi qui appuie sur Entrée. 
 
 Les agents peuvent aussi lire le terminal des autres en lecture seule via le serveur MCP intégré (`list_panes`, `read_pane`, `search_pane`). Claude Code dans un pane peut lire la sortie de test que Codex vient de produire dans un autre, sans copier-coller.
 
-Quand je veux isoler le travail, chaque tâche tourne sur sa propre branche dans un worktree git dédié. Je peux revoir tous les diffs côte à côte dans la vue Review, une colonne par worktree, avec l'agent, le modèle et une estimation de coût par colonne, sans basculer entre des fenêtres ou éditeurs séparés.
+Quand je veux isoler le travail, chaque tâche peut tourner dans son propre worktree git, et Paneflow affiche les diffs côte à côte dans la vue Review.
 
 Gratuit et open source (GPL-3.0-or-later), pensé pour les power users qui pilotent plusieurs agents, pas pour remplacer ton éditeur.
 
-Démo : [lien vidéo]
-Repo : https://github.com/ArthurDEV44/paneflow
+Demo: https://www.youtube.com/watch?v=hElqzB2XMn0
+Download: https://paneflow.dev/download
+Longer write-up: https://paneflow.dev/blog/show-hn-launch
+Repo: https://github.com/ArthurDEV44/paneflow
 
 ### Version EN (à poster)
 
@@ -43,11 +45,11 @@ I run a lot of coding agents in parallel on my projects, mostly Claude Code and 
 
 In a tmux grid, or worse a dozen Ghostty windows with a few sessions in each, I kept losing context. I love Ghostty, but each separate window brings its own GPU renderer, so that workflow also gets heavy fast.
 
-So I built Paneflow: a native workspace in Rust on GPUI, the UI framework behind Zed. It runs on Linux, macOS and Windows. No WSL, no Electron. One process renders every pane; on my live Linux workstation it stays around 110 MB PSS with roughly thirty panes open.
+So I built Paneflow: a native workspace in Rust on GPUI, the UI framework behind Zed. It runs on Linux, macOS Apple Silicon, and Windows x64 today; macOS Intel and Windows ARM64 are not shipped yet. No WSL, no Electron. On my machine, freshly launched, Paneflow sits around 50 MB of memory and 0.2% CPU, compared with roughly 963 MB and 0.6% CPU for Codex App.
 
-The bigger bet is coordination. I called this system Paneflow Conductor: anything I can do in Paneflow, an agent can do through the same CLI and local socket. I can drive everything by hand, or let one agent coordinate three others while I keep the window open and can take over any pane. It also makes same-branch multi-agent work less blind: each agent can see the other panes' state, read their output, and react to changes landing in the repo.
+The bigger bet is coordination. I called this system Paneflow Conductor. For now, agents talk to Paneflow through the public CLI and local socket by design, while the GUI stays where I supervise the run and take over any pane. I can drive everything by hand, or let one agent coordinate three others under supervision. It also makes same-branch multi-agent work less blind: each agent can see the other panes' state, read their output, and react to changes landing in the repo.
 
-If you have used Claude Code Agent Teams or swarm-style workflows, the mental model is similar: a lead agent delegates. The difference is that Paneflow Conductor is not a closed swarm inside one tool. It turns every pane into a controllable, observable terminal. For example, Claude Code can drive a Codex CLI pane, OpenCode, Droid CLI, or any other CLI supported in Paneflow.
+If you have used Claude Code Agent Teams or swarm-style workflows, the mental model is similar: a lead agent delegates. The difference is that Paneflow Conductor is not a closed swarm inside one tool. It turns every pane into a controllable, observable terminal. For example, Claude Code can drive a Codex CLI pane, OpenCode, Grok Builder, or any other CLI that runs in a terminal.
 
 `paneflow ps` lists the running panes and agents with their real state. `paneflow watch` streams state changes as JSONL, pushed by hooks and the event bus instead of polling. An agent can see what is running, read a pane's current state, send a prompt to another agent, and wait for an event, all through the public CLI.
 
@@ -55,58 +57,26 @@ By default, prompts are pre-filled and I still press Enter. Auto-submit is opt-i
 
 Agents can also read each other's terminals through the built-in read-only MCP bridge (`list_panes`, `read_pane`, `search_pane`). Claude Code in one pane can read the test output Codex just produced in another without me copy-pasting between windows.
 
-When I want isolation, each task runs on its own branch in a dedicated git worktree. I can review every diff side by side in one view, one column per worktree, tagged with the agent, model, and estimated cost for that column, without switching across separate editors or windows.
+When I want isolation, each task can run in its own git worktree, and Paneflow shows the resulting diffs side by side in the Review view.
 
 Free and open source (GPL-3.0-or-later).
-Demo: [video link]
+Demo: https://www.youtube.com/watch?v=hElqzB2XMn0
+Download: https://paneflow.dev/download
+Longer write-up: https://paneflow.dev/blog/show-hn-launch
 Repo: https://github.com/ArthurDEV44/paneflow
 
 ### Notes de mesure RAM (méthode + mesures)
 
-**Mesure (Linux, non-destructif, lecture /proc) :**
+**Claim à citer (lancement à vide, même machine, app juste ouverte) :**
 
-```bash
-pid=$(ps -eo pid,rss,comm --sort=-rss | awk '$3 ~ /paneflow/ {print $1; exit}')
-grep -E "^Rss:|^Pss:" /proc/$pid/smaps_rollup   # mémoire du renderer mutualisé
-ps --ppid $pid -o comm= | grep -c zsh            # nombre de shells (proxy panes)
-```
+| App | Mémoire | CPU |
+|---|---:|---:|
+| Paneflow | ~50 Mo | ~0,2 % |
+| Codex App | ~963 Mo | ~0,6 % |
 
-Le PSS (Proportional Set Size) déduplique les pages partagées : c'est la mémoire réellement attribuée au process, donc le chiffre honnête à citer. Le RSS surcompte le partagé.
+**Formulation EN courte :** freshly launched on the same machine, Paneflow sits around 50 MB of memory and 0.2% CPU, compared with roughly 963 MB and 0.6% CPU for Codex App.
 
-**Mesures live (Fedora/Linux, instance de travail) :**
-
-| Date | Panes | RSS | PSS |
-|---|---:|---:|---:|
-| 2026-06-17 | ~27 | 203 MB | 115 MB |
-| 2026-06-18 | 27 | 126 MB | 105 MB |
-
-Le 2026-06-18, compte autoritatif via le MCP (`list_panes`) : **27 panes sur 17 workspaces, dont 4 agents Claude Code actifs** (process up 1h39, 126 MB RSS / 104 MB PSS). Le chiffre "en action" est donc réel, pas synthétique : ~104 MB PSS pour 27 panes dont 4 agents qui tournent.
-
-Le RSS varie avec le scrollback et l'activité (126 à 203 MB observés), le PSS reste stable autour de 104-115 MB. **Recommandation : citer le PSS (~110 MB pour une trentaine de panes), pas le RSS.**
-
-**À vide :** ~40-50 MB observé sur Windows (gestionnaire des tâches = working set, proche du RSS). Métrique différente du PSS Linux : pour un chiffre homogène, mesurer le PSS à vide sur Linux (instance jetable, commande plus bas) ; sinon, si on te pousse en commentaire, préciser "40-50 MB working set on Windows".
-
-**Les 2 chiffres imparables restant à mesurer (nécessitent des fenêtres GUI, à faire quand tu es devant) :**
-
-1. À vide (0 pane). Pour ne pas toucher la session live, lancer une instance jetable isolée, ouvrir 0 pane, mesurer, fermer :
-
-```bash
-mkdir -p /tmp/pf-empty && chmod 700 /tmp/pf-empty
-XDG_CONFIG_HOME=/tmp/pf-empty XDG_DATA_HOME=/tmp/pf-empty XDG_RUNTIME_DIR=/tmp/pf-empty paneflow &
-sleep 3
-pid=$(ps -eo pid,comm --sort=-rss | awk '$2 ~ /paneflow/ {print $1; exit}')
-grep "^Pss:" /proc/$pid/smaps_rollup
-```
-
-2. Comparatif Ghostty (le chiffre qui tue) : ouvrir 10 fenêtres Ghostty (1 shell chacune), sommer leur PSS, comparer à 1 Paneflow avec 10 panes :
-
-```bash
-for p in $(pgrep -x ghostty); do grep "^Pss:" /proc/$p/smaps_rollup; done | awk '{s+=$2} END{printf "%.0f MB total\n", s/1024}'
-```
-
-Le delta = ce que coûtent N renderers GPU séparés vs 1 renderer mutualisé.
-
-**Cadrage honnête (HN vérifiera) :** l'avantage RAM vaut pour l'usage "fenêtres séparées", pas "splits dans une fenêtre" (là tu paies déjà un seul renderer). Face aux splits, les vrais arguments sont la sidebar de statut, le MCP, et les worktrees.
+**Cadrage honnête (HN vérifiera) :** c'est un comparatif à froid, app juste lancée, pas un benchmark de charge réelle avec agents actifs. À garder comme preuve de légèreté au repos, et à accompagner d'une capture/méthode de mesure le jour J si quelqu'un demande.
 
 ## Réponses aux objections (préparées pour le jour J)
 
@@ -126,9 +96,9 @@ Le delta = ce que coûtent N renderers GPU séparés vs 1 renderer mutualisé.
 
 ### 3. En quoi c'est différent de cmux / Conductor / [autre orchestrateur d'agents] ?
 
-**FR :** La plupart de ceux que j'ai testés sont mac-only ou des apps web/Electron. Mon angle, c'est un binaire natif unique sur Linux, macOS et Windows, sans WSL, plus deux choses que je n'ai pas trouvées ailleurs : les agents qui se lisent entre eux via MCP, et un moteur de flow scriptable (`flow.toml`) pour enchaîner des étapes d'agents. Je ne prétends pas réinventer l'orchestration ; je voulais juste qu'elle soit native et cross-platform.
+**FR :** La plupart de ceux que j'ai testés sont mac-only ou des apps web/Electron. Mon angle, c'est des binaires natifs sur Linux, macOS Apple Silicon et Windows x64 aujourd'hui, sans WSL ; macOS Intel et Windows ARM64 ne sont pas encore livrés. Les deux choses que je n'ai pas trouvées ailleurs : les agents qui se lisent entre eux via MCP, et un moteur de flow scriptable (`flow.toml`) pour enchaîner des étapes d'agents. Je ne prétends pas réinventer l'orchestration ; je voulais juste qu'elle soit native et cross-platform.
 
-**EN:** Most of the ones I tried are macOS-only or web/Electron apps. My angle is a single native binary on Linux, macOS and Windows, no WSL, plus two things I couldn't find elsewhere: agents reading each other over MCP, and a scriptable flow engine (`flow.toml`) to chain agent steps. I'm not claiming to reinvent orchestration; I just wanted it native and cross-platform.
+**EN:** Most of the ones I tried are macOS-only or web/Electron apps. My angle is native binaries for Linux, macOS Apple Silicon, and Windows x64 today, with no WSL; macOS Intel and Windows ARM64 are not shipped yet. The two things I couldn't find elsewhere: agents reading each other over MCP, and a scriptable flow engine (`flow.toml`) to chain agent steps. I'm not claiming to reinvent orchestration; I just wanted it native and cross-platform.
 
 ### 4. Un pont MCP qui laisse un agent lire la sortie d'un autre pane, ce n'est pas un vecteur de prompt-injection ?
 
@@ -156,9 +126,9 @@ Le delta = ce que coûtent N renderers GPU séparés vs 1 renderer mutualisé.
 
 ### 8. Pourquoi GPUI, et c'est stable, surtout sur Windows ?
 
-**FR :** GPUI est le framework d'interface derrière Zed, donc il tourne déjà en prod sur les trois plateformes, rendu GPU natif (Vulkan, Metal, DirectX). C'est un pari assumé : je le consomme depuis git, pas depuis crates.io. Sur Windows précisément, le MSI signé est live aujourd'hui ; les limitations connues sont listées dans `docs/WINDOWS.md`. La latence ressentie des apps Electron/Tauri que je fuyais vient du WebView, GPUI n'en a pas.
+**FR :** GPUI est le framework d'interface derrière Zed, donc il tourne déjà en prod sur les trois plateformes, rendu GPU natif (Vulkan, Metal, DirectX). C'est un pari assumé : je le consomme depuis git, pas depuis crates.io. Côté Paneflow, les builds livrés aujourd'hui couvrent Linux, macOS Apple Silicon et Windows x64 ; macOS Intel et Windows ARM64 ne sont pas encore livrés. Sur Windows précisément, le MSI signé est live aujourd'hui ; les limitations connues sont listées dans `docs/WINDOWS.md`. La latence ressentie des apps Electron/Tauri que je fuyais vient du WebView, GPUI n'en a pas.
 
-**EN:** GPUI is the UI framework behind Zed, so it already runs in production on all three platforms with native GPU rendering (Vulkan, Metal, DirectX). It's a deliberate bet: I consume it from git, not crates.io. On Windows specifically, the signed MSI is live today; known limitations are in `docs/WINDOWS.md`. The Electron/Tauri latency I was running from comes from the WebView, GPUI has none.
+**EN:** GPUI is the UI framework behind Zed, so it already runs in production on all three platforms with native GPU rendering (Vulkan, Metal, DirectX). It's a deliberate bet: I consume it from git, not crates.io. For Paneflow, the shipped builds today cover Linux, macOS Apple Silicon, and Windows x64; macOS Intel and Windows ARM64 are not shipped yet. On Windows specifically, the signed MSI is live today; known limitations are in `docs/WINDOWS.md`. The Electron/Tauri latency I was running from comes from the WebView, GPUI has none.
 
 ### 9. Ça me verrouille sur quels agents ?
 
@@ -184,15 +154,15 @@ Le delta = ce que coûtent N renderers GPU séparés vs 1 renderer mutualisé.
 - **Coût en dollars** : FAIT (objection 11 + corps cadré comme "estimation"). Garder le cadrage "estimate, not a bill".
 - **Crash behavior (objection 5)** : confirmer que la session restore relance bien layouts+CWD et pas les process agents (c'est ce que je décris, à re-tester une fois avant le jour J).
 - **GPL** : FAIT, les deux versions du post disent `GPL-3.0-or-later`.
-- **RAM** : FAIT côté méthode (section Notes de mesure RAM, citer le PSS ~110 MB). Reste à mesurer "à vide" + comparatif Ghostty quand tu es devant l'écran.
+- **RAM** : FAIT côté chiffre à citer (lancement à vide : Paneflow ~50 Mo / 0,2 % CPU ; Codex App ~963 Mo / 0,6 % CPU). Reste à garder une capture ou la méthode de mesure prête pour le jour J.
 
 ## Checklist jour J (timing, démo, dispo)
 
 ### Timing
 
 - **Jour** : mardi, mercredi ou jeudi. Éviter lundi (noyé) et vendredi/week-end (audience basse).
-- **Heure** : viser 6h-9h Pacific Time, soit **15h-18h heure française (CEST)**. C'est le réveil de l'audience US, la plus grosse sur HN.
-- **Pourquoi cette fenêtre** : un post entre par la "new queue" (la file des nouveautés). Il atteint la front page seulement s'il accumule assez d'upvotes vite : la vélocité des 1-2 premières heures pèse plus que le total. Poster au pic d'audience maximise cette fenêtre.
+- **Heure optimale** : viser **18h30 heure française (CEST)**, soit **9h30 Pacific Time**. Fenêtre de sécurité : **18h-19h CEST**. C'est le meilleur compromis si tu peux rester disponible tard : l'audience US est réveillée, l'Europe est encore en ligne, et tu gardes plusieurs heures pour répondre.
+- **Pourquoi cette fenêtre** : un post entre par la "new queue" (la file des nouveautés). Il atteint la front page seulement s'il accumule assez d'upvotes vite : la vélocité des 1-2 premières heures pèse plus que le total. Poster vers 9h-10h Pacific maximise les chances de capter l'audience US au moment où elle est déjà active, sans tomber trop tard dans la journée.
 
 ### Pré-vol (la veille / le matin)
 
@@ -200,7 +170,7 @@ Le delta = ce que coûtent N renderers GPU séparés vs 1 renderer mutualisé.
 - [ ] Social preview GitHub uploadée (Settings > General), testée en collant le lien repo dans un champ X/LinkedIn.
 - [ ] Démo vidéo uploadée, lien testé en navigation privée.
 - [ ] Titre final tranché (angle cross-platform GPUI app, cf section Titre).
-- [ ] Chiffres RAM "à vide" + comparatif Ghostty mesurés (section Notes RAM), screenshot prêt.
+- [ ] Chiffres RAM/CPU à froid Paneflow vs Codex App capturés (section Notes RAM), screenshot prêt.
 - [ ] Premier commentaire prêt à coller (clarifications + méthodo RAM).
 - [ ] Liens du post testés un par un (repo, download, démo).
 
@@ -225,7 +195,7 @@ Raison : voix off anglaise non-native = risque downside élevé sur HN (lecture 
 
 ### Dispo (le facteur n°1 de survie d'un Show HN)
 
-- Bloquer **3-4h juste après le post** pour répondre dans le thread sans délai. Un auteur présent et réactif est le plus gros signal positif : ça nourrit la discussion, donc la visibilité, donc les upvotes.
+- Bloquer **au moins 5h juste après le post** pour répondre dans le thread sans délai. Un auteur présent et réactif est le plus gros signal positif : ça nourrit la discussion, donc la visibilité, donc les upvotes.
 - Garder les réponses aux objections (section au-dessus) sous la main, mais reformuler à la main, pas copier-coller mot pour mot (HN sent le texte préfabriqué).
 - Ton : concéder quand l'objection est juste, jamais défensif, parler en pair.
 
