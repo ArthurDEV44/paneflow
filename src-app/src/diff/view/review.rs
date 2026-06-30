@@ -136,11 +136,13 @@ impl DiffView {
             created.push(ReviewTerminal {
                 label: label.into(),
                 terminal: term,
+                prompt_ready: rank == 0,
             });
         }
 
         if let Some(col) = self.columns.get_mut(col_idx) {
             col.review_terminals = created; // replace any prior run (drops old PTYs)
+            col.active_review_terminal = 0;
         }
         if let Some(t) = focus_target {
             t.read(cx).focus_handle(cx).focus(window, cx);
@@ -156,13 +158,44 @@ impl DiffView {
         &mut self,
         col_idx: usize,
         term_idx: usize,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(col) = self.columns.get_mut(col_idx) else {
             return;
         };
         if term_idx < col.review_terminals.len() {
+            let was_active = col.active_review_terminal == term_idx;
             col.review_terminals.remove(term_idx);
+            if col.review_terminals.is_empty() {
+                col.active_review_terminal = 0;
+            } else if was_active {
+                col.active_review_terminal = term_idx.min(col.review_terminals.len() - 1);
+            } else if col.active_review_terminal > term_idx {
+                col.active_review_terminal -= 1;
+            } else if col.active_review_terminal >= col.review_terminals.len() {
+                col.active_review_terminal = col.review_terminals.len() - 1;
+            }
+            if let Some(term) = col.review_terminals.get(col.active_review_terminal) {
+                term.terminal.read(cx).focus_handle(cx).focus(window, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    pub(super) fn select_review_terminal(
+        &mut self,
+        col_idx: usize,
+        term_idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(col) = self.columns.get_mut(col_idx) else {
+            return;
+        };
+        if let Some(term) = col.review_terminals.get(term_idx) {
+            col.active_review_terminal = term_idx;
+            term.terminal.read(cx).focus_handle(cx).focus(window, cx);
             cx.notify();
         }
     }
@@ -192,16 +225,18 @@ impl DiffView {
         });
         term.read(cx).focus_handle(cx).focus(window, cx);
         if let Some(col) = self.columns.get_mut(col_idx) {
+            col.active_review_terminal = col.review_terminals.len();
             col.review_terminals.push(ReviewTerminal {
                 label: "Terminal".into(),
                 terminal: term,
+                prompt_ready: false,
             });
         }
         cx.notify();
     }
 
-    /// Render the embedded review terminals under a column's diff body (one card
-    /// per CLI, side by side). `None` when the column has no review running.
+    /// Render the embedded review terminals under a column's diff body as a
+    /// tabbed dock matching the Agents bottom terminal panel.
     pub(super) fn render_review_terminals(
         &self,
         col_idx: usize,
@@ -216,111 +251,77 @@ impl DiffView {
         // slow CLI cold-start (notably Windows ConPTY) the auto-fill can miss
         // its window. The prompt is always copied to the clipboard as a fallback
         // - surface that explicitly so the user can paste it instead of staring
-        // at an empty input. Shown on the first terminal only, since the
-        // clipboard holds the first CLI's prompt (2nd-opinion prompts differ).
+        // at an empty input.
         let paste_key = if cfg!(target_os = "macos") {
             "⌘V"
         } else {
             "Ctrl+V"
         };
-        let terminals = div().flex_1().min_h_0().flex().flex_row().children(
-            col.review_terminals.iter().enumerate().map(|(ti, rt)| {
-                let header = div()
-                    .flex_none()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(5.))
-                    .px(px(8.))
-                    .py(px(3.))
-                    .bg(ui.surface)
-                    .border_b_1()
-                    .border_color(ui.border)
-                    .child(
-                        gpui::svg()
-                            .size(px(11.))
-                            .flex_none()
-                            .path("icons/terminal.svg")
-                            .text_color(ui.accent),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(crate::ui_primitives::LABEL_XS)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ui.text)
-                            .child(rt.label.clone()),
-                    )
-                    // US-011: surface the clipboard safety net PROMINENTLY and
-                    // immediately (this renders the instant the terminal mounts,
-                    // before the prefill timer fires) so a slow cold-start that
-                    // misses the auto-fill window degrades to one paste, not a
-                    // silent empty input.
-                    .when(ti == 0, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(4.))
-                                .px(px(6.))
-                                .py(px(1.))
-                                .rounded(px(4.))
-                                .bg(ui.accent.opacity(0.14))
-                                .text_size(crate::ui_primitives::LABEL_XS)
-                                .text_color(ui.accent)
-                                .child(
-                                    gpui::svg()
-                                        .size(px(10.))
-                                        .flex_none()
-                                        .path("icons/sparkles.svg")
-                                        .text_color(ui.accent),
-                                )
-                                .child(format!("Prompt ready · {paste_key} to paste")),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "diff-review-term-close-{col_idx}-{ti}"
-                            )))
-                            .flex_none()
-                            .px(px(4.))
-                            .text_size(crate::ui_primitives::BODY)
-                            .text_color(ui.muted)
-                            .cursor_pointer()
-                            .hover(|s| {
-                                let ui = crate::theme::ui_colors();
-                                s.text_color(ui.text)
-                            })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                                this.close_review_terminal(col_idx, ti, cx);
-                            }))
-                            .child("×"),
-                    );
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .when(ti > 0, |d| d.border_l_1().border_color(ui.border))
-                    .child(header)
-                    .child(div().flex_1().min_h_0().child(rt.terminal.clone()))
-            }),
-        );
-        // Drag handle (top edge): drag up/down to resize the review region.
-        let divider = div()
-            .id(SharedString::from(format!("diff-review-resize-{col_idx}")))
+        let show_prompt_hint = col.review_terminals.iter().any(|rt| rt.prompt_ready);
+        let active_idx = col
+            .active_review_terminal
+            .min(col.review_terminals.len().saturating_sub(1));
+        let mut tabs = div()
+            .id(SharedString::from(format!(
+                "diff-review-tabs-scroll-{col_idx}"
+            )))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.))
+            .overflow_x_scroll();
+        for (ti, rt) in col.review_terminals.iter().enumerate() {
+            tabs = tabs.child(render_review_terminal_tab(
+                col_idx,
+                ti,
+                rt.label.clone(),
+                active_idx == ti,
+                ui,
+                cx,
+            ));
+        }
+        let tab_strip = div()
+            .id(SharedString::from(format!(
+                "diff-review-tabstrip-{col_idx}"
+            )))
             .flex_none()
-            .h(px(6.))
+            .h(px(40.))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .pl(px(8.))
+            .pr(px(8.))
+            .bg(ui.base)
+            .child(tabs)
+            // US-011: surface the clipboard safety net immediately. Kept in the
+            // dock toolbar instead of per-terminal chrome so the terminal body
+            // matches the Agents bottom panel surface.
+            .when(show_prompt_hint, |d| {
+                d.child(render_review_prompt_pill(paste_key, ui))
+            });
+        let active_terminal = col
+            .review_terminals
+            .get(active_idx)
+            .map(|rt| rt.terminal.clone());
+        let terminal_surface = div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .bg(ui.base)
+            .children(active_terminal);
+        let resize_handle = div()
+            .id(SharedString::from(format!("diff-review-resize-{col_idx}")))
+            .absolute()
+            .top(px(-3.))
+            .left_0()
+            .right_0()
+            .h(px(7.))
             .cursor(CursorStyle::ResizeUpDown)
-            .bg(ui.border)
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.accent)
-            })
+            .hover(move |s| s.bg(with_alpha(ui.text, 0.06)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
@@ -334,12 +335,17 @@ impl DiffView {
                 }),
             );
         let region = div()
+            .relative()
             .flex_none()
             .h(px(col.review_height))
             .flex()
             .flex_col()
-            .child(divider)
-            .child(terminals);
+            .bg(ui.base)
+            .border_t_1()
+            .border_color(ui.border)
+            .child(resize_handle)
+            .child(tab_strip)
+            .child(terminal_surface);
         Some(region.into_any_element())
     }
 
@@ -434,5 +440,129 @@ impl DiffView {
                 .child("Review"),
         );
         deferred(menu).priority(8).into_any_element()
+    }
+}
+
+fn render_review_terminal_tab(
+    col_idx: usize,
+    term_idx: usize,
+    label: SharedString,
+    active: bool,
+    ui: crate::theme::UiColors,
+    cx: &mut Context<DiffView>,
+) -> AnyElement {
+    let (bg, fg) = review_tab_colors(active, ui);
+    let hover_bg = with_alpha(ui.text, if active { 0.09 } else { 0.05 });
+    div()
+        .id(SharedString::from(format!(
+            "diff-review-term-tab-{col_idx}-{term_idx}"
+        )))
+        .flex_none()
+        .h(px(28.))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(7.))
+        .pl(px(11.))
+        .pr(px(5.))
+        .rounded(px(8.))
+        .bg(bg)
+        .cursor(CursorStyle::PointingHand)
+        .hover(move |d| d.bg(hover_bg))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |this, _e: &ClickEvent, window, cx| {
+            this.select_review_terminal(col_idx, term_idx, window, cx);
+        }))
+        .child(
+            gpui::svg()
+                .size(px(13.))
+                .flex_none()
+                .path("icons/terminal.svg")
+                .text_color(fg),
+        )
+        .child(
+            div()
+                .max_w(px(150.))
+                .min_w_0()
+                .overflow_x_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(12.5))
+                .text_color(fg)
+                .child(label),
+        )
+        .child(render_review_tab_close_button(col_idx, term_idx, ui, cx))
+        .into_any_element()
+}
+
+fn render_review_tab_close_button(
+    col_idx: usize,
+    term_idx: usize,
+    ui: crate::theme::UiColors,
+    cx: &mut Context<DiffView>,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(format!(
+            "diff-review-term-close-{col_idx}-{term_idx}"
+        )))
+        .flex_none()
+        .size(px(18.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.))
+        .cursor(CursorStyle::PointingHand)
+        .hover(move |d| d.bg(with_alpha(ui.text, 0.14)))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |this, _e: &ClickEvent, window, cx| {
+            this.close_review_terminal(col_idx, term_idx, window, cx);
+        }))
+        .child(
+            gpui::svg()
+                .size(px(11.))
+                .flex_none()
+                .path("icons/close.svg")
+                .text_color(ui.muted),
+        )
+        .into_any_element()
+}
+
+fn render_review_prompt_pill(paste_key: &'static str, ui: crate::theme::UiColors) -> AnyElement {
+    div()
+        .flex_none()
+        .h(px(24.))
+        .max_w(px(180.))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(5.))
+        .px(px(8.))
+        .rounded(px(7.))
+        .bg(with_alpha(ui.text, 0.07))
+        .text_size(crate::ui_primitives::LABEL_XS)
+        .text_color(with_alpha(ui.text, 0.78))
+        .child(
+            gpui::svg()
+                .size(px(11.))
+                .flex_none()
+                .path("icons/sparkles.svg")
+                .text_color(ui.muted),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .overflow_x_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(format!("Prompt ready · {paste_key} to paste")),
+        )
+        .into_any_element()
+}
+
+fn review_tab_colors(active: bool, ui: crate::theme::UiColors) -> (gpui::Hsla, gpui::Hsla) {
+    if active {
+        (with_alpha(ui.text, 0.09), ui.text)
+    } else {
+        (with_alpha(ui.text, 0.0), ui.muted)
     }
 }

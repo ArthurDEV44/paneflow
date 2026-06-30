@@ -73,10 +73,11 @@ impl PaneFlowApp {
         if self.projects.len() >= MAX_PROJECTS {
             return Err(OpError::ProjectLimitReached);
         }
+        let cwd = cwd.into();
         let mut project = Project {
             id: next_project_id(),
             title: title.into(),
-            cwd: cwd.into(),
+            cwd: cwd.clone(),
             threads: Vec::new(),
             is_expanded: true,
             git_stats: crate::workspace::GitDiffStats::default(),
@@ -87,6 +88,7 @@ impl PaneFlowApp {
         let id = project.id;
         self.projects.push(project);
         self.active_project_idx = self.projects.len() - 1;
+        self.spawn_agents_environment_git_refresh(cwd, cx);
         cx.notify();
         Ok(id)
     }
@@ -289,6 +291,7 @@ impl PaneFlowApp {
         if thread_idx >= project.threads.len() {
             return Err(OpError::ThreadNotFound);
         }
+        let cwd = project.cwd.clone();
         self.active_project_idx = project_idx;
         self.agents_target = Some(AgentsTarget::Thread {
             project_idx,
@@ -302,6 +305,7 @@ impl PaneFlowApp {
         self.agents_view.agents_skills_visible = false;
         // Selecting a row cancels any armed inline delete-confirm.
         self.agents_view.agents_delete_armed = None;
+        self.spawn_agents_environment_git_refresh(cwd, cx);
         cx.notify();
         Ok(())
     }
@@ -318,12 +322,14 @@ impl PaneFlowApp {
         if chat_idx >= self.chats.len() {
             return Err(OpError::ThreadNotFound);
         }
+        let cwd = self.chats[chat_idx].cwd.clone();
         self.agents_target = Some(AgentsTarget::Chat { chat_idx });
         // US-005: reset picker context on any concrete selection.
         self.agents_picker_context = crate::project::AgentsPickerContext::Project;
         self.agents_view.agents_skills_visible = false;
         // Selecting a row cancels any armed inline delete-confirm.
         self.agents_view.agents_delete_armed = None;
+        self.spawn_agents_environment_git_refresh(cwd, cx);
         cx.notify();
         Ok(())
     }

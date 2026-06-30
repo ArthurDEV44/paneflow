@@ -496,6 +496,13 @@ struct DiffModeState {
     diff_file_filter: gpui::Entity<crate::widgets::text_input::TextInput>,
 }
 
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentsGitState {
+    pub(crate) branch: String,
+    pub(crate) is_repo: bool,
+    pub(crate) stats: crate::workspace::GitDiffStats,
+}
+
 /// US-053: Agents-view sidebar state extracted from the `PaneFlowApp`
 /// god-struct (terminal-only Agents view: rename, context menu, skills
 /// page, search filter, and the per-thread terminal cache).
@@ -557,6 +564,10 @@ struct AgentsViewState {
     /// scoped to a cwd because project threads and free chats can point at
     /// different repositories.
     pub(crate) agents_branch_menu: Option<AgentsBranchMenuState>,
+    /// Last git metadata refresh by Agents environment cwd. This covers free
+    /// chats as well as projects, so the floating card does not depend on a
+    /// matching workspace/project cache.
+    pub(crate) agents_environment_git: std::collections::HashMap<String, AgentsGitState>,
     /// Whether the floating Agents environment card is visible. The toolbar
     /// remains visible so the same button can reopen it.
     pub(crate) agents_environment_panel_open: bool,
@@ -566,13 +577,19 @@ struct AgentsViewState {
     /// surface (toggled by the `layout-sidebar-right` toolbar button).
     pub(crate) agents_diff_open: bool,
     /// The diff snapshot rendered by the dock, computed off-thread for the
-    /// active thread's cwd. `None` until the dock is first opened.
+    /// active thread's cwd. Retained while hidden so same-cwd reopen is warm.
     pub(crate) agents_diff: Option<crate::app::agents_diff::AgentsDiffData>,
     /// Paths of files folded shut in the diff dock, so a fold survives re-renders.
     pub(crate) agents_diff_collapsed: std::collections::HashSet<String>,
+    /// Stable fold keys for collapsed unchanged regions opened in the dock.
+    /// Mirrors Review's fold-marker interaction without re-shelling git.
+    pub(crate) agents_diff_expanded_folds: std::collections::HashSet<String>,
     /// Diff dock view mode: `false` = unified (inline), `true` = split (old left,
     /// new right). Toggled from the header.
     pub(crate) agents_diff_split: bool,
+    /// Monotonic token for same-cwd diff builds. Completion must match this
+    /// generation so an older refresh cannot overwrite a newer snapshot.
+    pub(crate) agents_diff_generation: u64,
     /// Vertical scroll handle for the diff dock's [`crate::diff::DiffElement`]
     /// (hosted in an `overflow_y_scroll` div, the same render path as the Review
     /// view's columns). Survives ordinary repaints so scroll position is kept.
@@ -583,6 +600,8 @@ struct AgentsViewState {
     /// Live drag anchor `(cursor_x, width_at_grab)` while the dock's left edge is
     /// being dragged to resize; `None` when not resizing.
     pub(crate) agents_diff_resize: Option<(f32, f32)>,
+    /// Live horizontal-scrollbar drag inside the dock's shared diff body.
+    pub(crate) agents_diff_h_scroll_drag: Option<crate::app::agents_diff::AgentsDiffHScrollDrag>,
     /// Per-file horizontal scroll offsets (px) for the diff dock, indexed by
     /// stable file position. Driven by Shift+wheel / trackpad horizontal gestures
     /// (`apply_agents_diff_hwheel`) and applied per file by `DiffElement`; lazily

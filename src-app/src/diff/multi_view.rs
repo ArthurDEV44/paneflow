@@ -4,11 +4,10 @@
 //! Each open repo is a tab; the selected repo's `DiffView` fills the whole area
 //! (its own worktree columns side by side, its own internal scroll), so two
 //! repos never compete for vertical space and there is no inner/outer scroll
-//! fight. Only the selected repo's `DiffView` is mounted (lazy) - switching
-//! tabs drops the previous entity, releasing its filesystem watchers + git
-//! subprocesses, and bounds the watcher count to one repo regardless of how
-//! many are open. The base ref chosen in one repo is carried to the next tab
-//! (shared comparison base across repos).
+//! fight. Repo views mount lazily and then stay cached; switching tabs suspends
+//! the outgoing view's watchers while retaining loaded rows for instant return.
+//! The base ref chosen in one repo is carried to the next tab (shared comparison
+//! base across repos).
 
 use std::path::PathBuf;
 
@@ -27,7 +26,8 @@ struct Group {
     /// Seed kept so the `DiffView` can be (re)mounted on select without
     /// re-collecting from the app.
     worktrees: Vec<DiffWorktree>,
-    /// Lazy: `Some` only for the currently-selected tab.
+    /// Lazy + warm: created on first selection, then retained with watchers
+    /// suspended while the repo tab is not selected.
     view: Option<gpui::Entity<DiffView>>,
 }
 
@@ -93,25 +93,32 @@ impl MultiRepoDiffView {
         {
             self.base_ref = Some(view.read(cx).base_ref().to_string());
         }
-        // Drop the outgoing entity → releases its watchers + ends its debounce
-        // loop (lazy-mount perf contract).
-        if let Some(g) = self.groups.get_mut(self.selected) {
-            g.view = None;
-        }
-        self.selected = idx;
-        self.mount_selected(cx);
-        cx.notify();
-    }
-
-    /// US-016 warm-resume passthrough: suspend the one mounted child `DiffView`
-    /// (only the selected tab is `Some`) so the Multi-project host releases its
-    /// watchers when the diff surface is hidden, while retaining the child's
-    /// loaded rows for an instant warm resume.
-    pub fn suspend(&mut self, cx: &mut Context<Self>) {
+        // Keep the outgoing entity warm, but drop its watcher handles so hidden
+        // repos cannot trigger diff rebuilds.
         if let Some(g) = self.groups.get(self.selected)
             && let Some(view) = g.view.clone()
         {
             view.update(cx, |v, cx| v.suspend(cx));
+        }
+        self.selected = idx;
+        self.mount_selected(cx);
+        let base = self.base_ref.clone();
+        if let Some(g) = self.groups.get(self.selected)
+            && let Some(view) = g.view.clone()
+        {
+            view.update(cx, |v, cx| v.resume_with_base(base, cx));
+        }
+        cx.notify();
+    }
+
+    /// US-016 warm-resume passthrough: suspend all cached child `DiffView`s so
+    /// the Multi-project host releases watchers when the diff surface is hidden,
+    /// while retaining loaded rows for instant warm resume.
+    pub fn suspend(&mut self, cx: &mut Context<Self>) {
+        for group in &self.groups {
+            if let Some(view) = group.view.clone() {
+                view.update(cx, |v, cx| v.suspend(cx));
+            }
         }
     }
 
@@ -160,26 +167,6 @@ impl MultiRepoDiffView {
             && let Some(view) = g.view.clone()
         {
             view.update(cx, |v, cx| v.select_and_jump(col_idx, path, window, cx));
-        }
-    }
-
-    /// EP-003 US-013: toggle a file's collapse in the selected repo's `DiffView`
-    /// (sidebar per-file collapse action in a multi-branch section).
-    pub fn active_toggle_file_collapse(&self, col_idx: usize, path: &str, cx: &mut Context<Self>) {
-        if let Some(g) = self.groups.get(self.selected)
-            && let Some(view) = g.view.clone()
-        {
-            view.update(cx, |v, cx| v.toggle_file_collapse(col_idx, path, cx));
-        }
-    }
-
-    /// EP-003 US-013: copy a file's diff from the selected repo's `DiffView`
-    /// (sidebar per-file copy action in a multi-branch section).
-    pub fn active_copy_file_diff(&self, col_idx: usize, path: &str, cx: &mut Context<Self>) {
-        if let Some(g) = self.groups.get(self.selected)
-            && let Some(view) = g.view.clone()
-        {
-            view.update(cx, |v, cx| v.copy_file_diff(col_idx, path, cx));
         }
     }
 }

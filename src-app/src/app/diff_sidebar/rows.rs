@@ -58,12 +58,6 @@ impl PaneFlowApp {
         let selected =
             is_active && self.diff_mode.diff_selected_file.as_deref() == Some(entry.path.as_str());
         let path = entry.path.clone();
-        // EP-003 US-013: per-file hover actions (collapse + copy) route to the
-        // active host the same way the row click does; each closure owns its
-        // path clone.
-        let path_collapse = entry.path.clone();
-        let path_copy = entry.path.clone();
-        let group = SharedString::from(format!("diff-file-grp-{col_idx}-{}", entry.path));
         let show_counts = !entry.is_binary && (entry.added > 0 || entry.removed > 0);
 
         div()
@@ -73,19 +67,8 @@ impl PaneFlowApp {
                 "diff-file-{col_idx}-{}",
                 entry.path
             )))
-            // Positioned ancestor + hover group for the trailing actions cluster.
-            .relative()
-            .group(group.clone())
             .flex_none()
             .h(px(28.))
-            // 2px leading bar: accent when selected, transparent otherwise
-            // (always present so the text never shifts between states).
-            .border_l_2()
-            .border_color(if selected {
-                ui.accent
-            } else {
-                ui.accent.opacity(0.)
-            })
             .pl(px(10. + indent_px))
             .pr(px(12.))
             .flex()
@@ -93,8 +76,10 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(8.))
             .cursor_pointer()
-            .when(selected, |d| d.bg(ui.accent.opacity(0.12)))
-            .hover(|s| s.bg(ui.subtle))
+            .when(selected, |d| {
+                d.bg(crate::app::constants::sidebar_tab_active_background())
+            })
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.diff_mode.diff_selected_file = Some(path.clone());
                 // Select that branch's column AND scroll its body to this file.
@@ -182,89 +167,6 @@ impl PaneFlowApp {
                         }),
                 )
             })
-            // EP-003 US-013: hover-revealed per-file actions. Keep them in a
-            // stable trailing slot so the +/- counts stay readable on hover.
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(48.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(2.))
-                    .invisible()
-                    .group_hover(group, |s| s.visible())
-                    .child(
-                        crate::ui_primitives::icon_button_sm(
-                            SharedString::from(format!(
-                                "diff-file-collapse-{col_idx}-{}",
-                                entry.path
-                            )),
-                            "icons/chevron_up.svg",
-                            ui.muted,
-                            ui.text.opacity(0.12),
-                        )
-                        .tooltip(crate::ui_primitives::text_tooltip(
-                            "Collapse / expand this file",
-                        ))
-                        .on_click(cx.listener(
-                            move |this, _: &ClickEvent, _w, cx| {
-                                match this.diff_mode.diff_scope {
-                                    crate::diff::DiffScope::MultiProject => {
-                                        if let Some(mv) = this.diff_mode.multi_diff_view.clone() {
-                                            mv.update(cx, |mv, cx| {
-                                                mv.active_toggle_file_collapse(
-                                                    col_idx,
-                                                    &path_collapse,
-                                                    cx,
-                                                )
-                                            });
-                                        }
-                                    }
-                                    _ => {
-                                        if let Some(dv) = this.diff_mode.diff_view.clone() {
-                                            dv.update(cx, |dv, cx| {
-                                                dv.toggle_file_collapse(col_idx, &path_collapse, cx)
-                                            });
-                                        }
-                                    }
-                                }
-                                cx.stop_propagation();
-                            },
-                        )),
-                    )
-                    .child(
-                        crate::ui_primitives::icon_button_sm(
-                            SharedString::from(format!("diff-file-copy-{col_idx}-{}", entry.path)),
-                            "icons/file-text.svg",
-                            ui.muted,
-                            ui.text.opacity(0.12),
-                        )
-                        .tooltip(crate::ui_primitives::text_tooltip("Copy this file's diff"))
-                        .on_click(cx.listener(
-                            move |this, _: &ClickEvent, _w, cx| {
-                                match this.diff_mode.diff_scope {
-                                    crate::diff::DiffScope::MultiProject => {
-                                        if let Some(mv) = this.diff_mode.multi_diff_view.clone() {
-                                            mv.update(cx, |mv, cx| {
-                                                mv.active_copy_file_diff(col_idx, &path_copy, cx)
-                                            });
-                                        }
-                                    }
-                                    _ => {
-                                        if let Some(dv) = this.diff_mode.diff_view.clone() {
-                                            dv.update(cx, |dv, cx| {
-                                                dv.copy_file_diff(col_idx, &path_copy, cx)
-                                            });
-                                        }
-                                    }
-                                }
-                                cx.stop_propagation();
-                            },
-                        )),
-                    ),
-            )
             .into_any_element()
     }
 }

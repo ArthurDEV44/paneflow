@@ -24,14 +24,17 @@ mod git;
 mod model;
 mod render;
 
-pub(crate) use model::{AGENTS_DIFF_PANEL_WIDTH, AgentsDiffData, agents_diff_count_colors};
+pub(crate) use model::{
+    AGENTS_DIFF_PANEL_WIDTH, AgentsDiffData, AgentsDiffHScrollDrag, agents_diff_count_colors,
+};
 pub(crate) use render::render_agents_diff_toggle_button;
 
 use std::path::Path;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
-    ScrollWheelEvent, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, Pixels, Point, ScrollWheelEvent, StatefulInteractiveElement, Styled, Window,
+    div, px,
 };
 
 use self::git::build_agents_diff;
@@ -41,12 +44,16 @@ use self::render::{
     render_diff_resize_handle,
 };
 use crate::PaneFlowApp;
-use crate::diff::{DiffBody, DiffElement, file_at_row, palette, row_at_offset, set_file_offset};
+use crate::diff::{
+    DiffBody, DiffElement, H_SCROLLBAR_TRACK_HEIGHT, HScrollbarSegment, RowKind, SplitRow,
+    file_at_row, h_offset_index, h_offset_len, h_scrollbar_click_offset, h_scrollbar_segments,
+    palette, row_at_offset, set_file_side_offset, split_right_side_at_x,
+};
 
 impl PaneFlowApp {
     /// Toggle the Codex-style diff dock. Opening (re)computes the diff for the
-    /// current thread's cwd off-thread; closing drops the cached row model and
-    /// side state so a large hidden diff is not retained.
+    /// current thread's cwd off-thread on first load or cwd change; closing only
+    /// hides the dock so a same-cwd reopen can reuse the warm snapshot.
     pub(crate) fn toggle_agents_diff_panel(
         &mut self,
         _: &ClickEvent,
@@ -57,30 +64,47 @@ impl PaneFlowApp {
             self.close_agents_diff_panel(cx);
             return;
         }
-        self.agents_view.agents_diff_open = true;
         let cwd = self
             .current_thread_view_target()
             .and_then(|target| self.thread_for_target(target))
             .map(|thread| thread.cwd.clone())
             .unwrap_or_default();
-        self.refresh_agents_diff(cwd, cx);
+        self.open_agents_diff_panel(cwd, cx);
+    }
+
+    pub(crate) fn open_agents_diff_panel(&mut self, cwd: String, cx: &mut Context<Self>) {
+        let cwd = cwd.trim().to_string();
+        let split = self.agents_view.agents_diff_split;
+        let (_, current_stats) = self.agents_environment_git_for_cwd(&cwd);
+        let has_warm_snapshot = self.agents_view.agents_diff.as_ref().is_some_and(|data| {
+            data.cwd == cwd
+                && !data.loading
+                && data.error.is_none()
+                && data.has_mode(split)
+                && agents_diff_matches_stats(data, &current_stats)
+        });
+        self.agents_view.agents_diff_open = true;
+        if has_warm_snapshot {
+            cx.notify();
+        } else {
+            self.refresh_agents_diff(cwd, cx);
+        }
     }
 
     pub(crate) fn close_agents_diff_panel(&mut self, cx: &mut Context<Self>) {
         self.agents_view.agents_diff_open = false;
-        self.agents_view.agents_diff = None;
-        self.agents_view.agents_diff_collapsed.clear();
-        self.agents_view.agents_diff_h_offsets.clear();
         self.agents_view.agents_diff_resize = None;
-        self.agents_view.agents_diff_scroll = gpui::ScrollHandle::new();
+        self.agents_view.agents_diff_h_scroll_drag = None;
         cx.notify();
     }
 
     /// Recompute the diff for `cwd`, parking a loading state first. Shared by the
     /// open path and the panel's refresh button. The async result is dropped if
-    /// the panel has since rebound to a different cwd (thread switch / close).
+    /// the cached slot has since rebound to a different cwd.
     pub(crate) fn refresh_agents_diff(&mut self, cwd: String, cx: &mut Context<Self>) {
         let cwd = cwd.trim().to_string();
+        let generation = self.agents_view.agents_diff_generation.wrapping_add(1);
+        self.agents_view.agents_diff_generation = generation;
         if cwd.is_empty() {
             self.agents_view.agents_diff = Some(AgentsDiffData::message(
                 cwd,
@@ -92,11 +116,27 @@ impl PaneFlowApp {
         self.agents_view.agents_diff = Some(AgentsDiffData::loading(cwd.clone()));
         cx.notify();
 
-        let split = self.agents_view.agents_diff_split;
-        self.spawn_agents_diff_build(cwd, split, cx);
+        self.spawn_agents_diff_build(cwd, generation, cx);
     }
 
-    fn spawn_agents_diff_build(&mut self, cwd: String, split: bool, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_agents_diff_if_open_for_cwd(
+        &mut self,
+        cwd: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let should_refresh = self.agents_view.agents_diff_open
+            && self
+                .agents_view
+                .agents_diff
+                .as_ref()
+                .is_some_and(|data| data.cwd == cwd && !data.loading);
+        if should_refresh {
+            self.refresh_agents_diff(cwd.to_string(), cx);
+        }
+        should_refresh
+    }
+
+    fn spawn_agents_diff_build(&mut self, cwd: String, generation: u64, cx: &mut Context<Self>) {
         // Capture the theme on the main thread (the syntax pass needs it) and
         // move it into the worker, exactly as the Review view does.
         let theme = crate::theme::active_theme();
@@ -104,28 +144,36 @@ impl PaneFlowApp {
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let result = smol::unblock({
                     let cwd = cwd.clone();
-                    move || build_agents_diff(&cwd, theme, split)
+                    move || build_agents_diff(&cwd, theme)
                 })
                 .await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
-                        // Apply only if the panel is still bound to this cwd.
-                        let still_current = app.agents_view.agents_diff_open
-                            && app
-                                .agents_view
-                                .agents_diff
-                                .as_ref()
-                                .is_some_and(|data| data.cwd == cwd);
+                        // Apply even while the dock is hidden so the next reopen can
+                        // render from the warm snapshot instead of flashing a loader.
+                        let still_current = app
+                            .agents_view
+                            .agents_diff
+                            .as_ref()
+                            .is_some_and(|data| data.cwd == cwd)
+                            && app.agents_view.agents_diff_generation == generation;
                         if !still_current {
                             return;
                         }
                         // Read the live collapse set (it may have changed during
                         // the async build) so the first paint honors it.
                         let collapsed = app.agents_view.agents_diff_collapsed.clone();
+                        let expanded = app.agents_view.agents_diff_expanded_folds.clone();
                         match result {
                             Ok(built) => {
+                                let stats = crate::workspace::GitDiffStats {
+                                    files_changed: built.file_count,
+                                    insertions: built.added as usize,
+                                    deletions: built.removed as usize,
+                                };
+                                app.apply_git_stats_for_cwd(&cwd, stats);
                                 if let Some(data) = app.agents_view.agents_diff.as_mut() {
-                                    data.apply_built(built, &collapsed);
+                                    data.apply_built(built, &collapsed, &expanded);
                                 }
                             }
                             Err(err) => {
@@ -145,8 +193,9 @@ impl PaneFlowApp {
     /// split change (no git work - just re-filters the retained full rows).
     fn recompute_agents_diff_display(&mut self) {
         let collapsed = self.agents_view.agents_diff_collapsed.clone();
+        let expanded = self.agents_view.agents_diff_expanded_folds.clone();
         if let Some(data) = self.agents_view.agents_diff.as_mut() {
-            data.recompute(&collapsed);
+            data.recompute(&collapsed, &expanded);
         }
     }
 
@@ -178,23 +227,14 @@ impl PaneFlowApp {
         cx.notify();
     }
 
-    /// Switch the diff dock between unified and split views. No-op when already in
-    /// the requested mode.
+    /// Switch the diff dock between unified and split views. Both row models are
+    /// warmed by the off-thread load, so this is a paint-only toggle.
     pub(crate) fn set_agents_diff_split(&mut self, split: bool, cx: &mut Context<Self>) {
         if self.agents_view.agents_diff_split == split {
             return;
         }
         self.agents_view.agents_diff_split = split;
-        let cwd_to_load = self.agents_view.agents_diff.as_ref().and_then(|data| {
-            (!data.loading && data.error.is_none() && !data.has_mode(split))
-                .then(|| data.cwd.clone())
-        });
-        if let Some(cwd) = cwd_to_load {
-            if let Some(data) = self.agents_view.agents_diff.as_mut() {
-                data.loading = true;
-            }
-            self.spawn_agents_diff_build(cwd, split, cx);
-        }
+        self.agents_view.agents_diff_h_scroll_drag = None;
         cx.notify();
     }
 
@@ -289,18 +329,25 @@ impl PaneFlowApp {
         let split = self.agents_view.agents_diff_split;
         let toolbar = render_diff_files_toolbar(data, &collapsed, ui, &entity);
 
-        // Per-file horizontal offsets, lazily resized to the current file count
-        // (collapse/split never change it) so a fresh diff with a different file
-        // set starts unscrolled. Cloned into the element each frame.
+        // Horizontal offsets, lazily resized to the current mode's slot count.
+        // Unified uses one slot per file; split keeps detached left/right slots.
+        // Cloned into the element each frame.
         let file_count = if split {
             data.disp_split_spans.len()
         } else {
             data.disp_unified_spans.len()
         };
-        if self.agents_view.agents_diff_h_offsets.len() != file_count {
+        let needed_offsets = h_offset_len(file_count, split);
+        if split {
+            if self.agents_view.agents_diff_h_offsets.len() != needed_offsets {
+                self.agents_view
+                    .agents_diff_h_offsets
+                    .resize(needed_offsets, 0.0);
+            }
+        } else if self.agents_view.agents_diff_h_offsets.len() < needed_offsets {
             self.agents_view
                 .agents_diff_h_offsets
-                .resize(file_count, 0.0);
+                .resize(needed_offsets, 0.0);
         }
         let h_offsets = std::rc::Rc::new(self.agents_view.agents_diff_h_offsets.clone());
 
@@ -359,6 +406,15 @@ impl PaneFlowApp {
             .on_click(cx.listener(|this, ev: &ClickEvent, _w, cx| {
                 this.handle_agents_diff_body_click(ev, cx);
             }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
+                    let split = this.agents_view.agents_diff_split;
+                    if this.handle_agents_diff_h_scrollbar_mouse_down(ev.position, split, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
                 this.apply_agents_diff_wheel(ev, window, cx);
             }))
@@ -401,26 +457,37 @@ impl PaneFlowApp {
         let dx = f32::from(delta.x);
         if dx != 0.0 {
             let split = self.agents_view.agents_diff_split;
-            let width = self.agents_view.agents_diff_width;
             let bounds = self.agents_view.agents_diff_scroll.bounds();
+            if ev.position.x < bounds.left()
+                || ev.position.x > bounds.right()
+                || ev.position.y < bounds.top()
+                || ev.position.y > bounds.bottom()
+            {
+                return;
+            }
+            let width = f32::from(bounds.size.width);
             let content_y = f32::from(
                 ev.position.y - bounds.top() - self.agents_view.agents_diff_scroll.offset().y,
             )
             .max(0.0);
             if let Some(file_idx) = self.agents_diff_file_at_content_y(content_y, split) {
                 let spans = self.agents_diff_spans(split);
+                let local_x = f32::from(ev.position.x - bounds.left());
+                let right = split && split_right_side_at_x(local_x, width);
+                let offset_idx = h_offset_index(spans.len(), file_idx, split, right);
                 let cur = self
                     .agents_view
                     .agents_diff_h_offsets
-                    .get(file_idx)
+                    .get(offset_idx)
                     .copied()
                     .unwrap_or(0.0);
                 // GPUI scroll deltas go negative toward the end; subtract to grow
                 // our positive offset and reveal the right of the line.
-                set_file_offset(
+                set_file_side_offset(
                     &mut self.agents_view.agents_diff_h_offsets,
                     &spans,
                     file_idx,
+                    right,
                     cur - dx,
                     split,
                     width,
@@ -429,6 +496,167 @@ impl PaneFlowApp {
             // Only horizontal scroll mutates our state here; vertical is native
             // (it notifies on its own). Notifying unconditionally would double-
             // render every plain vertical wheel tick.
+            cx.notify();
+        }
+    }
+
+    fn agents_diff_scrollbar_segments(&self, split: bool) -> Option<Vec<HScrollbarSegment>> {
+        let data = self.agents_view.agents_diff.as_ref()?;
+        let bounds = self.agents_view.agents_diff_scroll.bounds();
+        let viewport_h = f32::from(bounds.size.height);
+        let panel_width = f32::from(bounds.size.width);
+        if viewport_h <= 0.0 || panel_width <= 0.0 {
+            return None;
+        }
+
+        let visible_top = f32::from(-self.agents_view.agents_diff_scroll.offset().y).max(0.0);
+        let visible_bottom = visible_top + viewport_h;
+        let (offsets, spans) = if split {
+            (&data.disp_split_offsets, &data.disp_split_spans)
+        } else {
+            (&data.disp_unified_offsets, &data.disp_unified_spans)
+        };
+        Some(h_scrollbar_segments(
+            spans,
+            offsets,
+            &self.agents_view.agents_diff_h_offsets,
+            split,
+            panel_width,
+            visible_top,
+            visible_bottom,
+        ))
+    }
+
+    fn agents_diff_h_scrollbar_local_point(&self, point: Point<Pixels>) -> Option<(f32, f32)> {
+        let bounds = self.agents_view.agents_diff_scroll.bounds();
+        if point.x < bounds.left()
+            || point.x > bounds.right()
+            || point.y < bounds.top()
+            || point.y > bounds.bottom()
+        {
+            return None;
+        }
+        Some((
+            f32::from(point.x - bounds.left()),
+            f32::from(point.y - bounds.top() - self.agents_view.agents_diff_scroll.offset().y)
+                .max(0.0),
+        ))
+    }
+
+    fn handle_agents_diff_h_scrollbar_mouse_down(
+        &mut self,
+        point: Point<Pixels>,
+        split: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((x, y)) = self.agents_diff_h_scrollbar_local_point(point) else {
+            return false;
+        };
+        let Some(segments) = self.agents_diff_scrollbar_segments(split) else {
+            return false;
+        };
+        let Some(segment) = segments.iter().find(|segment| {
+            x >= segment.x
+                && x <= segment.x + segment.width
+                && y >= segment.y
+                && y <= segment.y + H_SCROLLBAR_TRACK_HEIGHT
+        }) else {
+            return false;
+        };
+
+        let thumb_left = segment.x + segment.thumb_x;
+        let thumb_right = thumb_left + segment.thumb_width;
+        let target = if x >= thumb_left && x <= thumb_right {
+            segment.offset
+        } else {
+            h_scrollbar_click_offset(&segments, x, y)
+                .map(|(_, offset)| offset)
+                .unwrap_or(segment.offset)
+        }
+        .clamp(0.0, segment.max_scroll);
+
+        self.set_agents_diff_h_offset(segment.offset_idx, target);
+        self.agents_view.agents_diff_h_scroll_drag = Some(AgentsDiffHScrollDrag {
+            offset_idx: segment.offset_idx,
+            start_mouse_x: point.x,
+            start_offset: target,
+            max_scroll: segment.max_scroll,
+            track_width: segment.width,
+            thumb_width: segment.thumb_width,
+        });
+        cx.notify();
+        true
+    }
+
+    fn handle_agents_diff_h_scrollbar_click(
+        &mut self,
+        point: Point<Pixels>,
+        split: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((x, y)) = self.agents_diff_h_scrollbar_local_point(point) else {
+            return false;
+        };
+        let Some(segments) = self.agents_diff_scrollbar_segments(split) else {
+            return false;
+        };
+        let Some(segment) = segments.iter().find(|segment| {
+            x >= segment.x
+                && x <= segment.x + segment.width
+                && y >= segment.y
+                && y <= segment.y + H_SCROLLBAR_TRACK_HEIGHT
+        }) else {
+            return false;
+        };
+
+        let thumb_left = segment.x + segment.thumb_x;
+        let thumb_right = thumb_left + segment.thumb_width;
+        if x >= thumb_left && x <= thumb_right {
+            return true;
+        }
+
+        let target = h_scrollbar_click_offset(&segments, x, y)
+            .map(|(_, offset)| offset)
+            .unwrap_or(segment.offset)
+            .clamp(0.0, segment.max_scroll);
+        self.set_agents_diff_h_offset(segment.offset_idx, target);
+        cx.notify();
+        true
+    }
+
+    fn set_agents_diff_h_offset(&mut self, offset_idx: usize, value: f32) {
+        if self.agents_view.agents_diff_h_offsets.len() <= offset_idx {
+            self.agents_view
+                .agents_diff_h_offsets
+                .resize(offset_idx + 1, 0.0);
+        }
+        if let Some(slot) = self.agents_view.agents_diff_h_offsets.get_mut(offset_idx) {
+            *slot = value;
+        }
+    }
+
+    pub(crate) fn drag_agents_diff_h_scrollbar(&mut self, mouse_x: Pixels, cx: &mut Context<Self>) {
+        let Some(drag) = self.agents_view.agents_diff_h_scroll_drag else {
+            return;
+        };
+
+        let track_range = (drag.track_width - drag.thumb_width).max(1.0);
+        let delta = f32::from(mouse_x - drag.start_mouse_x);
+        let next =
+            (drag.start_offset + delta * drag.max_scroll / track_range).clamp(0.0, drag.max_scroll);
+        if self
+            .agents_view
+            .agents_diff_h_offsets
+            .get(drag.offset_idx)
+            .is_none_or(|current| (*current - next).abs() > 0.1)
+        {
+            self.set_agents_diff_h_offset(drag.offset_idx, next);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn end_agents_diff_h_scrollbar_drag(&mut self, cx: &mut Context<Self>) {
+        if self.agents_view.agents_diff_h_scroll_drag.take().is_some() {
             cx.notify();
         }
     }
@@ -468,7 +696,11 @@ impl PaneFlowApp {
     /// has no click-to-ask, so a non-header click is a no-op).
     fn handle_agents_diff_body_click(&mut self, ev: &ClickEvent, cx: &mut Context<Self>) {
         let split = self.agents_view.agents_diff_split;
-        let path = {
+        if self.handle_agents_diff_h_scrollbar_click(ev.position(), split, cx) {
+            return;
+        }
+
+        let row = {
             let Some(data) = self.agents_view.agents_diff.as_ref() else {
                 return;
             };
@@ -488,6 +720,39 @@ impl PaneFlowApp {
             let Some(row) = row_at_offset(offsets, target) else {
                 return; // click past the last row
             };
+            row
+        };
+
+        let fold_key = {
+            let Some(data) = self.agents_view.agents_diff.as_ref() else {
+                return;
+            };
+            if split {
+                match data.disp_split.get(row) {
+                    Some(SplitRow::Fold(fold)) => Some(fold.key.to_string()),
+                    _ => None,
+                }
+            } else {
+                data.disp_unified
+                    .get(row)
+                    .filter(|r| r.kind == RowKind::Fold)
+                    .and_then(|r| r.fold_key.as_ref())
+                    .map(|key| key.to_string())
+            }
+        };
+        if let Some(key) = fold_key {
+            if !self.agents_view.agents_diff_expanded_folds.remove(&key) {
+                self.agents_view.agents_diff_expanded_folds.insert(key);
+            }
+            self.recompute_agents_diff_display();
+            cx.notify();
+            return;
+        }
+
+        let path = {
+            let Some(data) = self.agents_view.agents_diff.as_ref() else {
+                return;
+            };
             let anchors = if split {
                 &data.disp_anchors_split
             } else {
@@ -503,4 +768,13 @@ impl PaneFlowApp {
         };
         self.toggle_diff_file_collapsed(path, cx);
     }
+}
+
+fn agents_diff_matches_stats(
+    data: &AgentsDiffData,
+    stats: &crate::workspace::GitDiffStats,
+) -> bool {
+    data.file_count == stats.files_changed
+        && data.added as usize == stats.insertions
+        && data.removed as usize == stats.deletions
 }

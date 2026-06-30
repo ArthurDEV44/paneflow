@@ -1545,11 +1545,11 @@ impl PaneFlowApp {
                         // Update workspace git tracking (cwd stays fixed at creation -
                         // it represents the workspace's root folder and must not drift
                         // when the user `cd`s inside the shell).
-                        let ws = &mut app.workspaces[ws_idx];
-                        ws.git_dir = git_dir.clone();
-                        ws.git_branch = branch.clone();
-                        ws.is_git_repo = is_repo;
-                        ws.git_stats = stats.clone();
+                        let tracked_cwd = {
+                            let ws = &mut app.workspaces[ws_idx];
+                            ws.git_dir = git_dir.clone();
+                            ws.cwd.clone()
+                        };
                         // Watch new git dir
                         if let Some(ref dir) = git_dir {
                             let count = app.git_watch_counts.entry(dir.clone()).or_insert(0);
@@ -1562,8 +1562,14 @@ impl PaneFlowApp {
                                 log::warn!("git watcher: failed to watch {}: {e}", dir.display());
                             }
                         }
+                        let changed =
+                            app.apply_git_state_for_cwd(&tracked_cwd, branch, is_repo, stats);
+                        let refreshed_diff =
+                            changed && app.refresh_agents_diff_if_open_for_cwd(&tracked_cwd, cx);
                         log::debug!("workspace CWD changed to: {new_cwd}");
-                        cx.notify();
+                        if changed && !refreshed_diff {
+                            cx.notify();
+                        }
                     })
                 });
             }
@@ -1581,15 +1587,23 @@ impl PaneFlowApp {
     pub(crate) fn spawn_initial_git_stats(ws_id: u64, cwd: String, cx: &mut Context<Self>) {
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let stats =
-                    smol::unblock(move || crate::workspace::GitDiffStats::from_cwd(&cwd)).await;
+                let cwd_for_apply = cwd.clone();
+                let (branch, is_repo, stats) = smol::unblock(move || {
+                    let (branch, is_repo) = crate::workspace::detect_branch(&cwd);
+                    let stats = crate::workspace::GitDiffStats::from_cwd(&cwd);
+                    (branch, is_repo, stats)
+                })
+                .await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
-                            && ws.git_stats != stats
-                        {
-                            ws.git_stats = stats;
-                            cx.notify();
+                        if app.workspaces.iter().any(|ws| ws.id == ws_id) {
+                            let changed =
+                                app.apply_git_state_for_cwd(&cwd_for_apply, branch, is_repo, stats);
+                            let refreshed_diff = changed
+                                && app.refresh_agents_diff_if_open_for_cwd(&cwd_for_apply, cx);
+                            if changed && !refreshed_diff {
+                                cx.notify();
+                            }
                         }
                     })
                 });

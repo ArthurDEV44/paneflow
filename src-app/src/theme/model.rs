@@ -102,42 +102,41 @@ pub struct SyntaxPalette {
 }
 
 impl SyntaxPalette {
-    /// Catppuccin Mocha - the dark-theme syntax palette (`one_dark()`).
-    /// Hues mirror the families Zed's One Dark `SyntaxTheme` colors, remapped
-    /// to Catppuccin per the project brand (US-007 of
-    /// `prd-git-diff-mode-2026-Q3.md`). ≥ 18 distinct values.
+    /// Dark diff syntax palette (`one_dark()`), tuned from the Codex App diff
+    /// reference while keeping the existing semantic slot structure. ≥ 18
+    /// distinct values.
     pub fn catppuccin_mocha() -> Self {
         Self {
-            comment: h(0x6c7086),             // Overlay0
-            comment_doc: h(0x7f849c),         // Overlay1
-            keyword: h(0xcba6f7),             // Mauve
-            function: h(0x89b4fa),            // Blue
-            r#type: h(0x94e2d5),              // Teal
-            r#enum: h(0x94e2d5),              // Teal
-            constructor: h(0x89b4fa),         // Blue
-            string: h(0xa6e3a1),              // Green
-            string_escape: h(0x89dceb),       // Sky
-            string_special: h(0xf5c2e7),      // Pink
-            number: h(0xfab387),              // Peach
-            boolean: h(0xfab387),             // Peach
-            constant: h(0xf9e2af),            // Yellow
-            constant_builtin: h(0x74c7ec),    // Sapphire
-            property: h(0xf38ba8),            // Red
-            variable: h(0xcdd6f4),            // Text
-            variable_builtin: h(0xfab387),    // Peach
-            operator: h(0x89dceb),            // Sky
-            punctuation: h(0xbac2de),         // Subtext1
-            punctuation_special: h(0xeba0ac), // Maroon
-            attribute: h(0x89b4fa),           // Blue
-            tag: h(0xf38ba8),                 // Red
-            label: h(0xf5e0dc),               // Rosewater
-            namespace: h(0xb4befe),           // Lavender
-            title: h(0xf38ba8),               // Red
-            text_literal: h(0xa6e3a1),        // Green
-            link_uri: h(0x89dceb),            // Sky
-            link_text: h(0x89b4fa),           // Blue
-            emphasis: h(0xeba0ac),            // Maroon
-            emphasis_strong: h(0xf2cdcd),     // Flamingo
+            comment: h(0x989898),
+            comment_doc: h(0xa0a0a0),
+            keyword: h(0xb070ff),
+            function: h(0xa868e8),
+            r#type: h(0xf89850),
+            r#enum: h(0xf0a060),
+            constructor: h(0xf8a858),
+            string: h(0x40c878),
+            string_escape: h(0x70c8f0),
+            string_special: h(0xf87878),
+            number: h(0xf8c060),
+            boolean: h(0xf0b858),
+            constant: h(0xf8d878),
+            constant_builtin: h(0x70c8f0),
+            property: h(0xf0a060),
+            variable: h(0xf89850),
+            variable_builtin: h(0xf8a858),
+            operator: h(0x70c8f0),
+            punctuation: h(0xd8d0d0),
+            punctuation_special: h(0xf87878),
+            attribute: h(0x78d0f8),
+            tag: h(0xf87070),
+            label: h(0xf0c8b8),
+            namespace: h(0xa868e8),
+            title: h(0xff8080),
+            text_literal: h(0x48d080),
+            link_uri: h(0x70c8f0),
+            link_text: h(0xb070ff),
+            emphasis: h(0xf08090),
+            emphasis_strong: h(0xf0c8b8),
         }
     }
 

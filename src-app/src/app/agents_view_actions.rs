@@ -189,6 +189,12 @@ impl PaneFlowApp {
                     } else {
                         this.end_bottom_panel_resize(cx);
                     }
+                } else if this.agents_view.agents_diff_h_scroll_drag.is_some() {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.drag_agents_diff_h_scrollbar(event.position.x, cx);
+                    } else {
+                        this.end_agents_diff_h_scrollbar_drag(cx);
+                    }
                 } else if this.agents_view.agents_diff_resize.is_some() {
                     if event.pressed_button == Some(MouseButton::Left) {
                         this.drag_agents_diff_resize(f32::from(event.position.x), cx);
@@ -201,6 +207,7 @@ impl PaneFlowApp {
                 MouseButton::Left,
                 cx.listener(|this, _e: &gpui::MouseUpEvent, _w, cx| {
                     this.end_bottom_panel_resize(cx);
+                    this.end_agents_diff_h_scrollbar_drag(cx);
                     this.end_agents_diff_resize(cx);
                 }),
             )
@@ -507,16 +514,11 @@ impl PaneFlowApp {
                 let Some(project) = self.projects.get(project_idx) else {
                     return AgentsEnvironmentSummary::default();
                 };
-                let branch = self
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.cwd.as_str() == project.cwd.as_str())
-                    .map(|workspace| agents_environment_branch_label(&workspace.git_branch))
-                    .unwrap_or_else(|| "main".to_string());
+                let (branch, git_stats) = self.agents_environment_git_for_cwd(&project.cwd);
                 AgentsEnvironmentSummary {
                     cwd: project.cwd.clone(),
                     branch,
-                    git_stats: project.git_stats.clone(),
+                    git_stats,
                 }
             }
             crate::project::AgentsTarget::Chat { .. } => {
@@ -524,19 +526,40 @@ impl PaneFlowApp {
                     .thread_for_target(target)
                     .map(|thread| thread.cwd.clone())
                     .unwrap_or_default();
-                let branch = self
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.cwd.as_str() == cwd.as_str())
-                    .map(|workspace| agents_environment_branch_label(&workspace.git_branch))
-                    .unwrap_or_else(|| "main".to_string());
+                let (branch, git_stats) = self.agents_environment_git_for_cwd(&cwd);
                 AgentsEnvironmentSummary {
                     cwd,
                     branch,
-                    git_stats: crate::workspace::GitDiffStats::default(),
+                    git_stats,
                 }
             }
         }
+    }
+
+    pub(crate) fn agents_environment_git_for_cwd(
+        &self,
+        cwd: &str,
+    ) -> (String, crate::workspace::GitDiffStats) {
+        let cached = self.agents_view.agents_environment_git.get(cwd);
+        let workspace = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.cwd.as_str() == cwd);
+        let project = self.projects.iter().find(|project| project.cwd == cwd);
+        let branch = workspace
+            .map(|workspace| agents_environment_branch_label(&workspace.git_branch))
+            .or_else(|| {
+                cached
+                    .filter(|state| state.is_repo && !state.branch.trim().is_empty())
+                    .map(|state| agents_environment_branch_label(&state.branch))
+            })
+            .unwrap_or_else(|| "main".to_string());
+        let git_stats = cached
+            .map(|state| state.stats.clone())
+            .or_else(|| project.map(|project| project.git_stats.clone()))
+            .or_else(|| workspace.map(|workspace| workspace.git_stats.clone()))
+            .unwrap_or_default();
+        (branch, git_stats)
     }
 
     fn toggle_agents_branch_menu(
@@ -631,6 +654,12 @@ impl PaneFlowApp {
         self.agents_view.agents_editor_menu_open = false;
         if !self.agents_view.agents_environment_panel_open {
             self.agents_view.agents_branch_menu = None;
+        } else if let Some(target) = self.current_thread_view_target()
+            && let Some(cwd) = self
+                .thread_for_target(target)
+                .map(|thread| thread.cwd.clone())
+        {
+            self.spawn_agents_environment_git_refresh(cwd, cx);
         }
         cx.notify();
     }
@@ -716,9 +745,7 @@ impl PaneFlowApp {
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| match result {
                         Ok((branch_now, is_repo, stats)) => {
-                            app.apply_agents_environment_git_refresh(
-                                &cwd, branch_now, is_repo, stats,
-                            );
+                            app.apply_git_state_for_cwd(&cwd, branch_now, is_repo, stats);
                             app.show_toast(format!("Switched to {branch}"), cx);
                             cx.notify();
                         }
@@ -898,25 +925,109 @@ impl PaneFlowApp {
         }
     }
 
-    fn apply_agents_environment_git_refresh(
+    pub(crate) fn spawn_agents_environment_git_refresh(
+        &mut self,
+        cwd: String,
+        cx: &mut Context<Self>,
+    ) {
+        let cwd = cwd.trim().to_string();
+        if cwd.is_empty() {
+            return;
+        }
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (branch, is_repo, stats) = smol::unblock({
+                    let cwd = cwd.clone();
+                    move || read_agents_environment_git_state(&cwd)
+                })
+                .await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        let changed = app.apply_git_state_for_cwd(&cwd, branch, is_repo, stats);
+                        if changed {
+                            cx.notify();
+                        }
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub(crate) fn apply_git_state_for_cwd(
         &mut self,
         cwd: &str,
         branch: String,
         is_repo: bool,
         stats: crate::workspace::GitDiffStats,
-    ) {
+    ) -> bool {
+        let mut changed = false;
+        let state = crate::AgentsGitState {
+            branch: branch.clone(),
+            is_repo,
+            stats: stats.clone(),
+        };
+        if self.agents_view.agents_environment_git.get(cwd) != Some(&state) {
+            self.agents_view
+                .agents_environment_git
+                .insert(cwd.to_string(), state);
+            changed = true;
+        }
         for workspace in &mut self.workspaces {
             if workspace.cwd == cwd {
-                workspace.git_branch = branch.clone();
-                workspace.is_git_repo = is_repo;
-                workspace.git_stats = stats.clone();
+                if workspace.git_branch != branch {
+                    workspace.git_branch = branch.clone();
+                    changed = true;
+                }
+                if workspace.is_git_repo != is_repo {
+                    workspace.is_git_repo = is_repo;
+                    changed = true;
+                }
+                if workspace.git_stats != stats {
+                    workspace.git_stats = stats.clone();
+                    changed = true;
+                }
             }
         }
         for project in &mut self.projects {
             if project.cwd == cwd {
-                project.git_stats = stats.clone();
+                if project.git_stats != stats {
+                    project.git_stats = stats.clone();
+                    changed = true;
+                }
             }
         }
+        changed
+    }
+
+    pub(crate) fn apply_git_stats_for_cwd(
+        &mut self,
+        cwd: &str,
+        stats: crate::workspace::GitDiffStats,
+    ) -> bool {
+        let mut changed = false;
+        let state = self
+            .agents_view
+            .agents_environment_git
+            .entry(cwd.to_string())
+            .or_default();
+        if state.stats != stats {
+            state.stats = stats.clone();
+            changed = true;
+        }
+        for workspace in &mut self.workspaces {
+            if workspace.cwd == cwd && workspace.git_stats != stats {
+                workspace.git_stats = stats.clone();
+                changed = true;
+            }
+        }
+        for project in &mut self.projects {
+            if project.cwd == cwd && project.git_stats != stats {
+                project.git_stats = stats.clone();
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Resolve a center target to its backing [`Thread`], whether it lives
@@ -1650,7 +1761,7 @@ fn render_agents_environment_card(
         .border_1()
         .border_color(panel_border)
         .child(render_agents_environment_header(ui, cx))
-        .child(render_agents_environment_changes_row(&summary, ui))
+        .child(render_agents_environment_changes_row(&summary, ui, cx))
         .child(render_agents_environment_branch_row(
             summary,
             branch_menu,
@@ -1710,19 +1821,34 @@ fn render_agents_environment_header(
 fn render_agents_environment_changes_row(
     summary: &AgentsEnvironmentSummary,
     ui: crate::theme::UiColors,
+    cx: &mut Context<PaneFlowApp>,
 ) -> gpui::AnyElement {
+    let cwd = summary.cwd.clone();
     let insertions = summary.git_stats.insertions;
     let deletions = summary.git_stats.deletions;
     // Reuse the right diff panel's palette so the +/- counts match the washes
     // there (Codex green/red on dark themes, theme vc_* on light).
     let (added_color, deleted_color) = crate::app::agents_diff::agents_diff_count_colors(ui);
     div()
-        .h(px(20.))
+        .id("agents-env-changes-row")
+        .relative()
+        .w(px(AGENTS_ENVIRONMENT_PANEL_WIDTH - 16.0))
         .flex()
         .flex_row()
         .items_center()
         .justify_between()
         .gap(px(12.))
+        .mx(px(-8.))
+        .px(px(8.))
+        .py(px(6.))
+        .rounded(px(8.))
+        .cursor(CursorStyle::PointingHand)
+        .hover(move |d| d.bg(crate::settings::components::with_alpha(ui.text, 0.06)))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            this.spawn_agents_environment_git_refresh(cwd.clone(), cx);
+            this.open_agents_diff_panel(cwd.clone(), cx);
+        }))
         .child(render_agents_environment_label(
             "icons/file-text.svg",
             "Changes",
@@ -2080,6 +2206,12 @@ fn list_agents_environment_branches(cwd: &str) -> Result<Vec<String>, String> {
     Ok(branches)
 }
 
+fn read_agents_environment_git_state(cwd: &str) -> (String, bool, crate::workspace::GitDiffStats) {
+    let (branch, is_repo) = crate::workspace::detect_branch(cwd);
+    let stats = crate::workspace::GitDiffStats::from_cwd(cwd);
+    (branch, is_repo, stats)
+}
+
 fn switch_agents_environment_branch(
     cwd: &str,
     branch: &str,
@@ -2100,9 +2232,7 @@ fn switch_agents_environment_branch(
         return Err(git_output_error(&output));
     }
 
-    let (branch_now, is_repo) = crate::workspace::detect_branch(cwd);
-    let stats = crate::workspace::GitDiffStats::from_cwd(cwd);
-    Ok((branch_now, is_repo, stats))
+    Ok(read_agents_environment_git_state(cwd))
 }
 
 fn git_output_error(output: &std::process::Output) -> String {

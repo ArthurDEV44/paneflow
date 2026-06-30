@@ -214,6 +214,11 @@ fn render_diff_split_button(
 ) -> AnyElement {
     let rest = with_alpha(ui.text, if split { 0.08 } else { 0.0 });
     let hover = with_alpha(ui.text, 0.08);
+    let icon = if split {
+        "icons/diff-split.svg"
+    } else {
+        "icons/diff-unified.svg"
+    };
     div()
         .id("agents-diff-view-split")
         .size(px(28.))
@@ -228,7 +233,7 @@ fn render_diff_split_button(
         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
             this.set_agents_diff_split(!split, cx);
         }))
-        .child(gpui::img("icons/diff-split.svg").size(px(16.)).flex_none())
+        .child(gpui::img(icon).size(px(16.)).flex_none())
         .into_any_element()
 }
 

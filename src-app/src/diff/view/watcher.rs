@@ -156,6 +156,7 @@ impl DiffView {
         let mut worktrees: Vec<PathBuf> = self
             .columns
             .iter()
+            .filter(|column| column.visible)
             .map(|column| column.path.clone())
             .collect();
         worktrees.sort();
@@ -218,7 +219,7 @@ impl DiffView {
                             if view.watch_epoch != epoch {
                                 return false;
                             }
-                            view.start_loading(cx);
+                            view.revalidate(cx);
                             true
                         })
                         .unwrap_or(false)
@@ -245,6 +246,15 @@ impl DiffView {
         .detach();
     }
 
+    pub(super) fn restart_watchers(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.suspended || !self.bootstrapped {
+            return;
+        }
+        self.watch_epoch = self.watch_epoch.wrapping_add(1);
+        self._watchers.clear();
+        self.start_watchers(cx);
+    }
+
     pub fn suspend(&mut self, _cx: &mut gpui::Context<Self>) {
         if self.suspended {
             return;
@@ -264,6 +274,35 @@ impl DiffView {
         }
         self.start_watchers(cx);
         if !self.base_ref.is_empty() {
+            self.revalidate(cx);
+        }
+    }
+
+    pub(crate) fn resume_with_base(&mut self, base: Option<String>, cx: &mut gpui::Context<Self>) {
+        let base_changed = match base {
+            Some(base) if !base.is_empty() && base != self.base_ref => {
+                self.base_ref = base;
+                self.base_picker_open = false;
+                true
+            }
+            _ => false,
+        };
+
+        if !self.suspended {
+            if base_changed {
+                self.start_loading(cx);
+            }
+            return;
+        }
+
+        self.suspended = false;
+        if !self.bootstrapped {
+            return;
+        }
+        self.start_watchers(cx);
+        if base_changed {
+            self.start_loading(cx);
+        } else if !self.base_ref.is_empty() {
             self.revalidate(cx);
         }
     }

@@ -70,6 +70,9 @@ impl DiffView {
         // EP-003 US-009: focus the DiffView body so the keyboard review loop
         // ([`/`]/u/s/Esc) is live without first tabbing into the surface.
         window.focus(&self.focus_handle, cx);
+        if self.handle_horizontal_scrollbar_click(col_idx, ev.position(), mode, cx) {
+            return;
+        }
         let row = {
             let Some(col) = self.columns.get(col_idx) else {
                 return;
@@ -91,6 +94,33 @@ impl DiffView {
                 None => return, // click past the last row
             }
         };
+        let fold_key = {
+            let Some(col) = self.columns.get(col_idx) else {
+                return;
+            };
+            match mode {
+                ViewMode::Unified => col
+                    .disp_unified
+                    .get(row)
+                    .filter(|r| r.kind == RowKind::Fold)
+                    .and_then(|r| r.fold_key.as_ref())
+                    .map(|key| key.to_string()),
+                ViewMode::Split => match col.disp_split.get(row) {
+                    Some(SplitRow::Fold(fold)) => Some(fold.key.to_string()),
+                    _ => None,
+                },
+            }
+        };
+        if let Some(key) = fold_key {
+            if let Some(col) = self.columns.get_mut(col_idx) {
+                if !col.expanded_folds.remove(&key) {
+                    col.expanded_folds.insert(key);
+                }
+                col.recompute_display();
+                cx.notify();
+            }
+            return;
+        }
         let path = {
             let Some(col) = self.columns.get(col_idx) else {
                 return;
@@ -266,43 +296,6 @@ impl DiffView {
                 mode,
             });
         cx.notify();
-    }
-
-    /// EP-003 US-013: toggle a file's hunk collapse from the sidebar (mirrors a
-    /// body file-header click). Public so the diff sidebar can drive it without
-    /// synthesizing a body click.
-    pub fn toggle_file_collapse(&mut self, col_idx: usize, path: &str, cx: &mut Context<Self>) {
-        if let Some(col) = self.columns.get_mut(col_idx) {
-            if !col.collapsed.remove(path) {
-                col.collapsed.insert(path.to_string());
-            }
-            col.recompute_display();
-            cx.notify();
-        }
-    }
-
-    /// EP-003 US-013: copy a file's full diff from the sidebar (mirrors the body
-    /// "Copy file diff" menu item). Resolves the file index from `path` against
-    /// the column's retained per-file diffs; a no-op if the column isn't loaded
-    /// or the path isn't found.
-    pub fn copy_file_diff(&mut self, col_idx: usize, path: &str, cx: &mut Context<Self>) {
-        let file_idx = self.columns.get(col_idx).and_then(|col| match &col.state {
-            ColumnState::Loaded { files_full, .. } => {
-                files_full.iter().position(|f| f.path == path)
-            }
-            _ => None,
-        });
-        if let Some(file_idx) = file_idx {
-            self.copy_scope(
-                col_idx,
-                DiffBodyScope {
-                    file_idx,
-                    hunk_idx: None,
-                },
-                false,
-                cx,
-            );
-        }
     }
 
     /// US-003: show a transient confirmation pill, auto-cleared after a beat.

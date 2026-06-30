@@ -325,32 +325,20 @@ impl PaneFlowApp {
                         let apply = cx.update(|cx| {
                             this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                                 let mut changed = false;
+                                let mut refreshed_diff = false;
                                 for (cwd, branch, is_repo, stats) in &results {
-                                    for ws in &mut app.workspaces {
-                                        if ws.cwd != *cwd {
-                                            continue;
-                                        }
-                                        if ws.git_branch != *branch || ws.is_git_repo != *is_repo {
-                                            ws.git_branch = branch.clone();
-                                            ws.is_git_repo = *is_repo;
-                                            changed = true;
-                                        }
-                                        if ws.git_stats != *stats {
-                                            ws.git_stats = stats.clone();
-                                            changed = true;
-                                        }
-                                    }
-                                    for p in &mut app.projects {
-                                        if p.cwd != *cwd {
-                                            continue;
-                                        }
-                                        if p.git_stats != *stats {
-                                            p.git_stats = stats.clone();
-                                            changed = true;
-                                        }
+                                    if app.apply_git_state_for_cwd(
+                                        cwd,
+                                        branch.clone(),
+                                        *is_repo,
+                                        stats.clone(),
+                                    ) {
+                                        changed = true;
+                                        refreshed_diff |=
+                                            app.refresh_agents_diff_if_open_for_cwd(cwd, cx);
                                     }
                                 }
-                                if changed {
+                                if changed && !refreshed_diff {
                                     cx.notify();
                                 }
                             })
@@ -550,32 +538,20 @@ impl PaneFlowApp {
                     let apply = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                             let mut changed = false;
+                            let mut refreshed_diff = false;
                             for (cwd, branch, is_repo, stats) in &results {
-                                for ws in &mut app.workspaces {
-                                    if ws.cwd != *cwd {
-                                        continue;
-                                    }
-                                    if ws.git_branch != *branch || ws.is_git_repo != *is_repo {
-                                        ws.git_branch = branch.clone();
-                                        ws.is_git_repo = *is_repo;
-                                        changed = true;
-                                    }
-                                    if ws.git_stats != *stats {
-                                        ws.git_stats = stats.clone();
-                                        changed = true;
-                                    }
-                                }
-                                for p in &mut app.projects {
-                                    if p.cwd != *cwd {
-                                        continue;
-                                    }
-                                    if p.git_stats != *stats {
-                                        p.git_stats = stats.clone();
-                                        changed = true;
-                                    }
+                                if app.apply_git_state_for_cwd(
+                                    cwd,
+                                    branch.clone(),
+                                    *is_repo,
+                                    stats.clone(),
+                                ) {
+                                    changed = true;
+                                    refreshed_diff |=
+                                        app.refresh_agents_diff_if_open_for_cwd(cwd, cx);
                                 }
                             }
-                            if changed {
+                            if changed && !refreshed_diff {
                                 cx.notify();
                             }
                         })
@@ -1014,15 +990,19 @@ impl PaneFlowApp {
                 sidebar_actions_menu_open: false,
                 sidebar_mode_picker_open: false,
                 agents_branch_menu: None,
+                agents_environment_git: std::collections::HashMap::new(),
                 agents_environment_panel_open: true,
                 agents_editor_menu_open: false,
                 agents_diff_open: false,
                 agents_diff: None,
                 agents_diff_collapsed: std::collections::HashSet::new(),
+                agents_diff_expanded_folds: std::collections::HashSet::new(),
                 agents_diff_split: false,
+                agents_diff_generation: 0,
                 agents_diff_scroll: gpui::ScrollHandle::new(),
                 agents_diff_width: crate::app::agents_diff::AGENTS_DIFF_PANEL_WIDTH,
                 agents_diff_resize: None,
+                agents_diff_h_scroll_drag: None,
                 agents_diff_h_offsets: Vec::new(),
                 bottom_panel_open: false,
                 bottom_panel_height: crate::app::agents_bottom_panel::BOTTOM_PANEL_DEFAULT_HEIGHT,
@@ -1040,6 +1020,15 @@ impl PaneFlowApp {
             // the global app key chain.
             sidebar_order_cache: std::cell::RefCell::new(Default::default()),
         };
+
+        for cwd in app
+            .projects
+            .iter()
+            .map(|project| project.cwd.clone())
+            .collect::<Vec<_>>()
+        {
+            app.spawn_agents_environment_git_refresh(cwd, cx);
+        }
 
         // US-015 (prd-git-diff-mode-2026-Q3.md): restore Diff mode only when
         // it is reconstructable. The diff derives its repo from the restored

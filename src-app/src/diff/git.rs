@@ -13,6 +13,7 @@
 //! from base". Base text comes from `git show <merge-base>:<path>`, new text
 //! from the working-tree file on disk.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -86,6 +87,13 @@ impl FileDiff {
 pub struct WorktreeDiff {
     pub files: Vec<FileDiff>,
     pub error: Option<String>,
+}
+
+/// Git-native per-file diffstat for one file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileDiffStat {
+    pub added: u32,
+    pub removed: u32,
 }
 
 /// Parse `git worktree list --porcelain`. Ported from Zed's
@@ -376,13 +384,25 @@ fn merge_base(worktree_dir: &Path, base_ref: &str) -> Result<String, String> {
     Ok(sha)
 }
 
+/// Normalize text the way git's diff stats do for text files: repository blobs
+/// are LF-normalized, while a Windows worktree may contain CRLF due
+/// `core.autocrlf`. The renderer should not turn that checkout detail into a
+/// whole-file edit.
+fn normalize_git_text(text: String) -> String {
+    if text.as_bytes().contains(&b'\r') {
+        text.replace("\r\n", "\n").replace('\r', "\n")
+    } else {
+        text
+    }
+}
+
 /// Bytes look textual if they contain no NUL and decode as UTF-8.
 fn classify(bytes: Vec<u8>) -> (String, bool) {
     if bytes.contains(&0) {
         return (String::new(), true);
     }
     match String::from_utf8(bytes) {
-        Ok(s) => (s, false),
+        Ok(s) => (normalize_git_text(s), false),
         Err(_) => (String::new(), true),
     }
 }
@@ -462,6 +482,30 @@ fn parse_name_status_z(stdout: &[u8]) -> Vec<(FileChange, String, Option<String>
             _ => FileChange::Modified, // M, C, T → modified content
         };
         out.push((change, path, old));
+    }
+    out
+}
+
+fn parse_numstat_z(stdout: &[u8]) -> HashMap<String, FileDiffStat> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut out = HashMap::new();
+    for record in text.split('\u{0}').filter(|f| !f.is_empty()) {
+        let mut parts = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let added = added.parse::<u32>().unwrap_or(0);
+        let removed = removed.parse::<u32>().unwrap_or(0);
+        let stat = out.entry(path.to_string()).or_insert(FileDiffStat {
+            added: 0,
+            removed: 0,
+        });
+        stat.added = stat.added.saturating_add(added);
+        stat.removed = stat.removed.saturating_add(removed);
     }
     out
 }
@@ -555,6 +599,22 @@ pub fn compute_worktree_diff(worktree_dir: &Path, base_ref: &str) -> WorktreeDif
     log::debug!("git: merge_base={merge_base}");
 
     compute_diff_against(worktree_dir, &merge_base)
+}
+
+/// Per-file Git-native diffstat for the same semantic as
+/// [`compute_worktree_diff`]: `merge-base(HEAD, base_ref)..working-tree`, plus
+/// untracked files. This is used for Review's sidebar/global counters so they
+/// match `git diff --numstat` instead of drifting with renderer hunk details.
+pub fn compute_worktree_file_stats(
+    worktree_dir: &Path,
+    base_ref: &str,
+) -> HashMap<String, FileDiffStat> {
+    let toplevel = worktree_toplevel(worktree_dir);
+    let worktree_dir = toplevel.as_path();
+    let Ok(merge_base) = merge_base(worktree_dir, base_ref) else {
+        return HashMap::new();
+    };
+    compute_file_stats_against(worktree_dir, &merge_base)
 }
 
 /// Git's well-known empty-tree object hash. Diffing against it (used when `HEAD`
@@ -678,6 +738,27 @@ fn compute_diff_against(worktree_dir: &Path, base: &str) -> WorktreeDiff {
     WorktreeDiff { files, error: None }
 }
 
+fn compute_file_stats_against(worktree_dir: &Path, base: &str) -> HashMap<String, FileDiffStat> {
+    let mut stats = run_git(
+        worktree_dir,
+        &["diff", "--numstat", "-z", "--no-color", base, "--"],
+    )
+    .map(|out| parse_numstat_z(&out))
+    .unwrap_or_default();
+
+    for path in list_untracked(worktree_dir) {
+        let (text, is_binary) = load_working_text(worktree_dir, &path);
+        let added = if is_binary {
+            0
+        } else {
+            u32::try_from(text.lines().count()).unwrap_or(u32::MAX)
+        };
+        stats.insert(path, FileDiffStat { added, removed: 0 });
+    }
+
+    stats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,8 +819,75 @@ mod tests {
             classify(b"hello\n".to_vec()),
             ("hello\n".to_string(), false)
         );
+        assert_eq!(
+            classify(b"hello\r\nworld\r\n".to_vec()),
+            ("hello\nworld\n".to_string(), false)
+        );
         let (_, bin) = classify(vec![0x00, 0x01, 0x02]);
         assert!(bin);
+    }
+
+    #[test]
+    fn numstat_z_parsing() {
+        let raw = b"3\t1\tsrc/main.rs\0-\t-\timage.png\0";
+        let parsed = parse_numstat_z(raw);
+        assert_eq!(
+            parsed.get("src/main.rs"),
+            Some(&FileDiffStat {
+                added: 3,
+                removed: 1
+            })
+        );
+        assert_eq!(
+            parsed.get("image.png"),
+            Some(&FileDiffStat {
+                added: 0,
+                removed: 0
+            })
+        );
+    }
+
+    #[test]
+    fn worktree_file_stats_count_tracked_and_untracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        if !test_git(root, &["init"]) {
+            return;
+        }
+        assert!(test_git(root, &["config", "core.autocrlf", "false"]));
+        std::fs::write(root.join("tracked.txt"), "one\n").unwrap();
+        assert!(test_git(root, &["add", "tracked.txt"]));
+        assert!(test_git(
+            root,
+            &[
+                "-c",
+                "user.email=paneflow@example.com",
+                "-c",
+                "user.name=Paneflow",
+                "commit",
+                "-m",
+                "init",
+            ],
+        ));
+
+        std::fs::write(root.join("tracked.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(root.join("untracked.txt"), "alpha\nbeta\n").unwrap();
+
+        let stats = compute_worktree_file_stats(root, "HEAD");
+        assert_eq!(
+            stats.get("tracked.txt"),
+            Some(&FileDiffStat {
+                added: 1,
+                removed: 0
+            })
+        );
+        assert_eq!(
+            stats.get("untracked.txt"),
+            Some(&FileDiffStat {
+                added: 2,
+                removed: 0
+            })
+        );
     }
 
     #[test]
@@ -766,5 +914,15 @@ mod tests {
             is_binary: false,
         };
         assert_eq!(fd.line_counts(), (5, 1));
+    }
+
+    fn test_git(cwd: &std::path::Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
     }
 }

@@ -175,7 +175,7 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(6.))
             .cursor_pointer()
-            .hover(|s| s.bg(ui.subtle))
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                 this.diff_mode.diff_files_collapsed = !this.diff_mode.diff_files_collapsed;
                 cx.notify();
@@ -201,7 +201,7 @@ impl PaneFlowApp {
                     .size(px(20.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(ui.subtle))
+                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
                     .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                         this.diff_mode.diff_files_tree = !this.diff_mode.diff_files_tree;
                         cx.stop_propagation();
@@ -501,7 +501,7 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(5.))
             .cursor_pointer()
-            .hover(|s| s.bg(ui.subtle))
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                 if !this.diff_mode.diff_collapsed_dirs.remove(&key) {
                     this.diff_mode.diff_collapsed_dirs.insert(key.clone());
@@ -579,15 +579,11 @@ impl PaneFlowApp {
             .flex_row()
             .items_center()
             .gap(px(5.))
-            .border_l_2()
-            .border_color(if is_active {
-                ui.accent
-            } else {
-                ui.accent.opacity(0.)
+            .when(is_active, |d| {
+                d.bg(crate::app::constants::sidebar_tab_active_background())
             })
-            .when(is_active, |d| d.bg(ui.accent.opacity(0.08)))
             .cursor_pointer()
-            .hover(|s| s.bg(ui.subtle))
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                 if !this.diff_mode.diff_collapsed_branches.remove(&key_owned) {
                     this.diff_mode

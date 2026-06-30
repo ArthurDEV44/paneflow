@@ -1,7 +1,7 @@
 //! Git-metadata probing for workspace CWDs: branch detection, diff stats, and
 //! worktree-aware `.git` lookup. All functions are pure (no shared mutable
-//! state) and cross-platform - `git diff --shortstat` is spawned for diff
-//! stats, everything else reads `.git/HEAD` directly without subprocesses.
+//! state) and cross-platform - git subprocesses are bounded and non-interactive,
+//! while branch detection reads `.git/HEAD` directly.
 //!
 //! Extracted from `workspace.rs` per US-030 of the src-app refactor PRD.
 
@@ -22,36 +22,30 @@ const GIT_DIFF_STAT_DEADLINE: std::time::Duration = std::time::Duration::from_se
 /// line, so 256 KiB is far beyond any real output while bounding a hijacked git.
 const GIT_DIFF_STAT_STDOUT_CAP: u64 = 256 * 1024;
 
+const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const GIT_DIFF_STAT_UNTRACKED_FILE_CAP: usize = 200;
+const GIT_DIFF_STAT_FILE_BYTES_CAP: u64 = 512 * 1024;
+
 impl GitDiffStats {
-    /// Run `git diff --shortstat` in the given directory and parse the result.
-    /// On spawn failure, timeout, or a nonzero exit this returns the empty
-    /// (`is_empty()`) default - the "stats unavailable" state the badge renders.
+    /// Run a HEAD-relative diff stat in the given directory and parse the result.
+    /// This matches the Agents diff dock semantics: staged + unstaged tracked
+    /// changes against `HEAD`, plus untracked files. On spawn failure, timeout, or
+    /// nonzero git exit this returns the empty (`is_empty()`) default - the
+    /// "stats unavailable" state the badge renders.
     pub fn from_cwd(cwd: &str) -> Self {
-        let mut cmd = std::process::Command::new("git");
-        cmd.args(["diff", "--shortstat"])
-            .current_dir(cwd)
-            // U-035: a hung credential/helper prompt would otherwise pin the
-            // blocking-pool task. With no terminal git fails fast instead.
-            .env("GIT_TERMINAL_PROMPT", "0");
+        let base = git_stdout(cwd, &["rev-parse", "--verify", "HEAD"])
+            .map(|out| String::from_utf8_lossy(&out).trim().to_string())
+            .filter(|base| !base.is_empty())
+            .unwrap_or_else(|| EMPTY_TREE_SHA.to_string());
 
-        // U-035: bound the subprocess (run_with_timeout also nulls stdin) so a
-        // dead mount or slow helper can't hang the blocking-pool task - repeated
-        // CWD changes would otherwise pile up hung tasks. Timeout falls back to
-        // "no stats" exactly like a nonzero exit.
-        let output = match paneflow_process::run_with_timeout(
-            cmd,
-            GIT_DIFF_STAT_DEADLINE,
-            GIT_DIFF_STAT_STDOUT_CAP,
-        ) {
-            Ok(output) => output,
-            Err(_) => return Self::default(),
-        };
-        if !output.status.success() {
-            return Self::default();
-        }
-
-        let text = String::from_utf8_lossy(&output.stdout);
-        Self::parse_shortstat(&text)
+        let mut stats = git_stdout(cwd, &["diff", "--shortstat", &base, "--"])
+            .map(|out| {
+                let text = String::from_utf8_lossy(&out);
+                Self::parse_shortstat(&text)
+            })
+            .unwrap_or_default();
+        stats.add_untracked(cwd);
+        stats
     }
 
     /// Parse `git diff --shortstat` output, e.g.:
@@ -86,7 +80,73 @@ impl GitDiffStats {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.insertions == 0 && self.deletions == 0
+        self.files_changed == 0 && self.insertions == 0 && self.deletions == 0
+    }
+
+    fn add_untracked(&mut self, cwd: &str) {
+        let Some(out) = git_stdout(cwd, &["ls-files", "--others", "--exclude-standard", "-z"])
+        else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&out);
+        for (idx, path) in text.split('\0').filter(|p| !p.is_empty()).enumerate() {
+            self.files_changed += 1;
+            if idx < GIT_DIFF_STAT_UNTRACKED_FILE_CAP {
+                self.insertions += untracked_insertions(cwd, path);
+            }
+        }
+    }
+}
+
+fn git_stdout(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args)
+        .current_dir(cwd)
+        // U-035: a hung credential/helper prompt would otherwise pin the
+        // blocking-pool task. With no terminal git fails fast instead.
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let output =
+        paneflow_process::run_with_timeout(cmd, GIT_DIFF_STAT_DEADLINE, GIT_DIFF_STAT_STDOUT_CAP)
+            .ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+fn untracked_insertions(cwd: &str, rel_path: &str) -> usize {
+    use std::io::Read;
+
+    let path = std::path::Path::new(cwd).join(rel_path);
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(&path)
+            .map(|target| text_line_count(&target.to_string_lossy()))
+            .unwrap_or(0),
+        Ok(_) => {
+            let file = match std::fs::File::open(&path) {
+                Ok(file) => file,
+                Err(_) => return 0,
+            };
+            let mut bytes = Vec::new();
+            if file
+                .take(GIT_DIFF_STAT_FILE_BYTES_CAP + 1)
+                .read_to_end(&mut bytes)
+                .is_err()
+                || bytes.len() as u64 > GIT_DIFF_STAT_FILE_BYTES_CAP
+                || bytes.contains(&0)
+            {
+                return 0;
+            }
+            String::from_utf8(bytes)
+                .map(|text| text_line_count(&text))
+                .unwrap_or(0)
+        }
+        Err(_) => 0,
+    }
+}
+
+fn text_line_count(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.lines().count()
     }
 }
 
@@ -610,5 +670,48 @@ mod tests {
             stats.is_empty(),
             "non-repo should yield no stats, got {stats:?}"
         );
+    }
+
+    #[test]
+    fn from_cwd_counts_staged_and_untracked_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        if !test_git(root, &["init"]) {
+            return;
+        }
+        assert!(test_git(root, &["config", "core.autocrlf", "false"]));
+        std::fs::write(root.join("tracked.txt"), "one\n").unwrap();
+        assert!(test_git(root, &["add", "tracked.txt"]));
+        assert!(test_git(
+            root,
+            &[
+                "-c",
+                "user.email=paneflow@example.com",
+                "-c",
+                "user.name=Paneflow",
+                "commit",
+                "-m",
+                "init",
+            ],
+        ));
+
+        std::fs::write(root.join("tracked.txt"), "one\ntwo\n").unwrap();
+        assert!(test_git(root, &["add", "tracked.txt"]));
+        std::fs::write(root.join("untracked.txt"), "alpha\nbeta\n").unwrap();
+
+        let stats = GitDiffStats::from_cwd(root.to_str().unwrap());
+        assert_eq!(stats.files_changed, 2);
+        assert_eq!(stats.insertions, 3);
+        assert_eq!(stats.deletions, 0);
+    }
+
+    fn test_git(cwd: &std::path::Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
     }
 }

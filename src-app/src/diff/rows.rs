@@ -8,7 +8,7 @@
 //! use the compact line height). Side-by-side rendering (LHS/RHS with phantom
 //! rows) is EP-003 (US-008/US-009); this is the EP-002 unified view.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use gpui::{Hsla, SharedString};
@@ -23,6 +23,7 @@ const MAX_FULL_SPLIT_ALIGN_LINES: usize = 20_000;
 /// Per-file word-diff ranges, keyed by line index in each side's text. Only
 /// populated for small modified hunks (US-010); other lines highlight at the
 /// line level only.
+#[derive(Clone, Default)]
 struct WordMaps {
     old: HashMap<u32, Vec<Range<usize>>>,
     new: HashMap<u32, Vec<Range<usize>>>,
@@ -69,22 +70,26 @@ pub const ROW_HEIGHT: f32 = 18.0;
 /// keyed off [`display_row_height`] / [`split_row_height`].
 pub const FILE_HEADER_HEIGHT: f32 = 32.0;
 
+/// Collapsed unchanged-region row height. This row is a compact control, not a
+/// normal code line, so it needs room for the rounded surface and fold icon.
+pub const FOLD_ROW_HEIGHT: f32 = 32.0;
+
 /// Laid-out height of one unified row: a padded card for file headers, the
 /// compact line height for everything else.
 pub fn display_row_height(row: &DisplayRow) -> f32 {
-    if matches!(row.kind, RowKind::FileHeader) {
-        FILE_HEADER_HEIGHT
-    } else {
-        ROW_HEIGHT
+    match row.kind {
+        RowKind::FileHeader => FILE_HEADER_HEIGHT,
+        RowKind::Fold => FOLD_ROW_HEIGHT,
+        _ => ROW_HEIGHT,
     }
 }
 
 /// Side-by-side analog of [`display_row_height`].
 pub fn split_row_height(row: &SplitRow) -> f32 {
-    if matches!(row, SplitRow::Header(_)) {
-        FILE_HEADER_HEIGHT
-    } else {
-        ROW_HEIGHT
+    match row {
+        SplitRow::Header(_) => FILE_HEADER_HEIGHT,
+        SplitRow::Fold(_) => FOLD_ROW_HEIGHT,
+        _ => ROW_HEIGHT,
     }
 }
 
@@ -178,16 +183,20 @@ pub fn split_max_line_no(rows: &[SplitRow]) -> u32 {
 
 /// One file's extent in a display-row set: the index of its `FileHeader` row
 /// and the width (in monospace cells) of its widest code line. The widest-line
-/// width drives the file's horizontal-scroll bound; precomputed off the render
-/// path (in `recompute_display` / `AgentsDiffData::recompute`) and shared with
-/// `DiffElement`, which offsets each file's code by its own scroll position
-/// instead of re-measuring every row per frame. `max_chars` counts `char`s (not
-/// bytes), matching the monospace-cell estimate the element scrolls by; it is
-/// `0` for a collapsed file (header only) or a binary/fold-only file.
+/// width drives the file's horizontal-scroll bound; split rows additionally
+/// store the right-side width. These spans are precomputed off the render path
+/// (in `recompute_display` / `AgentsDiffData::recompute`) and shared with
+/// `DiffElement`, which offsets each file side's code by its own scroll
+/// position instead of re-measuring every row per frame. Widths count `char`s
+/// (not bytes), matching the monospace-cell estimate the element scrolls by;
+/// they are `0` for a collapsed file (header only) or a binary/fold-only file.
 #[derive(Clone, Copy)]
 pub struct FileSpan {
     pub header_row: usize,
+    /// Unified width, or split-left width when `right_max_chars` is `Some`.
     pub max_chars: usize,
+    /// Split-right width. `None` means the span belongs to unified mode.
+    pub right_max_chars: Option<usize>,
 }
 
 /// Per-file spans for a unified row set, one entry per `FileHeader` in file
@@ -199,6 +208,7 @@ pub fn unified_file_spans(rows: &[DisplayRow]) -> Vec<FileSpan> {
             RowKind::FileHeader => spans.push(FileSpan {
                 header_row: i,
                 max_chars: 0,
+                right_max_chars: None,
             }),
             RowKind::Context | RowKind::Added | RowKind::Removed => {
                 if let Some(span) = spans.last_mut() {
@@ -212,9 +222,9 @@ pub fn unified_file_spans(rows: &[DisplayRow]) -> Vec<FileSpan> {
     spans
 }
 
-/// Side-by-side analog of [`unified_file_spans`]. Each `Pair` row's wider half
-/// cell contributes to its file's `max_chars` (the offset applies per half, but
-/// one file-level bound covers the widest cell on either side).
+/// Side-by-side analog of [`unified_file_spans`]. Each `Pair` row contributes
+/// to the matching half's width, so split horizontal scroll can clamp left and
+/// right independently.
 pub fn split_file_spans(rows: &[SplitRow]) -> Vec<FileSpan> {
     let mut spans: Vec<FileSpan> = Vec::new();
     for (i, r) in rows.iter().enumerate() {
@@ -222,11 +232,13 @@ pub fn split_file_spans(rows: &[SplitRow]) -> Vec<FileSpan> {
             SplitRow::Header(_) => spans.push(FileSpan {
                 header_row: i,
                 max_chars: 0,
+                right_max_chars: Some(0),
             }),
             SplitRow::Pair { left, right } => {
                 if let Some(span) = spans.last_mut() {
-                    let w = left.text.chars().count().max(right.text.chars().count());
-                    span.max_chars = span.max_chars.max(w);
+                    span.max_chars = span.max_chars.max(left.text.chars().count());
+                    let right_max = span.right_max_chars.get_or_insert(0);
+                    *right_max = (*right_max).max(right.text.chars().count());
                 }
             }
             SplitRow::Note(_) | SplitRow::Fold(_) => {}
@@ -242,6 +254,16 @@ pub const MAX_DISPLAY_ROWS: usize = 10_000;
 /// Unchanged lines kept on each side of a hunk before the middle is collapsed
 /// into a [`RowKind::Fold`] marker (mirrors Zed's default diff context).
 pub const CONTEXT_LINES: u32 = 3;
+
+/// Per-file caches shared by unified/split row builders for one diff snapshot.
+/// The Review view keeps these next to `files_full` so the inactive mode and
+/// later fold expansions reuse syntax + word-diff work instead of recomputing it.
+#[derive(Clone, Default)]
+pub struct FileRowCache {
+    words: WordMaps,
+    syn_old: Vec<Vec<(Range<usize>, Hsla)>>,
+    syn_new: Vec<Vec<(Range<usize>, Hsla)>>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RowKind {
@@ -268,21 +290,43 @@ pub struct DisplayRow {
     /// when syntax highlighting is disabled or the line is plain.
     pub syntax_runs: Vec<(Range<usize>, Hsla)>,
     /// EP-002 US-006: typed file-header segments for [`RowKind::FileHeader`]
-    /// rows (`None` for every other kind). Decomposes the header into a status
-    /// sigil + directory prefix + basename + diffstat so the element paints
-    /// each as its own typed run instead of one fused monospace string.
+    /// rows (`None` for every other kind). Decomposes the header into directory
+    /// prefix + basename + diffstat so the element paints each as its own typed
+    /// run instead of one fused monospace string.
     pub header: Option<HeaderParts>,
+    /// Stable identity for a collapsed unchanged region. Present only on
+    /// [`RowKind::Fold`] rows, and used by the Review view to toggle that region
+    /// open without recomputing the git diff.
+    pub fold_key: Option<SharedString>,
+    /// Source range behind a fold marker. Hidden rows are rebuilt lazily from
+    /// `FileDiff` + `FileRowCache` on expansion; the marker stays visible so
+    /// clicking it again closes the region.
+    pub fold_base_start: Option<u32>,
+    pub fold_new_start: Option<u32>,
+    pub fold_count: u32,
+    /// Legacy eager payload. New builders leave this empty so initial Review
+    /// paint does not materialize thousands of hidden context rows.
+    pub folded_rows: Vec<DisplayRow>,
+}
+
+#[derive(Clone)]
+pub struct FoldBlock<T> {
+    pub key: SharedString,
+    pub text: SharedString,
+    pub base_start: u32,
+    pub new_start: u32,
+    pub count: u32,
+    pub rows: Vec<T>,
 }
 
 /// EP-002 US-006: the file-header row, split into typed segments at build time
 /// (off the render path) so [`super::element::DiffElement`] paints a structured
-/// header - colored status sigil, muted directory prefix, emphasized basename,
-/// right-aligned green/red diffstat - instead of one undifferentiated mono
-/// string. Shared by the Review view and the Agents diff dock.
+/// header - file-type icon, muted directory prefix, emphasized basename,
+/// right-aligned green/red diffstat, and trailing actions - instead of one
+/// undifferentiated mono string. Shared by the Review view and the Agents diff
+/// dock.
 #[derive(Clone)]
 pub struct HeaderParts {
-    /// Leading status sigil: `A`/`M`/`D`/`R`. Colored by status in the element.
-    pub sigil: char,
     /// Directory portion including the trailing `/`, or `""` at the repo root.
     /// The element truncates HERE under width pressure, never on the basename.
     pub dir_prefix: SharedString,
@@ -317,8 +361,6 @@ pub struct RowPalette {
     /// while a file's hunks scroll under it. Opaque + slightly elevated so it
     /// reads as floating above the scrolling body.
     pub sticky_header_bg: Hsla,
-    /// Separator line above each file header (file-section division).
-    pub border: Hsla,
     pub add_bg: Hsla,
     pub del_bg: Hsla,
     pub add_fg: Hsla,
@@ -329,9 +371,8 @@ pub struct RowPalette {
     /// `muted`.
     pub gutter_add: Hsla,
     pub gutter_del: Hsla,
-    /// Modified-status foreground (US-010): colors the `M` sigil on a
-    /// modified file's header row.
-    pub mod_fg: Hsla,
+    /// File-type icon accent used by the compact file-list headers.
+    pub file_icon_hot: Hsla,
     /// Opaque hunk-indicator bar colors. Zed blends the raw `version_control_*`
     /// color with the editor background before painting the gutter strip so it
     /// reads solid; we pre-blend once in `view.rs::palette()`.
@@ -376,7 +417,52 @@ fn content_row(
         word_ranges,
         syntax_runs,
         header: None,
+        fold_key: None,
+        fold_base_start: None,
+        fold_new_start: None,
+        fold_count: 0,
+        folded_rows: Vec::new(),
     }
+}
+
+fn fold_label(n: u32) -> SharedString {
+    if n == 1 {
+        "1 unmodified line".into()
+    } else {
+        format!("{n} unmodified lines").into()
+    }
+}
+
+fn fold_key(path: &str, base_start: u32, new_start: u32, count: u32) -> SharedString {
+    format!("{path}:{base_start}:{new_start}:{count}").into()
+}
+
+fn folded_display_row(path: &str, base_start: u32, new_start: u32, count: u32) -> DisplayRow {
+    DisplayRow {
+        kind: RowKind::Fold,
+        text: fold_label(count),
+        old_no: None,
+        new_no: None,
+        word_ranges: Vec::new(),
+        syntax_runs: Vec::new(),
+        header: None,
+        fold_key: Some(fold_key(path, base_start, new_start, count)),
+        fold_base_start: Some(base_start),
+        fold_new_start: Some(new_start),
+        fold_count: count,
+        folded_rows: Vec::new(),
+    }
+}
+
+fn folded_split_row(path: &str, base_start: u32, new_start: u32, count: u32) -> SplitRow {
+    SplitRow::Fold(FoldBlock {
+        key: fold_key(path, base_start, new_start, count),
+        text: fold_label(count),
+        base_start,
+        new_start,
+        count,
+        rows: Vec::new(),
+    })
 }
 
 /// File extension (lowercased) used to pick a `syntect` grammar.
@@ -407,6 +493,37 @@ fn line_syntax(side: &[Vec<(Range<usize>, Hsla)>], idx: u32) -> Vec<(Range<usize
     side.get(idx as usize).cloned().unwrap_or_default()
 }
 
+fn build_file_row_cache(
+    file: &FileDiff,
+    base_lines: &[&str],
+    new_lines: &[&str],
+    syntax: Option<&DiffSyntax>,
+) -> FileRowCache {
+    if file.is_binary {
+        return FileRowCache::default();
+    }
+    FileRowCache {
+        words: build_word_maps(file, base_lines, new_lines),
+        syn_old: side_syntax(syntax, file, &file.base_text),
+        syn_new: side_syntax(syntax, file, &file.new_text),
+    }
+}
+
+pub fn build_file_row_caches(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> Vec<FileRowCache> {
+    files
+        .iter()
+        .map(|file| {
+            if file.is_binary {
+                FileRowCache::default()
+            } else {
+                let base_lines: Vec<&str> = file.base_text.lines().collect();
+                let new_lines: Vec<&str> = file.new_text.lines().collect();
+                build_file_row_cache(file, &base_lines, &new_lines, syntax)
+            }
+        })
+        .collect()
+}
+
 /// Resolve a [`RowPalette`] from the active theme's UI colors. The single color
 /// source for [`super::element::DiffElement`], shared by the Review view
 /// ([`super::view`]) and the Agents diff dock ([`crate::app::agents_diff`]) so
@@ -426,7 +543,6 @@ pub fn palette(ui: crate::theme::UiColors) -> RowPalette {
         // both themes (lighter on dark, defined on light); the bottom hairline
         // the element paints completes the "floating layer" read.
         sticky_header_bg: ui.surface.blend(ui.text.opacity(0.06)),
-        border: ui.border,
         add_bg: diff.added_background,
         del_bg: diff.deleted_background,
         add_fg: diff.added,
@@ -435,7 +551,7 @@ pub fn palette(ui: crate::theme::UiColors) -> RowPalette {
         // match the reference diff gutters.
         gutter_add: diff.added,
         gutter_del: diff.deleted,
-        mod_fg: ui.vc_modified,
+        file_icon_hot: ui.vc_conflict,
         // Zed paints the gutter hunk strip as `editor_background.blend(version_control_*)`
         // so it reads solid; pre-blend against the diff body surface (`ui.base`,
         // what context lines sit on) so the bar is opaque, not faint at the wash alpha.
@@ -449,11 +565,10 @@ pub fn palette(ui: crate::theme::UiColors) -> RowPalette {
         // Codex-sampled dark line wash.
         add_word_bg: diff.added.opacity(if is_light { 0.40 } else { 0.28 }),
         del_word_bg: diff.deleted.opacity(if is_light { 0.40 } else { 0.28 }),
-        // EP-002 US-007: a 2-3% document wash on unchanged code and a slightly
-        // stronger (~4.5%) gutter rail so the body reads as a surface with a
-        // structural line-number column. Derived from `muted` to track theme.
-        context_bg: ui.muted.opacity(0.025),
-        gutter_bg: ui.muted.opacity(0.045),
+        // Neutral rows and phantom gutters sit on the editor background; the
+        // colored add/delete washes carry the visual hierarchy.
+        context_bg: ui.base,
+        gutter_bg: ui.base,
         add_gutter_bg: diff.added_gutter_background,
         del_gutter_bg: diff.deleted_gutter_background,
     }
@@ -462,25 +577,28 @@ pub fn palette(ui: crate::theme::UiColors) -> RowPalette {
 /// Build the flat, virtualization-ready row list for a column's files. Returns
 /// the rows plus the number of content lines dropped by the `MAX_DISPLAY_ROWS`
 /// cap (0 when nothing was truncated).
+#[cfg(test)]
 pub fn build_display_rows(
     files: &[FileDiff],
     syntax: Option<&DiffSyntax>,
 ) -> (Vec<DisplayRow>, usize) {
+    let caches = build_file_row_caches(files, syntax);
+    build_display_rows_with_caches(files, &caches)
+}
+
+pub fn build_display_rows_with_caches(
+    files: &[FileDiff],
+    caches: &[FileRowCache],
+) -> (Vec<DisplayRow>, usize) {
     let mut rows: Vec<DisplayRow> = Vec::new();
     let mut dropped = 0usize;
 
-    for file in files {
+    for (file_idx, file) in files.iter().enumerate() {
         if rows.len() >= MAX_DISPLAY_ROWS {
             dropped += 1;
             continue;
         }
         let (added, removed) = file.line_counts();
-        let sigil = match file.change {
-            FileChange::Added => 'A',
-            FileChange::Modified => 'M',
-            FileChange::Deleted => 'D',
-            FileChange::Renamed => 'R',
-        };
         let shown_path = match (file.change, &file.old_path) {
             (FileChange::Renamed, Some(old)) => format!("{old} → {}", file.path),
             _ => file.path.clone(),
@@ -488,18 +606,22 @@ pub fn build_display_rows(
         let (dir_prefix, basename) = split_header_path(&shown_path);
         rows.push(DisplayRow {
             kind: RowKind::FileHeader,
-            text: format!("{sigil}  {shown_path}   +{added} -{removed}").into(),
+            text: format!("{shown_path}   +{added} -{removed}").into(),
             old_no: None,
             new_no: None,
             word_ranges: Vec::new(),
             syntax_runs: Vec::new(),
             header: Some(HeaderParts {
-                sigil,
                 dir_prefix: dir_prefix.into(),
                 basename: basename.into(),
                 added,
                 removed,
             }),
+            fold_key: None,
+            fold_base_start: None,
+            fold_new_start: None,
+            fold_count: 0,
+            folded_rows: Vec::new(),
         });
 
         if file.is_binary {
@@ -511,15 +633,28 @@ pub fn build_display_rows(
                 word_ranges: Vec::new(),
                 syntax_runs: Vec::new(),
                 header: None,
+                fold_key: None,
+                fold_base_start: None,
+                fold_new_start: None,
+                fold_count: 0,
+                folded_rows: Vec::new(),
             });
             continue;
         }
 
         let base_lines: Vec<&str> = file.base_text.lines().collect();
         let new_lines: Vec<&str> = file.new_text.lines().collect();
-        let words = build_word_maps(file, &base_lines, &new_lines);
-        let syn_old = side_syntax(syntax, file, &file.base_text);
-        let syn_new = side_syntax(syntax, file, &file.new_text);
+        let fallback_cache;
+        let cache = match caches.get(file_idx) {
+            Some(cache) => cache,
+            None => {
+                fallback_cache = FileRowCache::default();
+                &fallback_cache
+            }
+        };
+        let words = &cache.words;
+        let syn_old = &cache.syn_old;
+        let syn_new = &cache.syn_new;
         let mut bc = 0u32; // base cursor (next unconsumed base row)
         let mut nc = 0u32; // new cursor (next unconsumed new row)
 
@@ -540,22 +675,11 @@ pub fn build_display_rows(
                 Some(bi + 1),
                 Some(ni + 1),
                 Vec::new(),
-                line_syntax(&syn_new, ni),
+                line_syntax(syn_new, ni),
             )
         };
-        // A collapsed-context marker hiding `n` unchanged lines (Zed-style fold).
-        let fold = |n: u32| DisplayRow {
-            kind: RowKind::Fold,
-            text: if n == 1 {
-                "⋯ 1 unchanged line".into()
-            } else {
-                format!("⋯ {n} unchanged lines").into()
-            },
-            old_no: None,
-            new_no: None,
-            word_ranges: Vec::new(),
-            syntax_runs: Vec::new(),
-            header: None,
+        let fold = |base_start: u32, new_start: u32, n: u32| {
+            folded_display_row(&file.path, base_start, new_start, n)
         };
 
         let mut first_gap = true;
@@ -571,7 +695,7 @@ pub fn build_display_rows(
                 push(ctx(bc + k, nc + k), &mut rows, &mut dropped);
             }
             if hidden > 0 {
-                push(fold(hidden), &mut rows, &mut dropped);
+                push(fold(bc + lead, nc + lead, hidden), &mut rows, &mut dropped);
             }
             for k in 0..trail {
                 let off = lead + hidden + k;
@@ -586,7 +710,7 @@ pub fn build_display_rows(
                         Some(r + 1),
                         None,
                         words.old.get(&r).cloned().unwrap_or_default(),
-                        line_syntax(&syn_old, r),
+                        line_syntax(syn_old, r),
                     ),
                     &mut rows,
                     &mut dropped,
@@ -602,7 +726,7 @@ pub fn build_display_rows(
                         None,
                         Some(r + 1),
                         words.new.get(&r).cloned().unwrap_or_default(),
-                        line_syntax(&syn_new, r),
+                        line_syntax(syn_new, r),
                     ),
                     &mut rows,
                     &mut dropped,
@@ -620,7 +744,7 @@ pub fn build_display_rows(
         }
         let hidden = tail - lead;
         if hidden > 0 {
-            push(fold(hidden), &mut rows, &mut dropped);
+            push(fold(bc + lead, nc + lead, hidden), &mut rows, &mut dropped);
         }
     }
 
@@ -633,6 +757,11 @@ pub fn build_display_rows(
             word_ranges: Vec::new(),
             syntax_runs: Vec::new(),
             header: None,
+            fold_key: None,
+            fold_base_start: None,
+            fold_new_start: None,
+            fold_count: 0,
+            folded_rows: Vec::new(),
         });
     }
     (rows, dropped)
@@ -662,7 +791,7 @@ pub enum SplitRow {
     Header(HeaderParts),
     Note(SharedString),
     /// Collapsed run of unchanged lines (Zed-style fold), spanning both halves.
-    Fold(SharedString),
+    Fold(FoldBlock<SplitRow>),
     Pair {
         left: HalfCell,
         right: HalfCell,
@@ -706,6 +835,21 @@ fn resolve_half(
     }
 }
 
+fn split_pair_row(
+    left: Cell,
+    right: Cell,
+    base_lines: &[&str],
+    new_lines: &[&str],
+    words: &WordMaps,
+    syn_old: &[Vec<(Range<usize>, Hsla)>],
+    syn_new: &[Vec<(Range<usize>, Hsla)>],
+) -> SplitRow {
+    SplitRow::Pair {
+        left: resolve_half(left, base_lines, &words.old, syn_old),
+        right: resolve_half(right, new_lines, &words.new, syn_new),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_split_rows_from_hunk_windows(
     file: &FileDiff,
@@ -721,26 +865,22 @@ fn build_split_rows_from_hunk_windows(
         if rows.len() >= MAX_DISPLAY_ROWS {
             *dropped += 1;
         } else {
-            rows.push(SplitRow::Pair {
-                left: resolve_half(left, base_lines, &words.old, syn_old),
-                right: resolve_half(right, new_lines, &words.new, syn_new),
-            });
+            rows.push(split_pair_row(
+                left, right, base_lines, new_lines, words, syn_old, syn_new,
+            ));
         }
     };
-    let emit_fold = |n: u32, rows: &mut Vec<SplitRow>, dropped: &mut usize| {
-        if n == 0 {
-            return;
-        }
-        if rows.len() >= MAX_DISPLAY_ROWS {
-            *dropped += 1;
-        } else {
-            rows.push(SplitRow::Fold(if n == 1 {
-                "⋯ 1 unchanged line".into()
+    let emit_fold =
+        |base_start: u32, new_start: u32, n: u32, rows: &mut Vec<SplitRow>, dropped: &mut usize| {
+            if n == 0 {
+                return;
+            }
+            if rows.len() >= MAX_DISPLAY_ROWS {
+                *dropped += 1;
             } else {
-                format!("⋯ {n} unchanged lines").into()
-            }));
-        }
-    };
+                rows.push(folded_split_row(&file.path, base_start, new_start, n));
+            }
+        };
     let emit_context_range = |base_start: u32,
                               base_end: u32,
                               new_start: u32,
@@ -769,6 +909,8 @@ fn build_split_rows_from_hunk_windows(
         let pre_base = h.base_row_range.start.saturating_sub(CONTEXT_LINES);
         let pre_new = h.new_row_range.start.saturating_sub(CONTEXT_LINES);
         emit_fold(
+            bc,
+            nc,
             pre_base.saturating_sub(bc).min(pre_new.saturating_sub(nc)),
             rows,
             dropped,
@@ -827,35 +969,37 @@ fn build_split_rows_from_hunk_windows(
     let remaining = (base_lines.len() as u32)
         .saturating_sub(bc)
         .min((new_lines.len() as u32).saturating_sub(nc));
-    emit_fold(remaining, rows, dropped);
+    emit_fold(bc, nc, remaining, rows, dropped);
 }
 
 /// Build the side-by-side row list for a column's files (US-009). Aligns each
 /// file with [`align_rows`] and resolves cells to text. Honors the same
 /// `MAX_DISPLAY_ROWS` cap as the unified builder.
+#[cfg(test)]
 pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec<SplitRow>, usize) {
+    let caches = build_file_row_caches(files, syntax);
+    build_split_rows_with_caches(files, &caches)
+}
+
+pub fn build_split_rows_with_caches(
+    files: &[FileDiff],
+    caches: &[FileRowCache],
+) -> (Vec<SplitRow>, usize) {
     let mut rows: Vec<SplitRow> = Vec::new();
     let mut dropped = 0usize;
 
-    for file in files {
+    for (file_idx, file) in files.iter().enumerate() {
         if rows.len() >= MAX_DISPLAY_ROWS {
             dropped += 1;
             continue;
         }
         let (added, removed) = file.line_counts();
-        let sigil = match file.change {
-            FileChange::Added => 'A',
-            FileChange::Modified => 'M',
-            FileChange::Deleted => 'D',
-            FileChange::Renamed => 'R',
-        };
         let shown_path = match (file.change, &file.old_path) {
             (FileChange::Renamed, Some(old)) => format!("{old} → {}", file.path),
             _ => file.path.clone(),
         };
         let (dir_prefix, basename) = split_header_path(&shown_path);
         rows.push(SplitRow::Header(HeaderParts {
-            sigil,
             dir_prefix: dir_prefix.into(),
             basename: basename.into(),
             added,
@@ -871,17 +1015,25 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
 
         let base_lines: Vec<&str> = file.base_text.lines().collect();
         let new_lines: Vec<&str> = file.new_text.lines().collect();
-        let words = build_word_maps(file, &base_lines, &new_lines);
-        let syn_old = side_syntax(syntax, file, &file.base_text);
-        let syn_new = side_syntax(syntax, file, &file.new_text);
+        let fallback_cache;
+        let cache = match caches.get(file_idx) {
+            Some(cache) => cache,
+            None => {
+                fallback_cache = FileRowCache::default();
+                &fallback_cache
+            }
+        };
+        let words = &cache.words;
+        let syn_old = &cache.syn_old;
+        let syn_new = &cache.syn_new;
         if base_lines.len() + new_lines.len() > MAX_FULL_SPLIT_ALIGN_LINES {
             build_split_rows_from_hunk_windows(
                 file,
                 &base_lines,
                 &new_lines,
-                &words,
-                &syn_old,
-                &syn_new,
+                words,
+                syn_old,
+                syn_new,
                 &mut rows,
                 &mut dropped,
             );
@@ -895,23 +1047,36 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
             if rows.len() >= MAX_DISPLAY_ROWS {
                 *dropped += 1;
             } else {
-                rows.push(SplitRow::Pair {
-                    left: resolve_half(a.left, &base_lines, &words.old, &syn_old),
-                    right: resolve_half(a.right, &new_lines, &words.new, &syn_new),
-                });
+                rows.push(split_pair_row(
+                    a.left,
+                    a.right,
+                    &base_lines,
+                    &new_lines,
+                    words,
+                    syn_old,
+                    syn_new,
+                ));
             }
         };
-        let emit_fold = |n: u32, rows: &mut Vec<SplitRow>, dropped: &mut usize| {
-            if rows.len() >= MAX_DISPLAY_ROWS {
-                *dropped += 1;
-            } else {
-                rows.push(SplitRow::Fold(if n == 1 {
-                    "⋯ 1 unchanged line".into()
+        let emit_fold =
+            |hidden_rows: &[AlignedRow], rows: &mut Vec<SplitRow>, dropped: &mut usize| {
+                if hidden_rows.is_empty() {
+                    return;
+                }
+                if rows.len() >= MAX_DISPLAY_ROWS {
+                    *dropped += 1;
                 } else {
-                    format!("⋯ {n} unchanged lines").into()
-                }));
-            }
-        };
+                    let first = hidden_rows[0];
+                    let base_start = first.left.line.unwrap_or(0);
+                    let new_start = first.right.line.unwrap_or(0);
+                    rows.push(folded_split_row(
+                        &file.path,
+                        base_start,
+                        new_start,
+                        hidden_rows.len() as u32,
+                    ));
+                }
+            };
         let is_ctx =
             |a: &AlignedRow| a.left.kind == CellKind::Context && a.right.kind == CellKind::Context;
         let total = aligned.len();
@@ -940,7 +1105,9 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
                     }
                 }
                 if hidden > 0 {
-                    emit_fold(hidden, &mut rows, &mut dropped);
+                    let start = i + lead as usize;
+                    let end = start + hidden as usize;
+                    emit_fold(&aligned[start..end], &mut rows, &mut dropped);
                 }
                 for k in 0..trail as usize {
                     let off = lead as usize + hidden as usize + k;
@@ -973,7 +1140,7 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
 pub fn apply_collapse_unified(
     rows: &[DisplayRow],
     anchors: &[(String, usize)],
-    collapsed: &std::collections::HashSet<String>,
+    collapsed: &HashSet<String>,
 ) -> (Vec<DisplayRow>, Vec<(String, usize)>) {
     let mut out = Vec::with_capacity(rows.len());
     let mut out_anchors = Vec::with_capacity(anchors.len());
@@ -1000,7 +1167,7 @@ pub fn apply_collapse_unified(
 pub fn apply_collapse_split(
     rows: &[SplitRow],
     anchors: &[(String, usize)],
-    collapsed: &std::collections::HashSet<String>,
+    collapsed: &HashSet<String>,
 ) -> (Vec<SplitRow>, Vec<(String, usize)>) {
     let mut out = Vec::with_capacity(rows.len());
     let mut out_anchors = Vec::with_capacity(anchors.len());
@@ -1023,6 +1190,179 @@ pub fn apply_collapse_split(
             out.extend_from_slice(segment);
         }
     }
+    (out, out_anchors)
+}
+
+fn source_file_index(files: &[FileDiff], path: &str) -> Option<usize> {
+    files.iter().position(|file| file.path == path)
+}
+
+fn unified_fold_rows(
+    file: &FileDiff,
+    cache: &FileRowCache,
+    base_start: u32,
+    new_start: u32,
+    count: u32,
+) -> Vec<DisplayRow> {
+    let new_lines: Vec<&str> = file.new_text.lines().collect();
+    (0..count)
+        .map(|k| {
+            let bi = base_start + k;
+            let ni = new_start + k;
+            content_row(
+                &new_lines,
+                ni,
+                RowKind::Context,
+                Some(bi + 1),
+                Some(ni + 1),
+                Vec::new(),
+                line_syntax(&cache.syn_new, ni),
+            )
+        })
+        .collect()
+}
+
+fn split_fold_rows(
+    file: &FileDiff,
+    cache: &FileRowCache,
+    base_start: u32,
+    new_start: u32,
+    count: u32,
+) -> Vec<SplitRow> {
+    let base_lines: Vec<&str> = file.base_text.lines().collect();
+    let new_lines: Vec<&str> = file.new_text.lines().collect();
+    (0..count)
+        .map(|k| {
+            split_pair_row(
+                Cell {
+                    kind: CellKind::Context,
+                    line: Some(base_start + k),
+                },
+                Cell {
+                    kind: CellKind::Context,
+                    line: Some(new_start + k),
+                },
+                &base_lines,
+                &new_lines,
+                &cache.words,
+                &cache.syn_old,
+                &cache.syn_new,
+            )
+        })
+        .collect()
+}
+
+pub fn apply_expanded_unified_with_sources(
+    rows: &[DisplayRow],
+    anchors: &[(String, usize)],
+    expanded: &HashSet<String>,
+    files: &[FileDiff],
+    caches: &[FileRowCache],
+) -> (Vec<DisplayRow>, Vec<(String, usize)>) {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut out_anchors = Vec::with_capacity(anchors.len());
+    let mut next_anchor = 0usize;
+    let mut current_file_idx = None;
+
+    for (i, row) in rows.iter().enumerate() {
+        while anchors
+            .get(next_anchor)
+            .is_some_and(|(_, header_row)| *header_row == i)
+        {
+            if let Some((path, _)) = anchors.get(next_anchor) {
+                out_anchors.push((path.clone(), out.len()));
+                current_file_idx = source_file_index(files, path);
+            }
+            next_anchor += 1;
+        }
+
+        out.push(row.clone());
+        if row.kind == RowKind::Fold
+            && row
+                .fold_key
+                .as_ref()
+                .is_some_and(|key| expanded.contains(key.as_ref()))
+        {
+            if !row.folded_rows.is_empty() {
+                out.extend(row.folded_rows.iter().cloned());
+            } else if let (Some(file_idx), Some(base_start), Some(new_start)) =
+                (current_file_idx, row.fold_base_start, row.fold_new_start)
+                && let Some(file) = files.get(file_idx)
+            {
+                let fallback_cache;
+                let cache = match caches.get(file_idx) {
+                    Some(cache) => cache,
+                    None => {
+                        fallback_cache = FileRowCache::default();
+                        &fallback_cache
+                    }
+                };
+                out.extend(unified_fold_rows(
+                    file,
+                    cache,
+                    base_start,
+                    new_start,
+                    row.fold_count,
+                ));
+            }
+        }
+    }
+
+    (out, out_anchors)
+}
+
+pub fn apply_expanded_split_with_sources(
+    rows: &[SplitRow],
+    anchors: &[(String, usize)],
+    expanded: &HashSet<String>,
+    files: &[FileDiff],
+    caches: &[FileRowCache],
+) -> (Vec<SplitRow>, Vec<(String, usize)>) {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut out_anchors = Vec::with_capacity(anchors.len());
+    let mut next_anchor = 0usize;
+    let mut current_file_idx = None;
+
+    for (i, row) in rows.iter().enumerate() {
+        while anchors
+            .get(next_anchor)
+            .is_some_and(|(_, header_row)| *header_row == i)
+        {
+            if let Some((path, _)) = anchors.get(next_anchor) {
+                out_anchors.push((path.clone(), out.len()));
+                current_file_idx = source_file_index(files, path);
+            }
+            next_anchor += 1;
+        }
+
+        out.push(row.clone());
+        if let SplitRow::Fold(fold) = row
+            && expanded.contains(fold.key.as_ref())
+        {
+            if !fold.rows.is_empty() {
+                out.extend(fold.rows.iter().cloned());
+            } else if let Some(file_idx) = current_file_idx
+                && let Some(file) = files.get(file_idx)
+            {
+                let fallback_cache;
+                let cache = match caches.get(file_idx) {
+                    Some(cache) => cache,
+                    None => {
+                        fallback_cache = FileRowCache::default();
+                        &fallback_cache
+                    }
+                };
+                out.extend(split_fold_rows(
+                    file,
+                    cache,
+                    fold.base_start,
+                    fold.new_start,
+                    fold.count,
+                ));
+            }
+        }
+    }
+
     (out, out_anchors)
 }
 
@@ -1054,8 +1394,8 @@ mod tests {
     #[test]
     fn file_header_row_carries_typed_segments() {
         // EP-002 US-006: build_display_rows must populate the structured header
-        // for the file-header row (sigil + split path + diffstat), so the
-        // element paints typed segments instead of re-parsing a fused string.
+        // for the file-header row (split path + diffstat), so the element
+        // paints typed segments instead of re-parsing a fused string.
         let file = FileDiff {
             path: "src/diff/rows.rs".into(),
             change: FileChange::Modified,
@@ -1066,13 +1406,12 @@ mod tests {
             is_binary: false,
         };
         let (added, removed) = file.line_counts();
-        let (rows, _) = build_display_rows(&[file], None);
+        let (rows, _) = build_display_rows(std::slice::from_ref(&file), None);
         let header = rows
             .iter()
             .find(|r| r.kind == RowKind::FileHeader)
             .and_then(|r| r.header.as_ref())
             .expect("file-header row must carry HeaderParts");
-        assert_eq!(header.sigil, 'M');
         assert_eq!(header.dir_prefix.as_ref(), "src/diff/");
         assert_eq!(header.basename.as_ref(), "rows.rs");
         assert_eq!((header.added, header.removed), (added, removed));
@@ -1115,6 +1454,52 @@ mod tests {
 
         // 30-line file → folded output is a handful of rows, not 1 + 30.
         assert!(rows.len() < 10, "folded row count {} too large", rows.len());
+    }
+
+    #[test]
+    fn unified_expands_fold_marker_in_place() {
+        let mut base = String::from("OLD\n");
+        let mut new = String::from("NEW\n");
+        for i in 1..30 {
+            base.push_str(&format!("ctx{i}\n"));
+            new.push_str(&format!("ctx{i}\n"));
+        }
+        let file = FileDiff {
+            path: "a.txt".into(),
+            change: FileChange::Modified,
+            old_path: None,
+            base_text: base.clone(),
+            new_text: new.clone(),
+            hunks: crate::diff::engine::compute_hunks(&base, &new),
+            is_binary: false,
+        };
+        let (rows, _) = build_display_rows(std::slice::from_ref(&file), None);
+        let fold_idx = rows
+            .iter()
+            .position(|r| r.kind == RowKind::Fold)
+            .expect("fixture should contain a fold");
+        let key = rows[fold_idx]
+            .fold_key
+            .as_ref()
+            .expect("fold has a stable key")
+            .to_string();
+        let hidden = rows[fold_idx].fold_count as usize;
+        let mut expanded = HashSet::new();
+        expanded.insert(key);
+        let caches = build_file_row_caches(std::slice::from_ref(&file), None);
+
+        let (open_rows, anchors) = apply_expanded_unified_with_sources(
+            &rows,
+            &[("a.txt".into(), 0)],
+            &expanded,
+            std::slice::from_ref(&file),
+            &caches,
+        );
+
+        assert_eq!(anchors, vec![("a.txt".into(), 0)]);
+        assert_eq!(open_rows.len(), rows.len() + hidden);
+        assert!(matches!(open_rows[fold_idx].kind, RowKind::Fold));
+        assert!(matches!(open_rows[fold_idx + 1].kind, RowKind::Context));
     }
 
     #[test]
@@ -1171,7 +1556,7 @@ mod tests {
             hunks,
             is_binary: false,
         };
-        let (rows, _) = build_split_rows(&[file], None);
+        let (rows, _) = build_split_rows(std::slice::from_ref(&file), None);
         let offsets = split_offsets(&rows);
 
         let mut expected = Vec::new();
@@ -1232,6 +1617,50 @@ mod tests {
         // 1 changed pair + 3 trailing context pairs kept; the rest folded.
         assert_eq!(pairs, 1 + CONTEXT_LINES as usize);
         assert!(rows.len() < 10, "folded row count {} too large", rows.len());
+    }
+
+    #[test]
+    fn split_expands_fold_marker_in_place() {
+        let mut base = String::from("OLD\n");
+        let mut new = String::from("NEW\n");
+        for i in 1..30 {
+            base.push_str(&format!("ctx{i}\n"));
+            new.push_str(&format!("ctx{i}\n"));
+        }
+        let file = FileDiff {
+            path: "a.txt".into(),
+            change: FileChange::Modified,
+            old_path: None,
+            base_text: base.clone(),
+            new_text: new.clone(),
+            hunks: crate::diff::engine::compute_hunks(&base, &new),
+            is_binary: false,
+        };
+        let (rows, _) = build_split_rows(std::slice::from_ref(&file), None);
+        let fold_idx = rows
+            .iter()
+            .position(|r| matches!(r, SplitRow::Fold(_)))
+            .expect("fixture should contain a fold");
+        let (key, hidden) = match &rows[fold_idx] {
+            SplitRow::Fold(fold) => (fold.key.to_string(), fold.count as usize),
+            _ => unreachable!(),
+        };
+        let mut expanded = HashSet::new();
+        expanded.insert(key);
+        let caches = build_file_row_caches(std::slice::from_ref(&file), None);
+
+        let (open_rows, anchors) = apply_expanded_split_with_sources(
+            &rows,
+            &[("a.txt".into(), 0)],
+            &expanded,
+            std::slice::from_ref(&file),
+            &caches,
+        );
+
+        assert_eq!(anchors, vec![("a.txt".into(), 0)]);
+        assert_eq!(open_rows.len(), rows.len() + hidden);
+        assert!(matches!(open_rows[fold_idx], SplitRow::Fold(_)));
+        assert!(matches!(open_rows[fold_idx + 1], SplitRow::Pair { .. }));
     }
 
     #[test]

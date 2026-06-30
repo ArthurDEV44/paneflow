@@ -45,12 +45,18 @@ pub use view::{
 // rather than re-implemented. Kept `pub(crate)` (not `pub`) so the unification
 // surface stays inside the binary.
 pub(crate) use element::{DiffBody, DiffElement};
+pub(crate) use git::FileDiff;
 pub(crate) use git::compute_head_diff;
 pub(crate) use hit_test::row_at_offset;
-pub(crate) use hscroll::{file_at_row, set_file_offset};
+pub(crate) use hscroll::{
+    H_SCROLLBAR_TRACK_HEIGHT, HScrollbarSegment, file_at_row, h_offset_index, h_offset_len,
+    h_scrollbar_click_offset, h_scrollbar_segments, set_file_side_offset, split_right_side_at_x,
+};
 pub(crate) use rows::{
-    DisplayRow, FileSpan, RowKind, SplitRow, apply_collapse_split, apply_collapse_unified,
-    build_display_rows, build_split_rows, palette, split_file_spans, split_max_line_no,
-    split_offsets, unified_file_spans, unified_max_line_no, unified_offsets,
+    DisplayRow, FileRowCache, FileSpan, RowKind, SplitRow, apply_collapse_split,
+    apply_collapse_unified, apply_expanded_split_with_sources, apply_expanded_unified_with_sources,
+    build_display_rows_with_caches, build_file_row_caches, build_split_rows_with_caches, palette,
+    split_file_spans, split_max_line_no, split_offsets, unified_file_spans, unified_max_line_no,
+    unified_offsets,
 };
 pub(crate) use syntax::DiffSyntax;

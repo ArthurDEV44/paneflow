@@ -176,7 +176,13 @@ impl Render for DiffView {
                 this.dismiss_overlays(window, cx);
             }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                if let Some((column_index, start_y, start_height)) = this.review_resizing
+                if this.h_scroll_drag.is_some() {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.drag_horizontal_scrollbar(event.position.x, cx);
+                    } else {
+                        this.end_horizontal_scrollbar_drag(cx);
+                    }
+                } else if let Some((column_index, start_y, start_height)) = this.review_resizing
                     && let Some(column) = this.columns.get_mut(column_index)
                 {
                     let delta_y = start_y - f32::from(event.position.y);
@@ -188,6 +194,7 @@ impl Render for DiffView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _window, cx| {
+                    this.end_horizontal_scrollbar_drag(cx);
                     if this.review_resizing.take().is_some() {
                         cx.notify();
                     }
@@ -580,17 +587,30 @@ impl DiffView {
                         h_offsets: col.h_offsets.clone(),
                     },
                 };
-                div()
+                let mut element = div()
                     .id(SharedString::from(format!("diff-col-{idx}")))
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&col.el_scroll)
-                    .on_scroll_wheel(cx.listener(
-                        move |this, _: &gpui::ScrollWheelEvent, _w, _cx| {
-                            this.scroll_driver = idx;
-                        },
-                    ))
+                    .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, window, cx| {
+                        this.scroll_driver = idx;
+                        this.apply_horizontal_wheel(idx, ev, window, cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                            let mode = this.effective_mode(window);
+                            if this.handle_horizontal_scrollbar_mouse_down(
+                                idx,
+                                ev.position,
+                                mode,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         this.handle_body_click(idx, ev, window, cx);
                     }))
@@ -606,8 +626,9 @@ impl DiffView {
                             this.open_body_menu(idx, ev.position, mode, cx);
                         }),
                     )
-                    .child(DiffElement::new(body, palette))
-                    .into_any_element()
+                    .child(DiffElement::new(body, palette));
+                element.style().restrict_scroll_to_axis = Some(true);
+                element.into_any_element()
             }
         };
 
@@ -678,7 +699,7 @@ impl DiffView {
                 // past. Pivoting on `cur_y + HUNK_JUMP_MARGIN` makes the counter
                 // read exactly the hunk the nav last jumped to.
                 let pivot = cur_y + HUNK_JUMP_MARGIN;
-                let current = tops.iter().filter(|&&t| t <= pivot + 4.0).count();
+                let current = tops.partition_point(|&t| t <= pivot + 4.0);
                 (tops.len(), current)
             })
             .filter(|(total, _)| *total > 0);
