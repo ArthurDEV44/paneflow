@@ -277,6 +277,12 @@ pub(super) fn apply_surface_overrides(mut theme: TerminalTheme) -> TerminalTheme
     theme.title_bar_inactive_background = chrome_bg;
     theme.background = terminal_bg;
     theme.ansi_background = terminal_bg;
+    theme.foreground = h(0xf0f3f7);
+    theme.bright_foreground = h(0xffffff);
+    theme.dim_foreground = h(0x9ca7b5);
+    theme.selection = ha(0x5aa6ff, 0.22);
+    theme.scrollbar_thumb = ha(0x9aa8bd, 0.30);
+    theme.link_text = h(0x57d5c4);
     theme.recompute_selection_foreground();
     theme
 }
@@ -393,13 +399,13 @@ impl UiColors {
             };
         }
         DiffColors {
-            // Sampled from Codex App's dark diff panel.
-            added: h(0x40c977),
-            deleted: h(0xfa423e),
-            added_background: h(0x1f3124),
-            deleted_background: h(0x3b1f1a),
-            added_gutter_background: h(0x132017),
-            deleted_gutter_background: h(0x28130e),
+            // Codex-inspired dark diff panel, softened for the blue-black shell.
+            added: h(0x57d992),
+            deleted: h(0xff6f6a),
+            added_background: h(0x1d3a2b),
+            deleted_background: h(0x402425),
+            added_gutter_background: h(0x16281f),
+            deleted_gutter_background: h(0x2c1718),
         }
     }
 
@@ -488,48 +494,46 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
         }
     } else {
         UiColors {
-            base: h(0x181818),
+            base: h(TERMINAL_BACKGROUND_HEX),
             surface: h(0x212121),
-            overlay: h(0x141414),
+            overlay: h(CHROME_BACKGROUND_HEX),
             border: h(BORDER_HEX),
             subtle: h(0x2a2a2a),
-            muted: h(0x888888),
-            text: h(0xffffff),
-            accent: h(0x89b4fa),
+            muted: h(0x96a2b3),
+            text: h(0xd5deea),
+            accent: h(0x57d5c4),
             // Dark theme: a touch lighter and bluer than the card
-            // surface (`0x212121`) so the accent character of the
+            // surface so the accent character of the
             // awaiting row reads even at a glance.
             tool_card_header_bg: h(0x2a2e3a),
-            // Curated diff palette (Catppuccin Mocha family) - the same
-            // hues `view.rs::palette()` currently hardcodes, so EP-004's
-            // `palette()` refactor onto these tokens is seamless.
-            vc_added: h(0xa6e3a1),
-            vc_modified: h(0xf9e2af),
-            vc_deleted: h(0xf38ba8),
-            vc_conflict: h(0xfab387),
+            // Premium dark diff palette: Codex-like red/green intent,
+            // softened to sit inside the blue-black terminal surface.
+            vc_added: h(0x57d992),
+            vc_modified: h(0xffd166),
+            vc_deleted: h(0xff6f6a),
+            vc_conflict: h(0xffa657),
             // Subtle line wash (Zed editor_diff_hunk_*_background, dark a=0x1f=0.12);
             // the opaque gutter hunk bar carries the strong status signal.
-            vc_added_background: ha(0xa6e3a1, 0.12),
-            vc_deleted_background: ha(0xf38ba8, 0.12),
-            vc_modified_background: ha(0xf9e2af, 0.12),
-            vc_word_added: ha(0xa6e3a1, 0.40),
-            vc_word_deleted: ha(0xf38ba8, 0.40),
-            // Broadcast stripes (Catppuccin Mocha family) - pastel hues with
-            // enough luminance to read against the dark pane edge.
-            group_1: h(0x89b4fa),
-            group_2: h(0xa6e3a1),
-            group_3: h(0xf9e2af),
-            group_4: h(0xf38ba8),
-            group_5: h(0xcba6f7),
-            group_6: h(0x94e2d5),
-            group_7: h(0xfab387),
-            group_8: h(0xb4befe),
-            // Agent state (Mocha family): pastel red for a crash, the
-            // neutral overlay grey for a silent session.
-            agent_error: h(0xf38ba8),
-            agent_stalled: h(0x9399b2),
-            agent_claude: h(0xe89271),
-            agent_codex: h(0x5b6cff),
+            vc_added_background: ha(0x57d992, 0.12),
+            vc_deleted_background: ha(0xff6f6a, 0.12),
+            vc_modified_background: ha(0xffd166, 0.12),
+            vc_word_added: ha(0x57d992, 0.40),
+            vc_word_deleted: ha(0xff6f6a, 0.40),
+            // Broadcast stripes: high-luminance accents that keep their
+            // identity against the new blue-black pane edge.
+            group_1: h(0x7eb6ff),
+            group_2: h(0x57d992),
+            group_3: h(0xffd166),
+            group_4: h(0xff6f6a),
+            group_5: h(0xc79bff),
+            group_6: h(0x57d5c4),
+            group_7: h(0xffa657),
+            group_8: h(0x9ea7ff),
+            // Agent state: clear, bright marks on the muted cockpit shell.
+            agent_error: h(0xff6f6a),
+            agent_stalled: h(0x96a2b3),
+            agent_claude: h(0xffa657),
+            agent_codex: h(0x7eb6ff),
         }
     };
 

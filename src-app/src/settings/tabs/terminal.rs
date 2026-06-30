@@ -41,7 +41,9 @@ impl PaneFlowApp {
         let bell = terminal.bell.unwrap_or_default();
         let current_font =
             crate::terminal::element::resolve_font_family(config.font_family.as_deref());
-        let font_size = config.font_size.unwrap_or(14.0) as f64;
+        let font_size = config
+            .font_size
+            .unwrap_or(crate::terminal::element::DEFAULT_FONT_SIZE) as f64;
 
         let shape_label = match shape {
             CursorShapeConfig::Block => "Block",

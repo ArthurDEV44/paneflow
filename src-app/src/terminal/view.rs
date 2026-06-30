@@ -141,6 +141,9 @@ pub struct TerminalView {
     /// effect on the next new terminal, consistent with the other terminal
     /// settings here.
     pub(super) scroll_multiplier: f32,
+    /// Windows-only appearance switch: default terminal backgrounds become
+    /// transparent so the native window material can show through.
+    pub(super) terminal_material_active: bool,
     /// Whether copy mode (keyboard-driven selection) is active
     pub(super) copy_mode_active: bool,
     /// Copy mode cursor position in grid coordinates
@@ -178,6 +181,13 @@ impl TerminalView {
     /// the pane to clear a pending bell dot once the user looks at the tab.
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window)
+    }
+
+    pub(crate) fn set_terminal_material_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.terminal_material_active != active {
+            self.terminal_material_active = active;
+            cx.notify();
+        }
     }
 
     pub fn new(workspace_id: u64, cx: &mut Context<Self>) -> Self {
@@ -601,6 +611,12 @@ impl TerminalView {
             );
         }
 
+        let config = paneflow_config::loader::load_config();
+        let terminal_config = config.terminal.clone().unwrap_or_default();
+        let scroll_multiplier = terminal_config.resolved_scroll_multiplier();
+        let bell_mode = terminal_config.bell.unwrap_or_default();
+        let cursor_blink_mode = terminal_config.cursor_blink.unwrap_or_default();
+
         Self {
             terminal,
             focus_handle,
@@ -619,23 +635,13 @@ impl TerminalView {
             search_current: 0,
             search_regex_mode: false,
             search_regex_error: None,
-            option_as_meta: paneflow_config::loader::load_config()
+            option_as_meta: config
                 .option_as_meta
                 .unwrap_or_else(crate::keys::default_option_as_meta),
-            bell_mode: paneflow_config::loader::load_config()
-                .terminal
-                .unwrap_or_default()
-                .bell
-                .unwrap_or_default(),
-            cursor_blink_mode: paneflow_config::loader::load_config()
-                .terminal
-                .unwrap_or_default()
-                .cursor_blink
-                .unwrap_or_default(),
-            scroll_multiplier: paneflow_config::loader::load_config()
-                .terminal
-                .unwrap_or_default()
-                .resolved_scroll_multiplier(),
+            bell_mode,
+            cursor_blink_mode,
+            scroll_multiplier,
+            terminal_material_active: false,
             copy_mode_active: false,
             copy_cursor: AlacPoint::new(GridLine(0), GridCol(0)),
             copy_mode_frozen_offset: 0,
@@ -1321,6 +1327,7 @@ impl Render for TerminalView {
             self.needs_initial_clear.clone(),
             self.scrollbar_metrics.clone(),
             search_rail_lines,
+            self.terminal_material_active,
             #[cfg(debug_assertions)]
             keystroke_at,
         );

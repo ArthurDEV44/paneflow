@@ -131,6 +131,7 @@ impl PaneFlowApp {
             .bg(crate::app::constants::cockpit_chrome_background(
                 theme.title_bar_background,
                 window.is_window_active(),
+                self.cached_config.cockpit_chrome_material_enabled(),
             ))
             .flex()
             .flex_col();

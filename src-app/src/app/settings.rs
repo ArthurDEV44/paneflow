@@ -100,6 +100,11 @@ impl PaneFlowApp {
         if key.starts_with("rosetta_") {
             self.sync_rosetta_config_state();
         }
+        if !nested && matches!(key, "windows_terminal_material" | "windows_chrome_material") {
+            for ws in &self.workspaces {
+                ws.propagate_config(&self.cached_config, cx);
+            }
+        }
         if default_shell_changed {
             self.handle_default_shell_changed(cx);
         }

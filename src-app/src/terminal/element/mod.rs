@@ -27,6 +27,7 @@ mod paint;
 pub(super) mod pixel_probe;
 
 use color::{convert_color, rgb_to_hsla};
+pub(crate) use font::DEFAULT_FONT_SIZE;
 pub use font::{
     MAX_FONT_SIZE, MIN_FONT_SIZE, global_font_size, measure_cell, resolve_font_family,
     sanitize_font_override,
@@ -169,6 +170,41 @@ fn merge_background_regions(mut rects: Vec<LayoutRect>) -> Vec<LayoutRect> {
     merged
 }
 
+fn codex_panel_background_for_terminal(theme: &crate::theme::TerminalTheme) -> Hsla {
+    if theme.background.l > 0.5 {
+        crate::theme::ui_colors_with(theme).subtle
+    } else {
+        Hsla::from(gpui::rgb(0x383838))
+    }
+}
+
+fn terminal_panel_background(
+    raw_bg: Color,
+    resolved_bg: Hsla,
+    theme: &crate::theme::TerminalTheme,
+) -> Hsla {
+    let is_codex_surface_gray = match raw_bg {
+        Color::Named(NamedColor::BrightBlack) | Color::Indexed(8 | 236 | 237) => true,
+        Color::Spec(rgb) => rgb.r == rgb.g && rgb.g == rgb.b && (40..=56).contains(&rgb.r),
+        _ => false,
+    };
+
+    if is_codex_surface_gray {
+        codex_panel_background_for_terminal(theme)
+    } else {
+        resolved_bg
+    }
+}
+
+fn selection_marker_color() -> Hsla {
+    Hsla {
+        h: 0.5,
+        s: 0.8,
+        l: 0.65,
+        a: 0.9,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Layout types
 // ---------------------------------------------------------------------------
@@ -306,6 +342,47 @@ pub(crate) struct CursorInfo {
     italic: bool,
 }
 
+fn selection_marker_cursor(
+    cells: &[Cell],
+    line: i32,
+    col: usize,
+    color: Hsla,
+    desired_cols: usize,
+    desired_rows: usize,
+) -> Option<CursorInfo> {
+    if line < 0 || line >= desired_rows as i32 || col >= desired_cols {
+        return None;
+    }
+
+    let cell = cells
+        .iter()
+        .find(|cell| cell.point.line.0 == line && cell.point.column.0 == col);
+
+    let (wide, text, bold, italic) = cell
+        .map(|cell| {
+            let is_spacer = cell.flags.contains(CellFlags::WIDE_CHAR_SPACER);
+            (
+                cell.flags.contains(CellFlags::WIDE_CHAR),
+                (!is_spacer && cell.c != '\0').then_some(cell.c),
+                cell.flags.contains(CellFlags::BOLD) || cell.flags.contains(CellFlags::BOLD_ITALIC),
+                cell.flags.contains(CellFlags::ITALIC)
+                    || cell.flags.contains(CellFlags::BOLD_ITALIC),
+            )
+        })
+        .unwrap_or((false, None, false, false));
+
+    Some(CursorInfo {
+        line,
+        col,
+        shape: CursorShape::Block,
+        color,
+        wide,
+        text,
+        bold,
+        italic,
+    })
+}
+
 /// Window-free inputs to [`layout_from_snapshot`]. Everything the layout pass
 /// needs that would otherwise be read from `&mut Window` / `&App` / the `Term`
 /// lock / `&self`, captured as plain values. `build_layout` fills this from a
@@ -337,6 +414,7 @@ pub(crate) struct LayoutInputs<'a> {
     pub theme: &'a crate::theme::TerminalTheme,
     pub exited: Option<i32>,
     pub exit_signal: Option<String>,
+    pub terminal_material_active: bool,
 }
 
 pub struct LayoutState {
@@ -346,8 +424,7 @@ pub struct LayoutState {
     selection_rects: Vec<LayoutRect>,
     search_rects: Vec<LayoutRect>,
     cursor: Option<CursorInfo>,
-    /// Selection anchor cursor in copy mode - rendered as a distinct amber hollow
-    /// block so the user can see where the selection started (tmux-style).
+    /// Secondary marker for keyboard copy mode selection.
     anchor_cursor: Option<CursorInfo>,
     dimensions: CellDimensions,
     background_color: Hsla,
@@ -426,6 +503,9 @@ pub struct TerminalElement {
     /// snapshotted by the view at render time (empty when no search).
     /// Painted as decimated ticks on the scrollbar track.
     search_rail_lines: Vec<usize>,
+    /// When active, default terminal backgrounds are painted transparent so
+    /// the parent surface/window material can show through.
+    terminal_material_active: bool,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
@@ -452,6 +532,7 @@ impl TerminalElement {
         needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
         scrollbar_metrics: Arc<Mutex<Option<ScrollbarMetrics>>>,
         search_rail_lines: Vec<usize>,
+        terminal_material_active: bool,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -473,6 +554,7 @@ impl TerminalElement {
             needs_initial_clear,
             scrollbar_metrics,
             search_rail_lines,
+            terminal_material_active,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -612,6 +694,7 @@ impl TerminalElement {
             theme: &theme,
             exited: self.exited,
             exit_signal: self.exit_signal.clone(),
+            terminal_material_active: self.terminal_material_active,
         })
     }
 }
@@ -643,117 +726,54 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         theme,
         exited,
         exit_signal,
+        terminal_material_active,
     } = inputs;
 
-    let background_color = theme.background;
+    let background_color = if terminal_material_active {
+        gpui::transparent_black()
+    } else {
+        theme.background
+    };
     let ansi_background = theme.ansi_background;
     let selection_color = theme.selection;
+
+    let cursor_snapshot = cursor_snapshot.and_then(|mut cursor| {
+        cursor.line += display_offset as i32;
+        (cursor.line >= 0 && cursor.line < desired_rows as i32).then_some(cursor)
+    });
 
     // Override cursor with copy mode cursor when active, and surface the
     // selection anchor as a distinct secondary marker (tmux-style).
     let (cursor_snapshot, anchor_cursor) = if let Some(cm) = copy_mode_cursor {
         let display_line = cm.grid_line + display_offset as i32;
-        let copy_cursor_color = Hsla {
-            h: 0.5,
-            s: 0.8,
-            l: 0.65,
-            a: 0.9,
-        }; // Bright cyan - the moving cursor (current position)
-        let anchor_color = Hsla {
-            h: 0.12,
-            s: 0.95,
-            l: 0.6,
-            a: 0.95,
-        }; // Amber - the anchor (selection start)
+        let marker_color = selection_marker_color();
 
-        let main = if display_line >= 0 && display_line < desired_rows as i32 {
-            Some(CursorInfo {
-                line: display_line,
-                col: cm.col,
-                shape: CursorShape::Block,
-                color: copy_cursor_color,
-                wide: false,
-                text: None,
-                bold: false,
-                italic: false,
-            })
-        } else {
-            None
-        };
+        let main = selection_marker_cursor(
+            &cells,
+            display_line,
+            cm.col,
+            marker_color,
+            desired_cols,
+            desired_rows,
+        );
 
         let anchor = cm.anchor_grid_line.and_then(|anchor_line| {
             let display_anchor = anchor_line + display_offset as i32;
-            if display_anchor >= 0 && display_anchor < desired_rows as i32 {
-                Some(CursorInfo {
-                    line: display_anchor,
-                    col: cm.anchor_col,
-                    shape: CursorShape::HollowBlock,
-                    color: anchor_color,
-                    wide: false,
-                    text: None,
-                    bold: false,
-                    italic: false,
-                })
-            } else {
-                None
-            }
+            selection_marker_cursor(
+                &cells,
+                display_anchor,
+                cm.anchor_col,
+                marker_color,
+                desired_cols,
+                desired_rows,
+            )
         });
 
         (main, anchor)
-    } else if let Some(sel) = &selection_range {
-        // Mouse selection (no copy mode): mark both endpoints with distinct
-        // hollow blocks so the user can see the selection bounds precisely
-        // before copying. Keep the normal shell cursor untouched.
-        let anchor_color = Hsla {
-            h: 0.12,
-            s: 0.95,
-            l: 0.6,
-            a: 0.95,
-        }; // Amber - selection start
-        let end_color = Hsla {
-            h: 0.5,
-            s: 0.8,
-            l: 0.65,
-            a: 0.9,
-        }; // Cyan - selection end
-
-        let start_line = sel.start.line.0 + display_offset as i32;
-        let end_line = sel.end.line.0 + display_offset as i32;
-
-        let anchor = if start_line >= 0 && start_line < desired_rows as i32 {
-            Some(CursorInfo {
-                line: start_line,
-                col: sel.start.column.0,
-                shape: CursorShape::HollowBlock,
-                color: anchor_color,
-                wide: false,
-                text: None,
-                bold: false,
-                italic: false,
-            })
-        } else {
-            None
-        };
-
-        // Overload cursor_snapshot with the selection end marker so both
-        // ends are visible. The shell's real cursor is hidden by the
-        // selection highlight anyway during a drag.
-        let end_marker = if end_line >= 0 && end_line < desired_rows as i32 {
-            Some(CursorInfo {
-                line: end_line,
-                col: sel.end.column.0,
-                shape: CursorShape::HollowBlock,
-                color: end_color,
-                wide: false,
-                text: None,
-                bold: false,
-                italic: false,
-            })
-        } else {
-            None
-        };
-
-        (end_marker.or(cursor_snapshot), anchor)
+    } else if selection_range.is_some() {
+        // Mouse selection is cleaner as highlight-only: the range itself is the
+        // affordance, and auto-copy clears it on mouse-up.
+        (None, None)
     } else {
         (cursor_snapshot, None)
     };
@@ -807,7 +827,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         let is_default_bg = matches!(raw_bg, Color::Named(NamedColor::Background));
 
         let mut fg = convert_color(raw_fg, theme);
-        let bg = convert_color(raw_bg, theme);
+        let bg = terminal_panel_background(raw_bg, convert_color(raw_bg, theme), theme);
 
         // DIM/faint (SGR 2): reduce foreground opacity (applied after INVERSE)
         if flags.contains(CellFlags::DIM) {
@@ -857,15 +877,25 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
             fg = theme.selection_foreground;
         }
 
-        // Background rect - paint for ALL cells. Default-bg cells use
+        // Background rect - paint for ALL cells. Default-bg cells normally use
         // ansi_background (the theme's actual background) to contrast with the
         // slightly darker widget fill, creating visible depth for TUI content.
+        // With terminal material enabled, only those default backgrounds become
+        // transparent; explicit ANSI/app backgrounds stay opaque.
         let cell_cols = if flags.contains(CellFlags::WIDE_CHAR) {
             2
         } else {
             1
         };
-        let cell_bg_color = if is_default_bg { ansi_background } else { bg };
+        let cell_bg_color = if is_default_bg {
+            if terminal_material_active {
+                gpui::transparent_black()
+            } else {
+                ansi_background
+            }
+        } else {
+            bg
+        };
         match &mut current_rect {
             Some(rect)
                 if rect.line == point.line.0
@@ -1439,8 +1469,8 @@ impl Element for TerminalElement {
             // 4. Primary cursor
             paint::cursor::paint_cursor(&layout, &geom, &base_font, font_size, window, cx);
 
-            // 4b. Copy-mode selection anchor cursor
-            paint::cursor::paint_anchor_cursor(&layout, &geom, window);
+            // 4b. Copy-mode / mouse-selection secondary marker
+            paint::cursor::paint_anchor_cursor(&layout, &geom, &base_font, font_size, window, cx);
 
             // 5. Scrollbar thumb
             paint::scrollbar::paint_scrollbar(&layout, &geom, bounds, window);
@@ -1997,8 +2027,12 @@ mod golden_frame_tests {
     }
 
     fn cursor_at(col: usize, shape: CursorShape, text: Option<char>) -> CursorInfo {
+        cursor_at_line(0, col, shape, text)
+    }
+
+    fn cursor_at_line(line: i32, col: usize, shape: CursorShape, text: Option<char>) -> CursorInfo {
         CursorInfo {
-            line: 0,
+            line,
             col,
             shape,
             color: white(),
@@ -2034,6 +2068,7 @@ mod golden_frame_tests {
             theme: &theme,
             exited: None,
             exit_signal: None,
+            terminal_material_active: false,
         })
     }
 
@@ -2275,6 +2310,71 @@ mod golden_frame_tests {
         );
     }
 
+    #[test]
+    fn shell_cursor_is_hidden_when_scrolled_away_from_live_edge() {
+        let theme = crate::theme::one_dark();
+        let state = layout_from_snapshot(LayoutInputs {
+            cells: text_row(0, "history", default_fg(), CellFlags::empty()),
+            cursor: Some(cursor_at_line(3, 0, CursorShape::Block, None)),
+            selection_range: None,
+            copy_mode_cursor: None,
+            search_highlights: &[],
+            display_offset: 2,
+            history_size: 10,
+            desired_cols: COLS,
+            desired_rows: ROWS,
+            first_visible_row: 0,
+            last_visible_row: ROWS as i32,
+            dims: test_dims(),
+            base_font: test_font(),
+            theme: &theme,
+            exited: None,
+            exit_signal: None,
+            terminal_material_active: false,
+        });
+
+        assert!(
+            state.cursor.is_none(),
+            "live cursor must not float over scrollback"
+        );
+        assert!(
+            state.ime_cursor_bounds.is_none(),
+            "IME bounds should disappear with the hidden live cursor"
+        );
+    }
+
+    #[test]
+    fn mouse_selection_renders_without_endpoint_markers() {
+        let selection = SelectionRange {
+            start: GridPoint::new(0, 1),
+            end: GridPoint::new(0, 3),
+            is_block: false,
+        };
+        let state = run(
+            text_row(
+                0,
+                "abcdef",
+                default_fg(),
+                CellFlags::BOLD | CellFlags::ITALIC,
+            ),
+            None,
+            Some(selection),
+        );
+
+        assert!(
+            !state.selection_rects.is_empty(),
+            "mouse selection should still paint the highlight"
+        );
+        assert!(
+            state.cursor.is_none(),
+            "mouse selection should hide the terminal cursor while dragging"
+        );
+        assert!(
+            state.anchor_cursor.is_none(),
+            "mouse selection should not paint a start/end marker"
+        );
+    }
+
     /// Structural invariant: a WIDE_CHAR_SPACER cell never contributes its own
     /// run or rect - it is the trailing half of the preceding wide glyph.
     #[test]
@@ -2326,8 +2426,131 @@ mod golden_frame_tests {
             theme: &theme,
             exited: None,
             exit_signal: None,
+            terminal_material_active: false,
         });
         assert_eq!(state.batched_runs.len(), 1, "row 2 is culled");
         assert_eq!(state.batched_runs[0].text, "a");
+    }
+
+    #[test]
+    fn terminal_material_makes_default_backgrounds_transparent_only() {
+        let theme = crate::theme::one_dark();
+        let cells = vec![
+            cell(0, 0, 'a', default_fg(), default_bg(), CellFlags::empty()),
+            cell(
+                0,
+                1,
+                'b',
+                default_fg(),
+                Color::Named(NamedColor::Blue),
+                CellFlags::empty(),
+            ),
+        ];
+        let state = layout_from_snapshot(LayoutInputs {
+            cells,
+            cursor: None,
+            selection_range: None,
+            copy_mode_cursor: None,
+            search_highlights: &[],
+            display_offset: 0,
+            history_size: 0,
+            desired_cols: COLS,
+            desired_rows: ROWS,
+            first_visible_row: 0,
+            last_visible_row: ROWS as i32,
+            dims: test_dims(),
+            base_font: test_font(),
+            theme: &theme,
+            exited: None,
+            exit_signal: None,
+            terminal_material_active: true,
+        });
+
+        assert_eq!(state.background_color.a, 0.0);
+        assert!(
+            state.rects.iter().any(|rect| rect.color.a == 0.0),
+            "default background cells should be transparent"
+        );
+        assert!(
+            state.rects.iter().any(|rect| rect.color.a > 0.0),
+            "explicit ANSI backgrounds must remain painted"
+        );
+    }
+
+    #[test]
+    fn terminal_panel_grays_match_sidebar_card_surface() {
+        let theme = crate::theme::one_dark();
+        let card_bg = codex_panel_background_for_terminal(&theme);
+        assert_ne!(
+            card_bg,
+            crate::theme::ui_colors_with(&theme).subtle,
+            "dark terminal panels should not collapse back to Codex's #2a2a2a input fill"
+        );
+        let cells = vec![
+            cell(
+                0,
+                0,
+                'a',
+                default_fg(),
+                Color::Named(NamedColor::BrightBlack),
+                CellFlags::empty(),
+            ),
+            cell(
+                0,
+                1,
+                'b',
+                default_fg(),
+                Color::Indexed(236),
+                CellFlags::empty(),
+            ),
+            cell(
+                0,
+                2,
+                'c',
+                default_fg(),
+                Color::Spec(Rgb {
+                    r: 42,
+                    g: 42,
+                    b: 42,
+                }),
+                CellFlags::empty(),
+            ),
+            cell(
+                0,
+                3,
+                'd',
+                default_fg(),
+                Color::Spec(Rgb {
+                    r: 48,
+                    g: 48,
+                    b: 48,
+                }),
+                CellFlags::empty(),
+            ),
+        ];
+        let state = layout_from_snapshot(LayoutInputs {
+            cells,
+            cursor: None,
+            selection_range: None,
+            copy_mode_cursor: None,
+            search_highlights: &[],
+            display_offset: 0,
+            history_size: 0,
+            desired_cols: COLS,
+            desired_rows: ROWS,
+            first_visible_row: 0,
+            last_visible_row: ROWS as i32,
+            dims: test_dims(),
+            base_font: test_font(),
+            theme: &theme,
+            exited: None,
+            exit_signal: None,
+            terminal_material_active: false,
+        });
+
+        assert!(
+            state.rects.iter().all(|rect| rect.color == card_bg),
+            "neutral panel backgrounds should align with sidebar card color"
+        );
     }
 }

@@ -47,6 +47,10 @@ pub struct TitleBar {
     /// `is_agents` (Agents paints nothing). PUSHED by `PaneFlowApp::render`;
     /// `TitleBar` never reads `AppMode`.
     pub cockpit: bool,
+    /// Whether cockpit chrome should let the native material show through.
+    /// Pushed by `PaneFlowApp::render` so the Windows Appearance switch can
+    /// control title bar transparency independently from terminal cells.
+    pub cockpit_material_active: bool,
     /// #10: subscription that repaints the title bar when the desktop
     /// environment relocates the window-control buttons (e.g. GNOME left↔right).
     /// Registered lazily on the first `render` (where `window` is available, as
@@ -128,6 +132,7 @@ impl TitleBar {
             agents_overflow: false,
             is_agents: false,
             cockpit: false,
+            cockpit_material_active: !cfg!(target_os = "windows"),
             button_layout_observer: None,
         }
     }
@@ -176,8 +181,11 @@ impl Render for TitleBar {
         } else {
             theme.title_bar_inactive_background
         };
-        let chrome_bg =
-            crate::app::constants::cockpit_chrome_background(bg_color, is_window_active);
+        let chrome_bg = crate::app::constants::cockpit_chrome_background(
+            bg_color,
+            is_window_active,
+            self.cockpit_material_active,
+        );
 
         // --- Read DE button layout ---
         let layout = cx.button_layout().unwrap_or_else(default_button_layout);

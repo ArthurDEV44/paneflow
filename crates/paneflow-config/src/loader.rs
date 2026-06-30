@@ -871,6 +871,8 @@ mod tests {
             }],
             window_decorations: None,
             window_backdrop: None,
+            windows_terminal_material: None,
+            windows_chrome_material: None,
             line_height: None,
             font_family: None,
             font_fallbacks: None,

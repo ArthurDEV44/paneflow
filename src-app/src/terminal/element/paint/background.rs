@@ -26,7 +26,9 @@ pub fn paint_base_fill(
     bell_flash_active: bool,
     window: &mut Window,
 ) {
-    window.paint_quad(fill(bounds, layout.background_color));
+    if layout.background_color.a > 0.0 {
+        window.paint_quad(fill(bounds, layout.background_color));
+    }
 
     // Bell flash: semi-transparent white overlay
     if bell_flash_active {
@@ -85,6 +87,10 @@ pub fn paint_cell_backgrounds(
     let last_row = row_count.saturating_sub(1) as i32;
 
     for rect in &layout.rects {
+        if rect.color.a <= 0.0 {
+            continue;
+        }
+
         let col_end = rect.col + rect.num_cols;
         let line_end_signed = rect.line + rect.num_lines as i32;
 
@@ -289,7 +295,7 @@ mod tests {
 
     #[test]
     fn cell_y_boundaries_18_2_yields_expected_values() {
-        // 14 pt × 1.3 multiplier ≈ 18.2 px (default config). After
+        // 18.2 px mirrors the old fractional default line height. After
         // US-002 line_height is integer-snapped, but the helper itself
         // must handle fractional inputs correctly as a defensive measure.
         let b = cell_y_boundaries(px(0.0), px(18.2), 5);

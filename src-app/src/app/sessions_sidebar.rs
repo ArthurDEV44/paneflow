@@ -174,11 +174,12 @@ impl PaneFlowApp {
             .h_full()
             .track_focus(&self.agent_sessions.sessions_focus)
             .on_key_down(cx.listener(Self::handle_sessions_sidebar_key_down))
-            // Match the app's other navigation rails: theme-aware native
-            // material on Windows/macOS and a light/dark tint on Linux.
+            // Match the app's other navigation rails: optional native material
+            // on Windows, platform default on macOS, and a light/dark tint on Linux.
             .bg(crate::app::constants::cockpit_chrome_background(
                 theme.title_bar_background,
                 window.is_window_active(),
+                self.cached_config.cockpit_chrome_material_enabled(),
             ))
             .child(self.sessions_sidebar_header(ui, cx))
             .child(self.sessions_sidebar_body(ui, cx))

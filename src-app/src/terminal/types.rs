@@ -483,7 +483,10 @@ pub struct Content {
 /// Reproduces exactly what `TerminalElement::build_layout` read under lock -
 /// cells in viewport coords (`display_offset` applied), the cursor in raw
 /// grid coords plus its under-cursor cell attributes, the selection, and the
-/// scroll/history metadata - so swapping the element onto this producer
+/// scroll/history metadata. The layout pass applies `display_offset` to that
+/// raw cursor and hides it when the live cursor is outside the scrolled viewport.
+/// This keeps the snapshot faithful to alacritty while preventing a floating
+/// cursor during scrollback. Swapping the element onto this producer
 /// (US-009) is a zero `LayoutState` delta change. The caller holds the lock;
 /// this takes `&Term` so the same guard can also drive a resize.
 #[allow(dead_code)]
@@ -512,7 +515,8 @@ fn content_from_term_rows(
 
     // Transform grid-line coords (scrollback negative) into viewport-line coords
     // so culling, Y positioning, hyperlink zones, and batching all speak the
-    // same coordinate system as the cursor and search-highlight code.
+    // same coordinate system. The cursor intentionally stays raw below because
+    // layout needs to know when it has scrolled out of the viewport.
     let cells: Vec<Cell> = content
         .display_iter
         .filter_map(|ic| {

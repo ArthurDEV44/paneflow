@@ -35,7 +35,7 @@ pub(crate) const SETTINGS_NAV_WIDTH: f32 = 260.;
 /// rail/chrome so the rail-side corner masks (which paint the `#141414` chrome
 /// tint over the panel's square corner) actually read as rounded - a content
 /// fill equal to the mask color would show no rounding at all. The nav RAIL
-/// instead uses `cockpit_chrome_background()` (the platform-aware transparent /
+/// instead uses `cockpit_chrome_background()` (the platform-aware material /
 /// blur-veil treatment shared with the CLI / Review / Agents rails).
 pub(crate) fn settings_chrome_bg() -> gpui::Hsla {
     crate::theme::ui_colors().base
@@ -315,13 +315,13 @@ impl PaneFlowApp {
             .flex()
             .flex_col()
             // Same platform-aware rail treatment as the CLI / Review / Agents
-            // sidebars: transparent over the native material on macOS/Windows,
-            // a blur veil on Linux when the compositor advertises it, opaque
-            // theme chrome otherwise. Keeps the settings rail visually identical
-            // to the other rails on every platform / distro.
+            // sidebars: optional native material on Windows, platform default
+            // on macOS, and a blur veil on Linux when the compositor advertises
+            // it. Keeps the settings rail visually identical to the other rails.
             .bg(crate::app::constants::cockpit_chrome_background(
                 theme.title_bar_background,
                 window.is_window_active(),
+                self.cached_config.cockpit_chrome_material_enabled(),
             ))
             .pt(px(6.))
             .child(back)

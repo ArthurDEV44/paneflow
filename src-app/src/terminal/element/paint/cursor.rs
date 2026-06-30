@@ -6,14 +6,20 @@ use gpui::{
     TextRun, Window, fill, outline, px,
 };
 
-use super::super::LayoutState;
 use super::super::geometry::CellGeometry;
+use super::super::{CursorInfo, LayoutState};
 use crate::terminal::types::CursorShape;
 
-/// Paint the primary cursor at its grid position using the shape dictated by
-/// the terminal mode + config. For Block shapes, shapes the underlying
-/// character on top in the terminal's background color.
-pub fn paint_cursor(
+fn cursor_text_color(layout: &LayoutState) -> gpui::Hsla {
+    if layout.background_color.a > 0.01 {
+        layout.background_color
+    } else {
+        gpui::hsla(0.0, 0.0, 0.08, 1.0)
+    }
+}
+
+fn paint_cursor_info(
+    cursor: &CursorInfo,
     layout: &LayoutState,
     geom: &CellGeometry,
     base_font: &Font,
@@ -21,10 +27,6 @@ pub fn paint_cursor(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let Some(cursor) = &layout.cursor else {
-        return;
-    };
-
     let CellGeometry {
         origin,
         cell_width,
@@ -61,7 +63,7 @@ pub fn paint_cursor(
                     &[TextRun {
                         len,
                         font: cursor_font,
-                        color: layout.background_color,
+                        color: cursor_text_color(layout),
                         background_color: None,
                         underline: None,
                         strikethrough: None,
@@ -141,26 +143,37 @@ pub fn paint_cursor(
     }
 }
 
-/// Paint the copy-mode selection anchor as a tmux-style distinct hollow block.
-pub fn paint_anchor_cursor(layout: &LayoutState, geom: &CellGeometry, window: &mut Window) {
+/// Paint the primary cursor at its grid position using the shape dictated by
+/// the terminal mode + config. For Block shapes, shapes the underlying
+/// character on top in the terminal's background color.
+pub fn paint_cursor(
+    layout: &LayoutState,
+    geom: &CellGeometry,
+    base_font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(cursor) = &layout.cursor else {
+        return;
+    };
+
+    paint_cursor_info(cursor, layout, geom, base_font, font_size, window, cx);
+}
+
+/// Paint the secondary selection marker using the same glyph-aware cursor pass
+/// as the primary cursor.
+pub fn paint_anchor_cursor(
+    layout: &LayoutState,
+    geom: &CellGeometry,
+    base_font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(anchor) = &layout.anchor_cursor else {
         return;
     };
 
-    let CellGeometry {
-        origin,
-        cell_width,
-        line_height,
-    } = *geom;
-
-    let ax = origin.x + cell_width * anchor.col as f32;
-    let ay = origin.y + line_height * anchor.line as f32;
-    let anchor_bounds = Bounds::new(
-        Point { x: ax, y: ay },
-        gpui::Size {
-            width: cell_width,
-            height: line_height,
-        },
-    );
-    window.paint_quad(outline(anchor_bounds, anchor.color, BorderStyle::Solid).border_widths(1.5));
+    paint_cursor_info(anchor, layout, geom, base_font, font_size, window, cx);
 }

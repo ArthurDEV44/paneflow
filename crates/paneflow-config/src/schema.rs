@@ -24,9 +24,15 @@ pub struct PaneFlowConfig {
     /// `"acrylic"`, `"transparent"`, or `"opaque"` / `"off"`. Read at
     /// startup; `PANEFLOW_WINDOW_BACKDROP` overrides it for one launch.
     pub window_backdrop: Option<String>,
-    /// Terminal line height multiplier (default: 1.3, valid range: 1.0-2.5).
+    /// Windows-only: when enabled, the CLI terminal's default background cells
+    /// are transparent so the active native backdrop can show through.
+    pub windows_terminal_material: Option<bool>,
+    /// Windows-only: when enabled, sidebars/title bar use transparent chrome so
+    /// the active native backdrop can show through around the terminal.
+    pub windows_chrome_material: Option<bool>,
+    /// Terminal line height multiplier (default: 1.35, valid range: 1.0-2.5).
     pub line_height: Option<f32>,
-    /// Terminal font family (default: platform-specific monospace fallback).
+    /// Terminal font family (default: JetBrainsMono NFM when installed, else bundled Lilex).
     pub font_family: Option<String>,
     /// Ordered fallback font families, consulted in order for glyphs the
     /// primary `font_family` does not cover - e.g. a Nerd Font for the
@@ -36,7 +42,7 @@ pub struct PaneFlowConfig {
     /// `terminal.font_fallbacks`. Hot-reloaded via the 500 ms font cache, so a
     /// config edit takes effect on the next new terminal without a restart.
     pub font_fallbacks: Option<Vec<String>>,
-    /// Terminal font size in pixels (default: 14.0, valid range: 8.0-32.0).
+    /// Terminal font size in pixels (default: 13.0, valid range: 8.0-32.0).
     pub font_size: Option<f32>,
     /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
     /// Set to false for future macOS where Option produces Unicode characters.
@@ -278,6 +284,19 @@ impl PaneFlowConfig {
     /// Resolve the Stalled-detection master switch (default ON).
     pub fn agent_stall_detection_enabled(&self) -> bool {
         self.agent_stall_detection.unwrap_or(true)
+    }
+
+    /// Resolve the Windows terminal material switch. Other platforms always
+    /// stay opaque even if the field exists in a shared config file.
+    pub fn windows_terminal_material_enabled(&self) -> bool {
+        cfg!(target_os = "windows") && self.windows_terminal_material.unwrap_or(false)
+    }
+
+    /// Resolve the desktop chrome material switch. Windows follows the explicit
+    /// user setting; other platforms keep their existing native/tinted chrome
+    /// behavior and ignore the Windows-only field.
+    pub fn cockpit_chrome_material_enabled(&self) -> bool {
+        !cfg!(target_os = "windows") || self.windows_chrome_material.unwrap_or(false)
     }
 
     /// Resolve `agent_stall_threshold_secs`: default 60, clamped to
@@ -1427,10 +1446,12 @@ mod tests {
             commands: Vec::new(),
             window_decorations: Some("client".to_string()),
             window_backdrop: Some("auto".to_string()),
-            line_height: Some(1.3),
+            windows_terminal_material: Some(true),
+            windows_chrome_material: Some(true),
+            line_height: Some(1.35),
             font_family: Some("Lilex".to_string()),
             font_fallbacks: Some(vec!["FiraCode Nerd Font Mono".to_string()]),
-            font_size: Some(14.0),
+            font_size: Some(13.0),
             option_as_meta: Some(true),
             shell_integration: Some(true),
             agent_stall_detection: Some(true),
@@ -1595,6 +1616,30 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 600);
+    }
+
+    #[test]
+    fn cockpit_chrome_material_respects_windows_switch_only() {
+        let cfg = PaneFlowConfig::default();
+        assert_eq!(
+            cfg.cockpit_chrome_material_enabled(),
+            !cfg!(target_os = "windows")
+        );
+
+        let cfg = PaneFlowConfig {
+            windows_chrome_material: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.cockpit_chrome_material_enabled());
+
+        let cfg = PaneFlowConfig {
+            windows_chrome_material: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.cockpit_chrome_material_enabled(),
+            !cfg!(target_os = "windows")
+        );
     }
 
     #[test]

@@ -71,9 +71,9 @@ use crate::window_chrome::title_bar;
 
 use gpui::{
     Animation, AnimationExt, App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle,
-    Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render,
-    ResizeEdge, SharedString, Styled, Window, WindowBounds, WindowDecorations, WindowOptions,
-    canvas, div, point, prelude::*, px, size,
+    Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, PathBuilder, Pixels,
+    Point, Render, ResizeEdge, SharedString, Styled, Window, WindowBounds, WindowDecorations,
+    WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -245,14 +245,152 @@ struct SidebarWidthAnimation {
 
 struct StartupSplashView {
     mount_scheduled: bool,
+    native_material_active: bool,
 }
 
 impl StartupSplashView {
     fn new(_: &mut Context<Self>) -> Self {
+        let config = paneflow_config::loader::load_config();
         Self {
             mount_scheduled: false,
+            native_material_active: config.cockpit_chrome_material_enabled()
+                || config.windows_terminal_material_enabled(),
         }
     }
+}
+
+fn native_backdrop_material_active(
+    mode: paneflow_config::schema::AppMode,
+    settings_open: bool,
+    terminal_material_active: bool,
+    chrome_material_active: bool,
+) -> bool {
+    chrome_material_active
+        || (!settings_open
+            && matches!(mode, paneflow_config::schema::AppMode::Cli)
+            && terminal_material_active)
+}
+
+#[cfg(test)]
+mod native_material_tests {
+    use super::native_backdrop_material_active;
+    use paneflow_config::schema::AppMode;
+
+    #[test]
+    fn terminal_material_can_activate_backdrop_without_chrome_material() {
+        assert!(native_backdrop_material_active(
+            AppMode::Cli,
+            false,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn terminal_material_only_applies_to_visible_cli_terminal() {
+        assert!(!native_backdrop_material_active(
+            AppMode::Cli,
+            true,
+            true,
+            false
+        ));
+        assert!(!native_backdrop_material_active(
+            AppMode::Diff,
+            false,
+            true,
+            false
+        ));
+        assert!(!native_backdrop_material_active(
+            AppMode::Agents,
+            false,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn chrome_material_activates_backdrop_independently() {
+        assert!(native_backdrop_material_active(
+            AppMode::Diff,
+            true,
+            false,
+            true
+        ));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PanelCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+fn panel_corner_mask(corner: PanelCorner, background: gpui::Hsla) -> impl IntoElement {
+    const KAPPA: f32 = 0.552_284_8;
+
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let left = bounds.left();
+            let right = bounds.right();
+            let top = bounds.top();
+            let bottom = bounds.bottom();
+            let radius = bounds.size.width.min(bounds.size.height);
+            let k = radius * KAPPA;
+
+            let mut builder = PathBuilder::fill();
+            match corner {
+                PanelCorner::TopLeft => {
+                    builder.move_to(point(left, top));
+                    builder.line_to(point(right, top));
+                    builder.cubic_bezier_to(
+                        point(left, bottom),
+                        point(right - k, top),
+                        point(left, bottom - k),
+                    );
+                    builder.line_to(point(left, top));
+                }
+                PanelCorner::TopRight => {
+                    builder.move_to(point(left, top));
+                    builder.line_to(point(right, top));
+                    builder.line_to(point(right, bottom));
+                    builder.cubic_bezier_to(
+                        point(left, top),
+                        point(right, bottom - k),
+                        point(left + k, top),
+                    );
+                }
+                PanelCorner::BottomLeft => {
+                    builder.move_to(point(left, top));
+                    builder.line_to(point(left, bottom));
+                    builder.line_to(point(right, bottom));
+                    builder.cubic_bezier_to(
+                        point(left, top),
+                        point(right - k, bottom),
+                        point(left, top + k),
+                    );
+                }
+                PanelCorner::BottomRight => {
+                    builder.move_to(point(right, top));
+                    builder.line_to(point(right, bottom));
+                    builder.line_to(point(left, bottom));
+                    builder.cubic_bezier_to(
+                        point(right, top),
+                        point(left + k, bottom),
+                        point(right, top + k),
+                    );
+                }
+            }
+            builder.close();
+
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, background);
+            }
+        },
+    )
+    .size_full()
 }
 
 fn startup_splash_letter(
@@ -319,12 +457,12 @@ impl Render for StartupSplashView {
             a: STARTUP_SPLASH_TEXT_ALPHA,
             ..ui.muted
         };
-
         div()
             .font_family("IBM Plex Sans")
             .size_full()
             .bg(crate::app::constants::cockpit_backdrop_background(
                 crate::theme::active_theme().title_bar_background,
+                self.native_material_active,
             ))
             .flex()
             .items_center()
@@ -1226,16 +1364,41 @@ impl Render for PaneFlowApp {
         // radius on every platform (Linux, macOS, Windows Mica), where a solid
         // mask would read as a square patch. The 5px inset keeps opaque content
         // (terminal cells, diff rows, settings cards) off the arc, since GPUI
-        // does NOT clip children to the radius. The Cli pane grid keeps the
-        // terminal background; Diff / Agents / Settings use the #181818 surface.
+        // does NOT clip children to the radius. The Cli pane grid normally
+        // keeps the terminal background; on Windows terminal material it lets
+        // the native backdrop show through. Diff / Agents / Settings use the
+        // #181818 surface.
+        let terminal_material_active = self.cached_config.windows_terminal_material_enabled();
+        let chrome_material_active = self.cached_config.cockpit_chrome_material_enabled();
+        let native_material_active = native_backdrop_material_active(
+            self.mode,
+            settings_open,
+            terminal_material_active,
+            chrome_material_active,
+        );
         let panel_bg = if settings_open {
             ui.base
         } else {
             match self.mode {
+                paneflow_config::schema::AppMode::Cli if terminal_material_active => {
+                    gpui::transparent_black()
+                }
                 paneflow_config::schema::AppMode::Cli => theme.background,
                 paneflow_config::schema::AppMode::Diff
                 | paneflow_config::schema::AppMode::Agents => ui.base,
             }
+        };
+        let panel_border =
+            crate::app::constants::right_panel_border_color(theme.background, ui.border);
+        let panel_corner_mask_bg = crate::app::constants::cockpit_chrome_background(
+            theme.title_bar_background,
+            window.is_window_active(),
+            chrome_material_active,
+        );
+        let panel_top = if title_bar_spans_window {
+            title_bar_h
+        } else {
+            px(0.)
         };
         let primary_sidebar_width = self.rendered_primary_sidebar_width(window);
         let primary_sidebar_mounted = self.settings_section.is_some()
@@ -1380,6 +1543,7 @@ impl Render for PaneFlowApp {
             // Cockpit chrome (#141414 + no divider) for Cli AND Diff; Agents
             // paints nothing (is_agents wins).
             tb.cockpit = !matches!(self.mode, paneflow_config::schema::AppMode::Agents);
+            tb.cockpit_material_active = chrome_material_active;
         });
 
         // --- CSD resize backdrop ---
@@ -1516,10 +1680,13 @@ impl Render for PaneFlowApp {
                     .flex_row()
                     .flex_1()
                     .overflow_hidden()
-                    // Reveal the native material behind the translucent chrome.
-                    // Linux receives the original opaque background.
+                    // The row backdrop must be transparent when either chrome
+                    // material is enabled or the visible CLI terminal asks for
+                    // material. Sidebars/title bar still paint their own opaque
+                    // fills when Chrome material is off.
                     .bg(crate::app::constants::cockpit_backdrop_background(
                         theme.title_bar_background,
+                        native_material_active,
                     ))
                     // While settings is open the left rail becomes the Codex
                     // settings nav (kept visible even if the user had hidden the
@@ -1649,6 +1816,61 @@ impl Render for PaneFlowApp {
                                     .child(main_content)
                                     .when_some(rosetta_surface, |d, surface| d.child(surface)),
                             )
+                            // GPUI clips overflow with a rectangular content
+                            // mask, so rounded panel children can still paint
+                            // square backgrounds in the corners. These masks
+                            // restore the visual radius by painting the
+                            // surrounding chrome over those square corners.
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .top(panel_top)
+                                    .w(px(16.))
+                                    .h(px(16.))
+                                    .child(panel_corner_mask(
+                                        PanelCorner::TopLeft,
+                                        panel_corner_mask_bg,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .bottom_0()
+                                    .w(px(16.))
+                                    .h(px(16.))
+                                    .child(panel_corner_mask(
+                                        PanelCorner::BottomLeft,
+                                        panel_corner_mask_bg,
+                                    )),
+                            )
+                            .when(secondary_sidebar_open, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .right_0()
+                                        .top(panel_top)
+                                        .w(px(16.))
+                                        .h(px(16.))
+                                        .child(panel_corner_mask(
+                                            PanelCorner::TopRight,
+                                            panel_corner_mask_bg,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .right_0()
+                                        .bottom_0()
+                                        .w(px(16.))
+                                        .h(px(16.))
+                                        .child(panel_corner_mask(
+                                            PanelCorner::BottomRight,
+                                            panel_corner_mask_bg,
+                                        )),
+                                )
+                            })
                             // Draw the panel contour. The right edge joins the
                             // contour only while a secondary sidebar is open,
                             // giving the tabs/terminal matching corners on both
@@ -1659,11 +1881,7 @@ impl Render for PaneFlowApp {
                                     .left_0()
                                     .right_0()
                                     .bottom_0()
-                                    .top(if title_bar_spans_window {
-                                        title_bar_h
-                                    } else {
-                                        px(0.)
-                                    })
+                                    .top(panel_top)
                                     .rounded_tl(px(16.))
                                     .rounded_bl(px(16.))
                                     .border_t_1()
@@ -1671,7 +1889,7 @@ impl Render for PaneFlowApp {
                                     .when(secondary_sidebar_open, |d| {
                                         d.rounded_tr(px(16.)).rounded_br(px(16.)).border_r_1()
                                     })
-                                    .border_color(ui.border),
+                                    .border_color(panel_border),
                             ),
                     )
                     // Docked agent-sessions sidebar (right edge). A layout child
@@ -1847,6 +2065,7 @@ impl Render for PaneFlowApp {
             .id("window-backdrop")
             .bg(crate::app::constants::cockpit_backdrop_background(
                 theme.title_bar_background,
+                native_material_active,
             ))
             .size_full()
             .map(|d| match decorations {
@@ -2386,6 +2605,11 @@ fn main() {
         .run(|cx: &mut App| {
             // Load config early - needed for keybindings and window decorations
             let config = paneflow_config::loader::load_config();
+            // Match Windows Terminal/PowerShell-style grayscale text
+            // antialiasing. GPUI's platform default can pick subpixel
+            // rendering on Windows/Linux; Paneflow's dark terminal surfaces
+            // read cleaner without colored LCD fringes on thin mono glyphs.
+            cx.set_text_rendering_mode(gpui::TextRenderingMode::Grayscale);
             // `apply_keybindings` clears the whole registry, so it now also
             // (re-)registers the TextInput / TextArea widget bindings itself
             // (US-016: agents composer textarea included) - no separate startup

@@ -78,6 +78,14 @@ fn tab_colors() -> crate::theme::UiColors {
     crate::theme::ui_colors()
 }
 
+fn tab_bar_background(theme: &crate::theme::TerminalTheme, terminal_material_active: bool) -> Hsla {
+    if terminal_material_active {
+        gpui::transparent_black()
+    } else {
+        theme.background
+    }
+}
+
 /// First line of an agent question, bounded for the collapsed peek badge
 /// (US-020, orchestration-v2). Pure - unit-tested below.
 fn peek_badge_line(message: &str) -> String {
@@ -361,6 +369,8 @@ impl Pane {
     /// Create a new pane with a single terminal tab.
     pub fn new(terminal: Entity<TerminalView>, workspace_id: u64, cx: &mut Context<Self>) -> Self {
         Self::subscribe_terminal(&terminal, cx);
+        let cached_config = paneflow_config::loader::load_config();
+        Self::apply_terminal_material(&terminal, &cached_config, cx);
         Self {
             tabs: vec![TabContent::Terminal(terminal)],
             selected_idx: 0,
@@ -376,7 +386,7 @@ impl Pane {
             tab_bar_actions_animation_epoch: 0,
             // US-015: hydrate the tab-bar config cache once at creation (not
             // per frame); refreshed on ConfigWatcher reload via propagation.
-            cached_config: paneflow_config::loader::load_config(),
+            cached_config,
             rename: None,
             rename_focus: cx.focus_handle(),
             drag_split_direction: None,
@@ -398,8 +408,10 @@ impl Pane {
     /// subscription is NOT re-added, because the moved terminal already has
     /// one from its original creation (re-adding would double CWD/port events).
     pub fn new_with_tab(tab: TabContent, workspace_id: u64, cx: &mut Context<Self>) -> Self {
+        let cached_config = paneflow_config::loader::load_config();
         if let TabContent::Terminal(t) = &tab {
             Self::subscribe_terminal(t, cx);
+            Self::apply_terminal_material(t, &cached_config, cx);
         }
         Self {
             tabs: vec![tab],
@@ -415,7 +427,7 @@ impl Pane {
             tab_bar_actions_collapsed: false,
             tab_bar_actions_animation_epoch: 0,
             // US-015: see `Pane::new`.
-            cached_config: paneflow_config::loader::load_config(),
+            cached_config,
             rename: None,
             rename_focus: cx.focus_handle(),
             drag_split_direction: None,
@@ -723,6 +735,30 @@ impl Pane {
         self.tabs.iter().filter_map(TabContent::as_terminal)
     }
 
+    pub fn apply_config(
+        &mut self,
+        config: &paneflow_config::schema::PaneFlowConfig,
+        cx: &mut Context<Self>,
+    ) {
+        self.cached_config = config.clone();
+        let terminals: Vec<Entity<TerminalView>> = self.terminals().cloned().collect();
+        for terminal in terminals {
+            Self::apply_terminal_material(&terminal, config, cx);
+        }
+        cx.notify();
+    }
+
+    fn apply_terminal_material(
+        terminal: &Entity<TerminalView>,
+        config: &paneflow_config::schema::PaneFlowConfig,
+        cx: &mut Context<Self>,
+    ) {
+        let terminal_material_active = config.windows_terminal_material_enabled();
+        terminal.update(cx, |terminal, cx| {
+            terminal.set_terminal_material_active(terminal_material_active, cx);
+        });
+    }
+
     /// True when `terminal` is one of this pane's tabs.
     pub fn contains_terminal(&self, terminal: &Entity<TerminalView>) -> bool {
         self.terminals().any(|t| t == terminal)
@@ -731,6 +767,7 @@ impl Pane {
     /// Append a new terminal tab and focus it.
     pub fn add_tab(&mut self, terminal: Entity<TerminalView>, cx: &mut Context<Self>) {
         Self::subscribe_terminal(&terminal, cx);
+        Self::apply_terminal_material(&terminal, &self.cached_config, cx);
         self.tabs.push(TabContent::Terminal(terminal));
         self.selected_idx = self.tabs.len().saturating_sub(1);
     }
@@ -1133,6 +1170,7 @@ impl Pane {
     ) {
         if let TabContent::Terminal(t) = &tab {
             Self::subscribe_terminal(t, cx);
+            Self::apply_terminal_material(t, &self.cached_config, cx);
         }
         let at = dest_idx.min(self.tabs.len());
         self.tabs.insert(at, tab);
@@ -1158,6 +1196,7 @@ impl Pane {
     ) {
         if let TabContent::Terminal(t) = &tab {
             Self::subscribe_terminal(t, cx);
+            Self::apply_terminal_material(t, &self.cached_config, cx);
         }
         let at = dest_idx.min(self.tabs.len());
         self.tabs.insert(at, tab);
@@ -1335,10 +1374,13 @@ impl Pane {
         let self_entity = cx.entity();
         let accent = ui.accent;
         // Tab strip uses the terminal background so it melts into the terminal
-        // body below it - one clean surface (Arthur). No active/inactive chrome
-        // split: the blue focus ring is gone, so the strip no longer carries a
-        // pane-focus signal either.
-        let bar_bg = theme.background;
+        // body below it - one clean surface (Arthur). When Windows terminal
+        // material is enabled, the strip goes transparent too so the tab bar
+        // and terminal body share the same native backdrop.
+        let bar_bg = tab_bar_background(
+            &theme,
+            self.cached_config.windows_terminal_material_enabled(),
+        );
 
         // Outer container: full-width, fixed height, tab_bar background. The
         // chips are shorter than the bar, so center them vertically to float.
@@ -2418,7 +2460,15 @@ impl Render for Pane {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TAB_TITLE_LEN, peek_badge_line, truncate_tab_title};
+    use super::{MAX_TAB_TITLE_LEN, peek_badge_line, tab_bar_background, truncate_tab_title};
+
+    #[test]
+    fn terminal_material_makes_tab_bar_transparent() {
+        let theme = crate::theme::one_dark();
+
+        assert_eq!(tab_bar_background(&theme, false), theme.background);
+        assert_eq!(tab_bar_background(&theme, true).a, 0.0);
+    }
 
     #[test]
     fn peek_badge_takes_first_line_bounded() {

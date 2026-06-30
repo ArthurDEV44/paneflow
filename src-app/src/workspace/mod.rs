@@ -277,8 +277,7 @@ fn walk_and_push_config(
     match node {
         LayoutTree::Leaf(pane) => {
             pane.update(cx, |p, cx| {
-                p.cached_config = config.clone();
-                cx.notify();
+                p.apply_config(config, cx);
             });
         }
         LayoutTree::Container { children, .. } => {

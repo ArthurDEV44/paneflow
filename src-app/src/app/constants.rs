@@ -37,6 +37,7 @@ const DARK_SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.07;
 const DARK_SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.07;
 const LIGHT_SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.06;
 const LIGHT_SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.025;
+const DARK_RIGHT_PANEL_BORDER: u32 = 0x383838;
 
 /// Shared radius for the Agents search field and its primary navigation rows.
 pub(crate) const SIDEBAR_TAB_CORNER_RADIUS: Pixels = px(8.);
@@ -62,22 +63,34 @@ pub(crate) enum WindowBackdropPreference {
 }
 
 pub(crate) fn window_backdrop_preference(config_value: Option<&str>) -> WindowBackdropPreference {
-    let raw = std::env::var("PANEFLOW_WINDOW_BACKDROP")
-        .ok()
-        .or_else(|| config_value.map(str::to_string));
-    match raw
-        .as_deref()
-        .map(|value| value.trim().to_ascii_lowercase())
+    if let Ok(value) = std::env::var("PANEFLOW_WINDOW_BACKDROP") {
+        return parse_window_backdrop_preference(&value);
+    }
+
+    config_window_backdrop_preference(config_value)
+}
+
+fn config_window_backdrop_preference(config_value: Option<&str>) -> WindowBackdropPreference {
+    #[cfg(target_os = "windows")]
+    if let Some(value) = config_value.map(str::trim)
+        && (value.eq_ignore_ascii_case("blurred") || value.eq_ignore_ascii_case("acrylic"))
     {
-        None => WindowBackdropPreference::Auto,
-        Some(value) if value.is_empty() || value == "auto" => WindowBackdropPreference::Auto,
-        Some(value) if value == "mica" => WindowBackdropPreference::Mica,
-        Some(value) if value == "blurred" || value == "acrylic" => {
-            WindowBackdropPreference::Blurred
-        }
-        Some(value) if value == "transparent" => WindowBackdropPreference::Transparent,
-        Some(value) if value == "opaque" || value == "off" => WindowBackdropPreference::Opaque,
-        Some(value) => {
+        return WindowBackdropPreference::Auto;
+    }
+
+    config_value
+        .map(parse_window_backdrop_preference)
+        .unwrap_or(WindowBackdropPreference::Auto)
+}
+
+fn parse_window_backdrop_preference(value: &str) -> WindowBackdropPreference {
+    match value.trim().to_ascii_lowercase() {
+        value if value.is_empty() || value == "auto" => WindowBackdropPreference::Auto,
+        value if value == "mica" => WindowBackdropPreference::Mica,
+        value if value == "blurred" || value == "acrylic" => WindowBackdropPreference::Blurred,
+        value if value == "transparent" => WindowBackdropPreference::Transparent,
+        value if value == "opaque" || value == "off" => WindowBackdropPreference::Opaque,
+        value => {
             log::warn!("Invalid window_backdrop value '{value}', using 'auto'");
             WindowBackdropPreference::Auto
         }
@@ -166,11 +179,22 @@ fn windows_supports_system_backdrop() -> bool {
 
 /// Background used by the title bar and navigation rails.
 ///
-/// Windows and macOS keep the app chrome transparent so the platform-owned
-/// material, including any inactive-window fallback, remains unobscured. Linux
-/// adds a theme-aware tint because its Wayland/X11 blur protocols define
-/// regions, not semantic light/dark materials.
-pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool) -> Hsla {
+/// When material is enabled, Windows and macOS keep the app chrome transparent
+/// so the platform-owned material, including any inactive-window fallback,
+/// remains unobscured. Linux adds a theme-aware tint because its Wayland/X11
+/// blur protocols define regions, not semantic light/dark materials.
+pub(crate) fn cockpit_chrome_background(
+    background: Hsla,
+    is_window_active: bool,
+    material_active: bool,
+) -> Hsla {
+    #[cfg(not(target_os = "linux"))]
+    let _ = is_window_active;
+
+    if !material_active {
+        return background;
+    }
+
     if background.l > 0.5 {
         if cfg!(any(target_os = "windows", target_os = "macos")) {
             return gpui::transparent_black();
@@ -189,9 +213,6 @@ pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool
         #[cfg(not(target_os = "linux"))]
         return background;
     }
-
-    #[cfg(not(target_os = "linux"))]
-    let _ = is_window_active;
 
     if cfg!(any(target_os = "windows", target_os = "macos")) {
         return gpui::transparent_black();
@@ -216,7 +237,11 @@ pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool
 /// a different surface than the rail and the radius reads as a square patch.
 /// Native semantic materials remain raw; Linux uses the same theme tint here as
 /// the rail because its blur protocols do not expose light/dark appearances.
-pub(crate) fn cockpit_backdrop_background(background: Hsla) -> Hsla {
+pub(crate) fn cockpit_backdrop_background(background: Hsla, material_active: bool) -> Hsla {
+    if !material_active {
+        return background;
+    }
+
     if cfg!(any(target_os = "windows", target_os = "macos")) {
         return gpui::transparent_black();
     }
@@ -252,6 +277,14 @@ pub(crate) fn sidebar_tab_hover_background() -> Hsla {
     )
 }
 
+pub(crate) fn right_panel_border_color(background: Hsla, light_border: Hsla) -> Hsla {
+    if background.l > 0.5 {
+        light_border
+    } else {
+        Hsla::from(gpui::rgb(DARK_RIGHT_PANEL_BORDER))
+    }
+}
+
 fn sidebar_tab_background(light_opacity: f32, dark_opacity: f32) -> Hsla {
     let is_light = crate::theme::active_theme().background.l > 0.5;
     let (tint, opacity) = if is_light {
@@ -278,12 +311,11 @@ pub(crate) const MAX_CLOSED_PANE_SCROLLBACK_BYTES: usize = 2 * 1024 * 1024;
 /// Width of the invisible border zone used for CSD edge/corner resize handles.
 pub(crate) const RESIZE_BORDER: Pixels = px(10.0);
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn linux_window_background_stays_opaque_for_translucent_preferences() {
         for preference in [
             WindowBackdropPreference::Auto,
@@ -297,5 +329,38 @@ mod tests {
                 WindowBackgroundAppearance::Opaque
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn legacy_blurred_config_falls_back_to_auto_after_mica_subsetting_removal() {
+        assert_eq!(
+            config_window_backdrop_preference(Some("blurred")),
+            WindowBackdropPreference::Auto
+        );
+        assert_eq!(
+            config_window_backdrop_preference(Some("acrylic")),
+            WindowBackdropPreference::Auto
+        );
+        assert_eq!(
+            parse_window_backdrop_preference("blurred"),
+            WindowBackdropPreference::Blurred
+        );
+    }
+
+    #[test]
+    fn cockpit_material_off_keeps_chrome_and_backdrop_opaque() {
+        let background = Hsla::from(gpui::rgb(0x141414));
+
+        assert_eq!(
+            cockpit_chrome_background(background, true, false),
+            background
+        );
+        assert_eq!(cockpit_backdrop_background(background, false), background);
     }
 }
