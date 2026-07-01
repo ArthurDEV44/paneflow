@@ -23,7 +23,10 @@ use super::CellDimensions;
 // ---------------------------------------------------------------------------
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 13.0;
-const DEFAULT_LINE_HEIGHT: f32 = 1.35;
+const POINTS_TO_PIXELS: f32 = 96.0 / 72.0;
+pub(crate) const DEFAULT_LINE_HEIGHT: f32 = 1.2;
+pub(crate) const DEFAULT_CELL_WIDTH: f32 = 0.6;
+pub(crate) const DEFAULT_FONT_WEIGHT_KEY: &str = "normal";
 
 /// Preferred terminal/code font when installed on the host system.
 ///
@@ -134,6 +137,9 @@ struct CachedFontConfig {
     family: String,
     size: f32,
     line_height: f32,
+    cell_width: f32,
+    font_weight_key: &'static str,
+    font_weight: FontWeight,
     /// US-008: render ligatures when `true`. Hot-reload comes for free
     /// via the surrounding 500 ms cache: editing `paneflow.json` is
     /// picked up on the next `cached_font_config()` call without any
@@ -157,6 +163,61 @@ fn sanitize_font_fallbacks(configured: Option<&Vec<String>>) -> Option<Vec<Strin
         .filter(|entry| !entry.is_empty())
         .collect();
     (!list.is_empty()).then_some(list)
+}
+
+fn canonical_font_weight_key(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|ch| match ch {
+            '-' | ' ' => '_',
+            _ => ch.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+fn font_weight_key_from_config(configured: Option<&str>) -> (&'static str, bool) {
+    let Some(raw) = configured else {
+        return (DEFAULT_FONT_WEIGHT_KEY, false);
+    };
+    let key = canonical_font_weight_key(raw);
+    if key.is_empty() {
+        return (DEFAULT_FONT_WEIGHT_KEY, false);
+    }
+    let resolved = match key.as_str() {
+        "thin" => "thin",
+        "extra_light" | "extralight" => "extra_light",
+        "light" => "light",
+        "semi_light" | "semilight" => "semi_light",
+        "normal" => "normal",
+        "medium" => "medium",
+        "semi_bold" | "semibold" => "semi_bold",
+        "bold" => "bold",
+        "extra_bold" | "extrabold" => "extra_bold",
+        "black" => "black",
+        "extra_black" | "extrablack" => "extra_black",
+        _ => return (DEFAULT_FONT_WEIGHT_KEY, true),
+    };
+    (resolved, false)
+}
+
+pub(crate) fn normalize_font_weight_key(configured: Option<&str>) -> &'static str {
+    font_weight_key_from_config(configured).0
+}
+
+fn font_weight_from_key(key: &str) -> FontWeight {
+    match key {
+        "thin" => FontWeight::THIN,
+        "extra_light" => FontWeight::EXTRA_LIGHT,
+        "light" => FontWeight::LIGHT,
+        "semi_light" => FontWeight(350.0),
+        "normal" => FontWeight::NORMAL,
+        "medium" => FontWeight::MEDIUM,
+        "semi_bold" => FontWeight::SEMIBOLD,
+        "bold" => FontWeight::BOLD,
+        "extra_bold" => FontWeight::EXTRA_BOLD,
+        "black" | "extra_black" => FontWeight::BLACK,
+        _ => FontWeight::NORMAL,
+    }
 }
 
 static FONT_CONFIG_CACHE: std::sync::Mutex<Option<CachedFontConfig>> = std::sync::Mutex::new(None);
@@ -234,7 +295,8 @@ pub fn resolve_font_family(configured: Option<&str>) -> String {
 }
 
 /// Read font config, cached for 500ms (same pattern as theme cache).
-pub(super) fn cached_font_config() -> (String, f32, f32, bool, Option<Vec<String>>) {
+pub(super) fn cached_font_config() -> (String, f32, f32, f32, FontWeight, bool, Option<Vec<String>>)
+{
     use std::time::{Duration, Instant};
     const CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -247,6 +309,8 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool, Option<Vec<String
             c.family.clone(),
             c.size,
             c.line_height,
+            c.cell_width,
+            c.font_weight,
             c.ligatures,
             c.fallbacks.clone(),
         );
@@ -263,7 +327,7 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool, Option<Vec<String
                 s
             } else {
                 log::warn!(
-                    "font_size {s} out of range [8.0, 32.0]; using default {DEFAULT_FONT_SIZE}"
+                    "font_size {s}pt out of range [8.0, 32.0]; using default {DEFAULT_FONT_SIZE}pt"
                 );
                 DEFAULT_FONT_SIZE
             }
@@ -283,6 +347,27 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool, Option<Vec<String
             }
         })
         .unwrap_or(DEFAULT_LINE_HEIGHT);
+
+    let cell_width = config
+        .cell_width
+        .map(|cw| {
+            if (0.3..=2.0).contains(&cw) {
+                cw
+            } else {
+                log::warn!(
+                    "cell_width {cw} out of range [0.3, 2.0]; using default {DEFAULT_CELL_WIDTH}"
+                );
+                DEFAULT_CELL_WIDTH
+            }
+        })
+        .unwrap_or(DEFAULT_CELL_WIDTH);
+
+    let (font_weight_key, invalid_font_weight) =
+        font_weight_key_from_config(config.font_weight.as_deref());
+    if invalid_font_weight && let Some(raw) = config.font_weight.as_deref() {
+        log::warn!("font_weight '{raw}' is not supported; using default {DEFAULT_FONT_WEIGHT_KEY}");
+    }
+    let font_weight = font_weight_from_key(font_weight_key);
 
     // US-008: ligatures are off by default to preserve the historical
     // monospaced cell-stride behavior. Opt-in via `terminal.ligatures: true`
@@ -305,10 +390,19 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool, Option<Vec<String
     // fallback was selected (e.g. on a macOS install where Core Text
     // failed to surface `Menlo` from inside a signed .app bundle) without
     // adding a hot-path log on every render.
-    let family_changed = cache.as_ref().is_none_or(|prev| prev.family != family);
-    if family_changed {
+    let font_changed = cache.as_ref().is_none_or(|prev| {
+        prev.family != family
+            || (prev.size - size).abs() > f32::EPSILON
+            || (prev.line_height - line_height).abs() > f32::EPSILON
+            || (prev.cell_width - cell_width).abs() > f32::EPSILON
+            || prev.font_weight_key != font_weight_key
+            || prev.ligatures != ligatures
+    });
+    if font_changed {
+        let size_px = font_points_to_pixels(size);
         log::info!(
-            "font: resolved family='{family}' size={size}px line_height={line_height} ligatures={ligatures}"
+            "font: resolved family='{family}' size={size}pt ({:.2}px) line_height={line_height} cell_width={cell_width} font_weight={font_weight_key} ligatures={ligatures}",
+            size_px.as_f32()
         );
     }
 
@@ -316,16 +410,27 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool, Option<Vec<String
         family: family.clone(),
         size,
         line_height,
+        cell_width,
+        font_weight_key,
+        font_weight,
         ligatures,
         fallbacks: fallbacks.clone(),
         last_check: Instant::now(),
     });
 
-    (family, size, line_height, ligatures, fallbacks)
+    (
+        family,
+        size,
+        line_height,
+        cell_width,
+        font_weight,
+        ligatures,
+        fallbacks,
+    )
 }
 
 pub(super) fn base_font() -> Font {
-    let (family, _, _, ligatures, fallbacks) = cached_font_config();
+    let (family, _, _, _, font_weight, ligatures, fallbacks) = cached_font_config();
     // US-008: when the user opts into ligatures, hand GPUI the font's
     // native feature set untouched. Default behavior (and explicit
     // `ligatures: false`) keeps the historical `disable_ligatures()`
@@ -345,7 +450,7 @@ pub(super) fn base_font() -> Font {
         // `cached_font_config`). See the long-form rationale on the removed
         // `FONT_FALLBACKS` static above for why we never hardcode a chain.
         fallbacks: fallbacks.map(FontFallbacks::from_fonts),
-        weight: FontWeight::NORMAL,
+        weight: font_weight,
         style: FontStyle::Normal,
     }
 }
@@ -354,6 +459,10 @@ pub(super) fn base_font() -> Font {
 /// per-pane zoom steps, and the session-restore ingress.
 pub const MIN_FONT_SIZE: f32 = 8.0;
 pub const MAX_FONT_SIZE: f32 = 32.0;
+
+fn font_points_to_pixels(size_points: f32) -> Pixels {
+    px(size_points * POINTS_TO_PIXELS)
+}
 
 /// EP-006 US-019: validate a `font_size` read back from session.json
 /// (UNTRUSTED-adjacent: local-only but validated anyway, US-057/EP-010
@@ -366,23 +475,25 @@ pub fn sanitize_font_override(raw: f32) -> Option<f32> {
     Some(raw.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
 }
 
-/// Effective terminal font size. `size_override` is EP-006 US-019's
-/// per-pane zoom: `Some(px)` wins over the global config; `None` falls
-/// back to the cached global (config + 500 ms cache). The override is
+/// Effective terminal font size. Config and per-pane overrides are stored in
+/// points to match OS terminal settings; GPUI expects logical pixels.
+/// `size_override` is EP-006 US-019's per-pane zoom: `Some(pt)` wins over the
+/// global config; `None` falls back to the cached global (config + 500 ms
+/// cache). The override is
 /// already clamped to [8.0, 32.0] at every write site (action handler +
 /// session ingress), so no re-validation here.
 pub(super) fn font_size(size_override: Option<f32>) -> Pixels {
     if let Some(s) = size_override {
-        return px(s);
+        return font_points_to_pixels(s);
     }
-    let (_, size, _, _, _) = cached_font_config();
-    px(size)
+    let (_, size, _, _, _, _, _) = cached_font_config();
+    font_points_to_pixels(size)
 }
 
-/// EP-006 US-019: the global (non-overridden) font size - the zoom
+/// EP-006 US-019: the global (non-overridden) font size in points - the zoom
 /// handlers' baseline for a pane that has no override yet.
 pub fn global_font_size() -> f32 {
-    let (_, size, _, _, _) = cached_font_config();
+    let (_, size, _, _, _, _, _) = cached_font_config();
     size
 }
 
@@ -437,31 +548,11 @@ pub fn measure_cell(
         });
     }
 
-    // Raw advance width for 'm' in the resolved font. If the text system
-    // can't measure (font load failed, glyph missing, etc.) fall back to
-    // `font_size` rather than panic - a slightly-too-wide cell (~1.5-1.7×
-    // a typical monospace 'm') is far better than a crashed renderer, and
-    // the cached font config already validates the family + size before
-    // we get here. Note: on this fallback path the PTY `SIGWINCH`
-    // `ws_xpixel` value is also approximate, since it is derived from the
-    // same `cell_width` (see resize handling in `mod.rs`).
-    let cell_width_raw = window
-        .text_system()
-        .advance(font_id, font_size, 'm')
-        .map(|advance| advance.width)
-        .unwrap_or_else(|err| {
-            log::warn!(
-                "text_system().advance('m') failed in measure_cell: {err}; falling back to font_size={}px",
-                font_size.as_f32()
-            );
-            font_size
-        });
-
-    // Line height scales with the EFFECTIVE size (override or global) so a
-    // zoomed pane keeps its configured line-height ratio.
-    let (_, global_size, multiplier, _, _) = cached_font_config();
-    let size_f32 = size_override.unwrap_or(global_size);
-    let line_height_raw = px(size_f32 * multiplier);
+    // Width and line height scale with the effective rendered size so Windows
+    // Terminal-style multipliers stay comparable across font-size changes.
+    let (_, _, line_multiplier, cell_multiplier, _, _, _) = cached_font_config();
+    let cell_width_raw = px(font_size.as_f32() * cell_multiplier);
+    let line_height_raw = px(font_size.as_f32() * line_multiplier);
 
     // US-002: snap raw font measurements to integer pixels via `.round()`
     // (WezTerm convention - minimizes layout-area drift on fractional
@@ -540,6 +631,58 @@ mod tests {
     }
 
     #[test]
+    fn terminal_font_points_convert_to_logical_pixels() {
+        let px_size = font_points_to_pixels(13.0).as_f32();
+        assert!(
+            (px_size - 17.333334).abs() < 0.00001,
+            "13pt should render as 17.333px, got {px_size}"
+        );
+    }
+
+    #[test]
+    fn default_cell_width_matches_windows_terminal_multiplier() {
+        let raw = font_points_to_pixels(DEFAULT_FONT_SIZE) * DEFAULT_CELL_WIDTH;
+        assert!(
+            (raw.as_f32() - 10.4).abs() < 0.00001,
+            "13pt x 0.6 should be 10.4px, got {}",
+            raw.as_f32()
+        );
+        assert_eq!(raw.round(), px(10.0));
+    }
+
+    #[test]
+    fn font_weight_key_defaults_to_normal_and_accepts_aliases() {
+        assert_eq!(normalize_font_weight_key(None), DEFAULT_FONT_WEIGHT_KEY);
+        assert_eq!(normalize_font_weight_key(Some("")), DEFAULT_FONT_WEIGHT_KEY);
+        assert_eq!(
+            normalize_font_weight_key(Some("unknown")),
+            DEFAULT_FONT_WEIGHT_KEY
+        );
+        assert_eq!(
+            normalize_font_weight_key(Some("Extra-Light")),
+            "extra_light"
+        );
+        assert_eq!(normalize_font_weight_key(Some("Semi Light")), "semi_light");
+        assert_eq!(normalize_font_weight_key(Some("semibold")), "semi_bold");
+        assert_eq!(
+            normalize_font_weight_key(Some("Extra Black")),
+            "extra_black"
+        );
+    }
+
+    #[test]
+    fn font_weight_mapping_matches_gpui_supported_weights() {
+        assert_eq!(font_weight_from_key("thin"), FontWeight::THIN);
+        assert_eq!(font_weight_from_key("extra_light"), FontWeight::EXTRA_LIGHT);
+        assert_eq!(font_weight_from_key("semi_light"), FontWeight(350.0));
+        assert_eq!(font_weight_from_key("normal"), FontWeight::NORMAL);
+        assert_eq!(font_weight_from_key("semi_bold"), FontWeight::SEMIBOLD);
+        assert_eq!(font_weight_from_key("extra_bold"), FontWeight::EXTRA_BOLD);
+        assert_eq!(font_weight_from_key("extra_black"), FontWeight::BLACK);
+        assert_eq!(font_weight_from_key("unsupported"), FontWeight::NORMAL);
+    }
+
+    #[test]
     fn round_snap_handles_half_away_from_zero() {
         // Rust's f32::round documents round-half-away-from-zero. Lock in
         // that behavior so a future `.round()` → `.round_ties_even()` swap
@@ -551,11 +694,10 @@ mod tests {
 
     #[test]
     fn round_snap_yields_integer_for_fractional_line_height() {
-        // 13 px x 1.35 multiplier = 17.55 px - matches the default config
-        // (DEFAULT_FONT_SIZE × DEFAULT_LINE_HEIGHT in this file).
-        let raw_lh = px(DEFAULT_FONT_SIZE * DEFAULT_LINE_HEIGHT);
+        // 13 pt x 96/72 x 1.2 multiplier = 20.8 logical px.
+        let raw_lh = font_points_to_pixels(DEFAULT_FONT_SIZE) * DEFAULT_LINE_HEIGHT;
         let snapped = raw_lh.round();
-        assert_eq!(snapped, px(18.0));
+        assert_eq!(snapped, px(21.0));
         assert!(snapped.as_f32().fract().abs() < 1e-6);
     }
 

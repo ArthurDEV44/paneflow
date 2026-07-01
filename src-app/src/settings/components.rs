@@ -1,7 +1,7 @@
 //! Agents-style UI primitives shared across every settings tab.
 //!
 //! Visual recipes mirror `agents_view::view` + `app::agents_sidebar`:
-//! - **section_header** - lowercase eyebrow (12px, NORMAL, `ui.muted`), no
+//! - **section_header** - lowercase eyebrow (11px, NORMAL, `ui.muted`), no
 //!   border below. Matches `threads_section_header` in the agents sidebar.
 //! - **section_header_with_action** - same eyebrow with a right-aligned
 //!   secondary button (used by Shortcuts/Appearance "Reset to defaults").
@@ -34,12 +34,12 @@ pub fn with_alpha(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
 }
 
-/// Lowercase eyebrow section label (12px, NORMAL, muted). No border below.
+/// Lowercase eyebrow section label (11px, NORMAL, muted). No border below.
 /// Mirrors `app::agents_sidebar::threads_section_header`.
 pub fn section_header(ui: crate::theme::UiColors, label: &'static str) -> impl IntoElement {
     div().pb(px(8.)).child(
         div()
-            .text_size(px(12.))
+            .text_size(crate::ui_primitives::LABEL_SM)
             .font_weight(gpui::FontWeight::NORMAL)
             .text_color(ui.muted)
             .child(label),
@@ -62,7 +62,7 @@ pub fn section_header_with_action(
         .pb(px(8.))
         .child(
             div()
-                .text_size(px(12.))
+                .text_size(crate::ui_primitives::LABEL_SM)
                 .font_weight(gpui::FontWeight::NORMAL)
                 .text_color(ui.muted)
                 .child(label),
@@ -157,14 +157,14 @@ pub fn setting_text(
         .gap(px(2.))
         .child(
             div()
-                .text_size(crate::ui_primitives::BODY_EMPHASIS)
+                .text_size(crate::ui_primitives::BODY)
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(ui.text)
                 .child(title),
         )
         .child(
             div()
-                .text_size(px(12.))
+                .text_size(crate::ui_primitives::LABEL_SM)
                 .text_color(ui.muted)
                 .child(description),
         )
@@ -240,6 +240,14 @@ pub fn select_trigger(id: impl Into<ElementId>, ui: crate::theme::UiColors) -> S
         l: (ui.subtle.l - 0.04).max(0.0),
         ..ui.subtle
     };
+    select_trigger_with_hover(id, ui, hover_bg)
+}
+
+pub fn select_trigger_with_hover(
+    id: impl Into<ElementId>,
+    ui: crate::theme::UiColors,
+    hover_bg: Hsla,
+) -> Stateful<Div> {
     div()
         .id(id.into())
         .relative()
@@ -327,6 +335,7 @@ pub fn select_item(
 ) -> Stateful<Div> {
     div()
         .id(id.into())
+        .flex_none()
         .h(px(28.))
         .px(px(8.))
         .rounded(SETTINGS_CONTROL_CORNER_RADIUS)

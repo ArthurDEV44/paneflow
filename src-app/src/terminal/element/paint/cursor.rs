@@ -1,5 +1,6 @@
-//! Cursor paint pass - primary text cursor (Block/Beam/Underline/HollowBlock)
-//! plus the copy-mode selection anchor cursor.
+//! Cursor paint pass - primary text cursor
+//! (Vintage/Block/Beam/Underline/DoubleUnderline/HollowBlock) plus the
+//! copy-mode selection anchor cursor.
 
 use gpui::{
     App, BorderStyle, Bounds, Font, FontStyle, FontWeight, Pixels, Point, SharedString, TextAlign,
@@ -44,6 +45,20 @@ fn paint_cursor_info(
     let color = cursor.color;
 
     match cursor.shape {
+        CursorShape::Vintage => {
+            let vintage_height = (ch * 0.28).max(px(3.0));
+            let cursor_bounds = Bounds::new(
+                Point {
+                    x: cx_,
+                    y: cy + ch - vintage_height,
+                },
+                gpui::Size {
+                    width: cw,
+                    height: vintage_height,
+                },
+            );
+            window.paint_quad(fill(cursor_bounds, color));
+        }
         CursorShape::Block => {
             // Shape the cursor character first so we can size the
             // cursor quad to fit wide/emoji glyphs.
@@ -124,6 +139,22 @@ fn paint_cursor_info(
                 },
             );
             window.paint_quad(fill(cursor_bounds, color));
+        }
+        CursorShape::DoubleUnderline => {
+            let underline_height = px(2.0);
+            let gap = px(2.0);
+            let lower_y = cy + ch - underline_height;
+            let upper_y = (lower_y - underline_height - gap).max(cy);
+            for y in [upper_y, lower_y] {
+                let cursor_bounds = Bounds::new(
+                    Point { x: cx_, y },
+                    gpui::Size {
+                        width: cw,
+                        height: underline_height,
+                    },
+                );
+                window.paint_quad(fill(cursor_bounds, color));
+            }
         }
         CursorShape::HollowBlock => {
             let cursor_bounds = Bounds::new(

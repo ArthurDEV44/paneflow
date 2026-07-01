@@ -15,15 +15,15 @@ use alacritty_terminal::index::{Column as GridCol, Line as GridLine, Point as Al
 use alacritty_terminal::term::TermMode;
 use futures::StreamExt;
 use gpui::{
-    App, ClipboardItem, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
+    App, ClipboardItem, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement, IntoElement,
     KeyContext, MouseButton, Render, Styled, Window, div, prelude::*,
 };
-use paneflow_config::schema::TerminalSurfaceProfile;
+use paneflow_config::schema::{TerminalConfig, TerminalSurfaceProfile};
 
 use super::element::TerminalElement;
 use super::pty_session::ClipboardOp;
 use super::service_detector::ServiceInfo;
-use super::types::{CopyModeCursorState, HyperlinkZone, Modes, SearchHighlight};
+use super::types::{CopyModeCursorState, CursorShape, HyperlinkZone, Modes, SearchHighlight};
 use super::{PtyNotifier, TerminalState};
 use crate::limits::MAX_OSC52_BYTES;
 
@@ -54,6 +54,33 @@ fn spawn_error_message(e: &anyhow::Error) -> String {
          \r\n\
          \x1b[2m{e:#}\x1b[0m\r\n",
     )
+}
+
+fn renderer_cursor_shape_from_config(
+    shape: paneflow_config::schema::CursorShapeConfig,
+) -> CursorShape {
+    use paneflow_config::schema::CursorShapeConfig as C;
+    match shape {
+        C::Vintage => CursorShape::Vintage,
+        C::Block => CursorShape::Block,
+        C::Beam => CursorShape::Beam,
+        C::Underline => CursorShape::Underline,
+        C::DoubleUnderline => CursorShape::DoubleUnderline,
+        C::Hollow => CursorShape::HollowBlock,
+    }
+}
+
+pub(crate) fn hsla_from_hex_color(raw: &str) -> Option<Hsla> {
+    let normalized = paneflow_config::schema::normalize_hex_color(raw)?;
+    let rgb = u32::from_str_radix(&normalized[1..], 16).ok()?;
+    Some(Hsla::from(gpui::rgb(rgb)))
+}
+
+fn cursor_color_override_from_config(terminal_config: &TerminalConfig) -> Option<Hsla> {
+    terminal_config
+        .cursor_color
+        .as_deref()
+        .and_then(hsla_from_hex_color)
 }
 
 /// Strip control characters from an OSC 52 clipboard payload so a hostile PTY
@@ -129,14 +156,17 @@ pub struct TerminalView {
     pub(super) search_regex_error: Option<String>,
     /// Whether Alt key is treated as Meta (ESC prefix). Read from config.
     pub(super) option_as_meta: bool,
-    /// US-005: how a BEL is surfaced (visual flash / audible / both / off).
-    /// Read from config at construction.
-    pub(super) bell_mode: paneflow_config::schema::TerminalBellMode,
     /// US-008: cursor blink override (On / Off / TerminalControlled). Read
     /// from config at construction.
     pub(super) cursor_blink_mode: paneflow_config::schema::CursorBlinkConfig,
+    /// Default cursor shape used before applications override it through
+    /// DECSCUSR. Custom shapes are painted by Paneflow.
+    pub(super) default_cursor_shape: CursorShape,
+    /// Cursor color override from `terminal.cursor_color`; `None` keeps the
+    /// active color scheme cursor color.
+    pub(super) cursor_color_override: Option<Hsla>,
     /// US-022: resolved scroll-wheel multiplier for scrollback (1.0 = default).
-    /// Read from config at construction (like the cursor/bell settings) - NOT
+    /// Read from config at construction (like the cursor settings) - NOT
     /// per scroll event, so the hot scroll path does no config I/O. Takes
     /// effect on the next new terminal, consistent with the other terminal
     /// settings here.
@@ -144,6 +174,11 @@ pub struct TerminalView {
     /// Windows-only appearance switch: default terminal backgrounds become
     /// transparent so the native window material can show through.
     pub(super) terminal_material_active: bool,
+    /// Renderer switch: block elements use Paneflow's built-in quad renderer
+    /// instead of font glyphs.
+    pub(super) integrated_glyphs_enabled: bool,
+    /// Renderer switch: emoji glyphs use GPUI's platform color-emoji path.
+    pub(super) color_emoji_enabled: bool,
     /// Whether copy mode (keyboard-driven selection) is active
     pub(super) copy_mode_active: bool,
     /// Copy mode cursor position in grid coordinates
@@ -152,12 +187,6 @@ pub struct TerminalView {
     pub(super) copy_mode_frozen_offset: usize,
     /// Previous focus state, used to detect focus transitions for DEC 1004 events.
     was_focused: bool,
-    /// Bell flash deadline - background pulse visible until this instant.
-    bell_flash_until: Option<std::time::Instant>,
-    /// US-005: set when an audible bell is pending; rung in `render` (the only
-    /// place with a `&mut Window`) then cleared. The event poll loop runs on an
-    /// `AsyncApp` with no window, so it cannot ring the bell directly.
-    pending_system_bell: bool,
     /// Last hovered cell position for URL regex detection (US-015).
     pub(super) hovered_cell: Option<AlacPoint>,
     /// Active hyperlink under Ctrl+hover - drives underline rendering and Ctrl+click.
@@ -177,15 +206,35 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    /// US-006: whether this terminal currently holds keyboard focus. Used by
-    /// the pane to clear a pending bell dot once the user looks at the tab.
-    pub fn is_focused(&self, window: &Window) -> bool {
-        self.focus_handle.is_focused(window)
-    }
-
     pub(crate) fn set_terminal_material_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.terminal_material_active != active {
             self.terminal_material_active = active;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_integrated_glyphs_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.integrated_glyphs_enabled != enabled {
+            self.integrated_glyphs_enabled = enabled;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_color_emoji_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.color_emoji_enabled != enabled {
+            self.color_emoji_enabled = enabled;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_cursor_color_override(
+        &mut self,
+        color: Option<Hsla>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.cursor_color_override != color {
+            self.cursor_color_override = color;
+            self.terminal.cursor_color_override = color;
             cx.notify();
         }
     }
@@ -463,47 +512,6 @@ impl TerminalView {
                                 view.terminal.notifier.notify(response.into_bytes());
                             }
 
-                            // Bell (US-005): surface a BEL per the configured
-                            // mode - visual flash, audible system bell, both, or
-                            // off. The system bell is deferred to `render`, the
-                            // only place with a `&mut Window`.
-                            if view.terminal.bell_active {
-                                view.terminal.bell_active = false;
-                                let mode = view.bell_mode;
-                                if mode != paneflow_config::schema::TerminalBellMode::Off {
-                                    // Drives the cross-pane tab indicator (US-006).
-                                    cx.emit(TerminalEvent::Bell);
-                                }
-                                if mode.is_audible() {
-                                    view.pending_system_bell = true;
-                                    cx.notify();
-                                }
-                                if mode.is_visual() {
-                                    view.bell_flash_until = Some(
-                                        std::time::Instant::now()
-                                            + std::time::Duration::from_millis(200),
-                                    );
-                                    // Schedule notify after flash duration to clear it
-                                    cx.spawn(async |this, cx| {
-                                        smol::Timer::after(std::time::Duration::from_millis(200))
-                                            .await;
-                                        let _ = cx.update(|cx| {
-                                            this.update(cx, |view, cx| {
-                                                // Only clear if no newer bell extended the deadline
-                                                if view
-                                                    .bell_flash_until
-                                                    .is_some_and(|t| t <= std::time::Instant::now())
-                                                {
-                                                    view.bell_flash_until = None;
-                                                }
-                                                cx.notify();
-                                            })
-                                        });
-                                    })
-                                    .detach();
-                                }
-                            }
-
                             // US-002: close only on a user-initiated or clean
                             // exit. A non-zero exit with no prior user input is
                             // a spawn/launch failure (bad shell, missing agent
@@ -614,8 +622,12 @@ impl TerminalView {
         let config = paneflow_config::loader::load_config();
         let terminal_config = config.terminal.clone().unwrap_or_default();
         let scroll_multiplier = terminal_config.resolved_scroll_multiplier();
-        let bell_mode = terminal_config.bell.unwrap_or_default();
         let cursor_blink_mode = terminal_config.cursor_blink.unwrap_or_default();
+        let default_cursor_shape =
+            renderer_cursor_shape_from_config(terminal_config.cursor_shape.unwrap_or_default());
+        let cursor_color_override = cursor_color_override_from_config(&terminal_config);
+        let integrated_glyphs_enabled = terminal_config.resolved_integrated_glyphs();
+        let color_emoji_enabled = terminal_config.resolved_color_emoji();
 
         Self {
             terminal,
@@ -638,16 +650,17 @@ impl TerminalView {
             option_as_meta: config
                 .option_as_meta
                 .unwrap_or_else(crate::keys::default_option_as_meta),
-            bell_mode,
             cursor_blink_mode,
+            default_cursor_shape,
+            cursor_color_override,
             scroll_multiplier,
             terminal_material_active: false,
+            integrated_glyphs_enabled,
+            color_emoji_enabled,
             copy_mode_active: false,
             copy_cursor: AlacPoint::new(GridLine(0), GridCol(0)),
             copy_mode_frozen_offset: 0,
             was_focused: false,
-            bell_flash_until: None,
-            pending_system_bell: false,
             hovered_cell: None,
             ctrl_hovered_link: None,
             mouse_down_link: None,
@@ -912,8 +925,6 @@ pub enum TerminalEvent {
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").
     /// Enriches the bare port from the OS port scan with label and URL.
     ServiceDetected(ServiceInfo),
-    /// Terminal bell (\a) was triggered - visual flash notification.
-    Bell,
     /// Escape pressed while swap mode is active - requests cancellation.
     CancelSwapMode,
     /// A mouse selection was auto-copied to the clipboard on mouse release.
@@ -1209,13 +1220,6 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // US-005: ring the OS system bell here - the only context with a
-        // `&mut Window`. The event poll loop runs on an `AsyncApp` and merely
-        // sets `pending_system_bell`.
-        if self.pending_system_bell {
-            self.pending_system_bell = false;
-            window.play_system_bell();
-        }
         let focused = self.focus_handle.is_focused(window);
 
         // DEC 1004: send focus in/out events on focus transitions
@@ -1315,8 +1319,6 @@ impl Render for TerminalView {
             self.element_origin.clone(),
             search_match_rects,
             copy_cursor_state,
-            self.bell_flash_until
-                .is_some_and(|t| std::time::Instant::now() < t),
             self.ctrl_hovered_link
                 .as_ref()
                 .map(|link| (link.start.line.0, link.start.column.0, link.end.column.0)),
@@ -1327,7 +1329,11 @@ impl Render for TerminalView {
             self.needs_initial_clear.clone(),
             self.scrollbar_metrics.clone(),
             search_rail_lines,
+            self.default_cursor_shape,
+            self.cursor_color_override,
             self.terminal_material_active,
+            self.integrated_glyphs_enabled,
+            self.color_emoji_enabled,
             #[cfg(debug_assertions)]
             keystroke_at,
         );
@@ -1390,7 +1396,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &crate::ToggleCopyMode, _window, cx| {
                 this.toggle_copy_mode(cx);
             }))
-            // EP-006 US-019: per-pane font zoom (±1 px, clamp [8, 32]).
+            // EP-006 US-019: per-pane font zoom (±1 pt, clamp [8, 32]).
             .on_action(
                 cx.listener(|this, _: &crate::FontSizeIncrease, _window, cx| {
                     this.font_zoom_step(1.0, cx);

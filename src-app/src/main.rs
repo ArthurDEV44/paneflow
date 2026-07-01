@@ -143,7 +143,8 @@ pub(crate) enum ThemeMode {
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum TerminalDropdown {
     CursorShape,
-    Bell,
+    CursorColor,
+    FontWeight,
 }
 
 /// Which General-page select dropdown is currently open (only one at a time).

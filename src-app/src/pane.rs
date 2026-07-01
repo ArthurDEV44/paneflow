@@ -59,8 +59,7 @@ impl TabContent {
 
     /// Stable identity of the tab's backing entity, regardless of variant.
     /// US-020: lets per-tab click closures re-resolve their live index by
-    /// identity (the `Vec` can mutate between render and click), mirroring the
-    /// `bell_pending` set which is keyed by `EntityId` for the same reason.
+    /// identity when the `Vec` mutates between render and click.
     pub fn entity_id(&self) -> gpui::EntityId {
         match self {
             TabContent::Terminal(t) => t.entity_id(),
@@ -269,10 +268,6 @@ struct TabRename {
 pub struct Pane {
     pub tabs: Vec<TabContent>,
     pub selected_idx: usize,
-    /// US-006: terminal entity IDs with a pending (unacknowledged) bell. Keyed
-    /// by `EntityId` so it survives tab reorder/move; a dot is shown in the tab
-    /// strip until that terminal is focused (cleared in `render`).
-    bell_pending: std::collections::HashSet<gpui::EntityId>,
     /// US-018/US-020 (orchestration-v2): terminals of this pane whose agent
     /// session is `WaitingForInput`, with the agent's question (≤512 chars,
     /// UNTRUSTED display-only text). Pushed by `PaneFlowApp::sync_attention`
@@ -285,7 +280,7 @@ pub struct Pane {
     /// `PaneFlowApp::sync_attention` alongside `attention` - same idempotent
     /// recompute-from-session-truth contract. Drives the dedicated
     /// `agent_error` tab dot (tab-anatomy state slot, ranked above the
-    /// waiting dot and the bell).
+    /// waiting dot).
     errored: std::collections::HashSet<gpui::EntityId>,
     /// EP-006 US-018 (cli-cockpit): transient fleet-grep match counts per
     /// terminal. Pushed by `PaneFlowApp::push_fleet_badges` after a fan-out,
@@ -374,11 +369,10 @@ impl Pane {
     pub fn new(terminal: Entity<TerminalView>, workspace_id: u64, cx: &mut Context<Self>) -> Self {
         Self::subscribe_terminal(&terminal, cx);
         let cached_config = paneflow_config::loader::load_config();
-        Self::apply_terminal_material(&terminal, &cached_config, cx);
+        Self::apply_terminal_render_config(&terminal, &cached_config, cx);
         Self {
             tabs: vec![TabContent::Terminal(terminal)],
             selected_idx: 0,
-            bell_pending: std::collections::HashSet::new(),
             attention: std::collections::HashMap::new(),
             errored: std::collections::HashSet::new(),
             search_hits: std::collections::HashMap::new(),
@@ -415,12 +409,11 @@ impl Pane {
         let cached_config = paneflow_config::loader::load_config();
         if let TabContent::Terminal(t) = &tab {
             Self::subscribe_terminal(t, cx);
-            Self::apply_terminal_material(t, &cached_config, cx);
+            Self::apply_terminal_render_config(t, &cached_config, cx);
         }
         Self {
             tabs: vec![tab],
             selected_idx: 0,
-            bell_pending: std::collections::HashSet::new(),
             attention: std::collections::HashMap::new(),
             errored: std::collections::HashSet::new(),
             search_hits: std::collections::HashMap::new(),
@@ -747,19 +740,35 @@ impl Pane {
         self.cached_config = config.clone();
         let terminals: Vec<Entity<TerminalView>> = self.terminals().cloned().collect();
         for terminal in terminals {
-            Self::apply_terminal_material(&terminal, config, cx);
+            Self::apply_terminal_render_config(&terminal, config, cx);
         }
         cx.notify();
     }
 
-    fn apply_terminal_material(
+    fn apply_terminal_render_config(
         terminal: &Entity<TerminalView>,
         config: &paneflow_config::schema::PaneFlowConfig,
         cx: &mut Context<Self>,
     ) {
         let terminal_material_active = config.windows_terminal_material_enabled();
+        let integrated_glyphs_enabled = config
+            .terminal
+            .as_ref()
+            .is_none_or(|terminal| terminal.resolved_integrated_glyphs());
+        let color_emoji_enabled = config
+            .terminal
+            .as_ref()
+            .is_none_or(|terminal| terminal.resolved_color_emoji());
+        let cursor_color_override = config
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.cursor_color.as_deref())
+            .and_then(crate::terminal::view::hsla_from_hex_color);
         terminal.update(cx, |terminal, cx| {
             terminal.set_terminal_material_active(terminal_material_active, cx);
+            terminal.set_integrated_glyphs_enabled(integrated_glyphs_enabled, cx);
+            terminal.set_color_emoji_enabled(color_emoji_enabled, cx);
+            terminal.set_cursor_color_override(cursor_color_override, cx);
         });
     }
 
@@ -771,7 +780,7 @@ impl Pane {
     /// Append a new terminal tab and focus it.
     pub fn add_tab(&mut self, terminal: Entity<TerminalView>, cx: &mut Context<Self>) {
         Self::subscribe_terminal(&terminal, cx);
-        Self::apply_terminal_material(&terminal, &self.cached_config, cx);
+        Self::apply_terminal_render_config(&terminal, &self.cached_config, cx);
         self.tabs.push(TabContent::Terminal(terminal));
         self.selected_idx = self.tabs.len().saturating_sub(1);
     }
@@ -815,14 +824,6 @@ impl Pane {
                 }
                 // CwdChanged, ActivityBurst, ServiceDetected, SelectionCopied are
                 // handled by PaneFlowApp's direct subscription to each TerminalView.
-                TerminalEvent::Bell => {
-                    // US-006: mark the source terminal's tab with a persistent
-                    // bell dot so a completion signal in a background pane is
-                    // not missed. Cleared once that terminal is focused (in
-                    // `render`). Keyed by EntityId so it survives tab reorder.
-                    this.bell_pending.insert(terminal.entity_id());
-                    cx.notify();
-                }
                 TerminalEvent::CwdChanged(_)
                 | TerminalEvent::ActivityBurst
                 | TerminalEvent::ServiceDetected(_)
@@ -1100,16 +1101,7 @@ impl Pane {
         if idx >= self.tabs.len() {
             return;
         }
-        // US-006: drop any pending bell for the closed terminal (no orphan).
-        let closed_id = self
-            .tabs
-            .get(idx)
-            .and_then(|t| t.as_terminal())
-            .map(|t| t.entity_id());
         self.tabs.remove(idx);
-        if let Some(id) = closed_id {
-            self.bell_pending.remove(&id);
-        }
         if self.tabs.is_empty() {
             cx.emit(PaneEvent::Remove);
             return;
@@ -1174,7 +1166,7 @@ impl Pane {
     ) {
         if let TabContent::Terminal(t) = &tab {
             Self::subscribe_terminal(t, cx);
-            Self::apply_terminal_material(t, &self.cached_config, cx);
+            Self::apply_terminal_render_config(t, &self.cached_config, cx);
         }
         let at = dest_idx.min(self.tabs.len());
         self.tabs.insert(at, tab);
@@ -1200,7 +1192,7 @@ impl Pane {
     ) {
         if let TabContent::Terminal(t) = &tab {
             Self::subscribe_terminal(t, cx);
-            Self::apply_terminal_material(t, &self.cached_config, cx);
+            Self::apply_terminal_render_config(t, &self.cached_config, cx);
         }
         let at = dest_idx.min(self.tabs.len());
         self.tabs.insert(at, tab);
@@ -1515,22 +1507,14 @@ impl Pane {
         let close_hover_bg = with_alpha(ui.text, 0.92);
         let close_hover_fg = ui.base;
 
-        // US-006: a small accent dot when this tab's terminal has an
-        // unacknowledged bell. Zero-size placeholder otherwise so tab
-        // layout/truncation is unaffected.
         // US-018 (orchestration-v2): an agent waiting for input in this tab
-        // shows the attention-colored dot - it wins over the bell (the more
-        // actionable signal), so a hidden waiting tab stays discoverable.
+        // shows the attention-colored dot, so a hidden waiting tab stays
+        // discoverable.
         // EP-004 US-010: an Errored agent (binary exited non-zero) wins over
-        // both - a crash is the most salient state and must never hide
+        // waiting - a crash is the most salient state and must never hide
         // behind a waiting dot. Dedicated `agent_error` slot, distinct from
         // the attention orange (a session is either waiting OR errored, but
         // two terminals of the same tab strip can show one of each).
-        let has_bell = self
-            .tabs
-            .get(i)
-            .and_then(|t| t.as_terminal())
-            .is_some_and(|t| self.bell_pending.contains(&t.entity_id()));
         let has_attention = self
             .tabs
             .get(i)
@@ -1541,7 +1525,7 @@ impl Pane {
             .get(i)
             .and_then(|t| t.as_terminal())
             .is_some_and(|t| self.errored.contains(&t.entity_id()));
-        let bell_dot = (has_errored || has_attention || has_bell).then(|| {
+        let status_dot = (has_errored || has_attention).then(|| {
             div()
                 .flex_none()
                 .w(px(6.0))
@@ -1550,17 +1534,15 @@ impl Pane {
                 .rounded_full()
                 .bg(if has_errored {
                     ui.agent_error
-                } else if has_attention {
-                    ui.vc_conflict
                 } else {
-                    ui.accent
+                    ui.vc_conflict
                 })
                 .into_any_element()
         });
 
         // EP-001 US-003 (cli-cockpit): queued-prompt chip - tab-anatomy slot
         // ranked just below the state dot. Zero-size placeholder otherwise so
-        // tab layout/truncation is unaffected (same convention as bell_dot).
+        // tab layout/truncation is unaffected (same convention as status_dot).
         let has_pending = self
             .tabs
             .get(i)
@@ -1596,8 +1578,7 @@ impl Pane {
                     self.search_hits.get(&t.entity_id()).copied(),
                 )
             });
-            let mut slots_used: u8 =
-                u8::from(has_errored || has_attention || has_bell) + u8::from(has_pending);
+            let mut slots_used: u8 = u8::from(has_errored || has_attention) + u8::from(has_pending);
             let mut pill = None;
             let mut hits_badge = None;
             if let Some((agent, confirmed, hits)) = term_meta {
@@ -1831,7 +1812,7 @@ impl Pane {
                 cx.notify();
                 cx.stop_propagation();
             }))
-            .children(bell_dot)
+            .children(status_dot)
             .children(pending_chip)
             .child(leading_slot)
             .child(self.render_tab_title(i, cx))
@@ -2188,21 +2169,6 @@ impl gpui::Focusable for Pane {
 
 impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // US-006: clear the bell dot for any tab whose terminal currently holds
-        // focus - the user is looking at it, so the signal is acknowledged.
-        if !self.bell_pending.is_empty() {
-            let focused: Vec<gpui::EntityId> = self
-                .tabs
-                .iter()
-                .filter_map(|t| t.as_terminal())
-                .filter(|t| t.read(cx).is_focused(window))
-                .map(|t| t.entity_id())
-                .collect();
-            for id in focused {
-                self.bell_pending.remove(&id);
-            }
-        }
-
         let body = match self.tabs.get(self.selected_idx) {
             Some(TabContent::Terminal(t)) => t.clone().into_any_element(),
             Some(TabContent::Markdown(m)) => m.clone().into_any_element(),

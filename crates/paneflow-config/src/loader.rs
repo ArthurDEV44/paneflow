@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_unknown_terminal_enum_falls_back_not_wipes_config() {
-        // Regression guard: a typo in a terminal enum (`"loud"`, `"squiggle"`,
+        // Regression guard: a typo in a terminal enum (`"squiggle"`,
         // `"blinky"`) must fall back to that enum's default WITHOUT discarding
         // the rest of the config. Before the custom `Deserialize`, serde hard-
         // errored here and `parse_and_validate` returned `default()` for the
@@ -448,7 +448,7 @@ mod tests {
         let json = r#"{
             "theme": "One Dark",
             "default_shell": "/bin/zsh",
-            "terminal": { "bell": "loud", "cursor_shape": "squiggle", "cursor_blink": "blinky" }
+            "terminal": { "cursor_shape": "squiggle", "cursor_blink": "blinky" }
         }"#;
         let config = parse_and_validate(json);
 
@@ -460,7 +460,6 @@ mod tests {
         let term = config
             .terminal
             .expect("terminal block must survive unknown enum values");
-        assert_eq!(term.bell, Some(TerminalBellMode::Visual));
         assert_eq!(term.cursor_shape, Some(CursorShapeConfig::Block));
         assert_eq!(
             term.cursor_blink,
@@ -874,9 +873,11 @@ mod tests {
             windows_terminal_material: None,
             windows_chrome_material: None,
             line_height: None,
+            cell_width: None,
             font_family: None,
             font_fallbacks: None,
             font_size: None,
+            font_weight: None,
             option_as_meta: None,
             shell_integration: None,
             agent_stall_detection: None,
@@ -1448,8 +1449,10 @@ mod tests {
             from_empty.terminal,
             Some(TerminalConfig {
                 ligatures: None,
+                integrated_glyphs: None,
+                color_emoji: None,
+                cursor_color: None,
                 scrollback_lines: None,
-                bell: None,
                 cursor_shape: None,
                 cursor_blink: None,
                 env: None,
@@ -1460,8 +1463,10 @@ mod tests {
             from_null.terminal,
             Some(TerminalConfig {
                 ligatures: None,
+                integrated_glyphs: None,
+                color_emoji: None,
+                cursor_color: None,
                 scrollback_lines: None,
-                bell: None,
                 cursor_shape: None,
                 cursor_blink: None,
                 env: None,
@@ -1477,8 +1482,10 @@ mod tests {
             config.terminal,
             Some(TerminalConfig {
                 ligatures: Some(true),
+                integrated_glyphs: None,
+                color_emoji: None,
+                cursor_color: None,
                 scrollback_lines: None,
-                bell: None,
                 cursor_shape: None,
                 cursor_blink: None,
                 env: None,
@@ -1500,13 +1507,89 @@ mod tests {
             config.terminal,
             Some(TerminalConfig {
                 ligatures: Some(false),
+                integrated_glyphs: None,
+                color_emoji: None,
+                cursor_color: None,
                 scrollback_lines: None,
-                bell: None,
                 cursor_shape: None,
                 cursor_blink: None,
                 env: None,
                 scroll_multiplier: None,
             })
+        );
+    }
+
+    #[test]
+    fn test_terminal_integrated_glyphs_default_on_and_false_opt_out() {
+        let absent = parse_and_validate(r#"{"terminal": {}}"#);
+        assert!(
+            absent
+                .terminal
+                .as_ref()
+                .expect("terminal block present")
+                .resolved_integrated_glyphs(),
+            "absent terminal.integrated_glyphs resolves to enabled"
+        );
+
+        let disabled = parse_and_validate(r#"{"terminal": {"integrated_glyphs": false}}"#);
+        assert_eq!(
+            disabled.terminal,
+            Some(TerminalConfig {
+                ligatures: None,
+                integrated_glyphs: Some(false),
+                color_emoji: None,
+                cursor_color: None,
+                scrollback_lines: None,
+                cursor_shape: None,
+                cursor_blink: None,
+                env: None,
+                scroll_multiplier: None,
+            })
+        );
+        assert!(
+            !disabled
+                .terminal
+                .as_ref()
+                .expect("terminal block present")
+                .resolved_integrated_glyphs(),
+            "explicit false disables integrated glyphs"
+        );
+    }
+
+    #[test]
+    fn test_terminal_color_emoji_default_on_and_false_opt_out() {
+        let absent = parse_and_validate(r#"{"terminal": {}}"#);
+        assert!(
+            absent
+                .terminal
+                .as_ref()
+                .expect("terminal block present")
+                .resolved_color_emoji(),
+            "absent terminal.color_emoji resolves to enabled"
+        );
+
+        let disabled = parse_and_validate(r#"{"terminal": {"color_emoji": false}}"#);
+        assert_eq!(
+            disabled.terminal,
+            Some(TerminalConfig {
+                ligatures: None,
+                integrated_glyphs: None,
+                color_emoji: Some(false),
+                cursor_color: None,
+                scrollback_lines: None,
+                cursor_shape: None,
+                cursor_blink: None,
+                env: None,
+                scroll_multiplier: None,
+            })
+        );
+        assert!(
+            !disabled
+                .terminal
+                .as_ref()
+                .expect("terminal block present")
+                .resolved_color_emoji(),
+            "explicit false disables color emoji"
         );
     }
 
@@ -1524,8 +1607,10 @@ mod tests {
     fn test_terminal_scrollback_lines_clamps_out_of_range() {
         let tc = TerminalConfig {
             ligatures: None,
+            integrated_glyphs: None,
+            color_emoji: None,
+            cursor_color: None,
             scrollback_lines: Some(50), // below MIN_SCROLLBACK_LINES
-            bell: None,
             cursor_shape: None,
             cursor_blink: None,
             env: None,
@@ -1537,8 +1622,10 @@ mod tests {
         );
         let tc = TerminalConfig {
             ligatures: None,
-            scrollback_lines: Some(10_000_000), // way above MAX
-            bell: None,
+            integrated_glyphs: None,
+            color_emoji: None,
+            cursor_color: None,
+            scrollback_lines: Some(20_000_000), // way above MAX
             cursor_shape: None,
             cursor_blink: None,
             env: None,

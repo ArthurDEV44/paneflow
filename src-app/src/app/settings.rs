@@ -105,6 +105,11 @@ impl PaneFlowApp {
                 ws.propagate_config(&self.cached_config, cx);
             }
         }
+        if nested && matches!(key, "integrated_glyphs" | "color_emoji" | "cursor_color") {
+            for ws in &self.workspaces {
+                ws.propagate_config(&self.cached_config, cx);
+            }
+        }
         if default_shell_changed {
             self.handle_default_shell_changed(cx);
         }

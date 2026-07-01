@@ -3,7 +3,7 @@
 //! Each sub-module owns a specific visual layer. `paint()` in
 //! `terminal/element/mod.rs` orchestrates them in the fixed order:
 //!
-//! 1. `background`  - terminal background, bell flash, per-cell bg rects, block quads
+//! 1. `background`  - terminal background, per-cell bg rects, block quads
 //! 2. `selection`   - selection highlight rects
 //! 3. `overlay::search_highlights` - search match rects
 //! 4. `text`        - batched `shape_line` glyph runs

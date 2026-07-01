@@ -6,6 +6,31 @@ use std::collections::HashMap;
 /// Current on-disk schema version for [`SessionState`].
 pub const SESSION_SCHEMA_VERSION: u32 = 1;
 
+/// Apple system blue, used by built-in themes as the default terminal cursor.
+pub const APPLE_SYSTEM_BLUE_HEX: &str = "#007AFF";
+
+/// Normalize a user-provided RGB hex color to `#RRGGBB`.
+pub fn normalize_hex_color(raw: &str) -> Option<String> {
+    let hex = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
+    let expanded = match hex.len() {
+        3 => {
+            let mut out = String::with_capacity(6);
+            for ch in hex.chars() {
+                out.push(ch);
+                out.push(ch);
+            }
+            out
+        }
+        6 => hex.to_string(),
+        _ => return None,
+    };
+    if expanded.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(format!("#{}", expanded.to_ascii_uppercase()))
+    } else {
+        None
+    }
+}
+
 /// Top-level PaneFlow configuration.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -30,8 +55,10 @@ pub struct PaneFlowConfig {
     /// Windows-only: when enabled, sidebars/title bar use transparent chrome so
     /// the active native backdrop can show through around the terminal.
     pub windows_chrome_material: Option<bool>,
-    /// Terminal line height multiplier (default: 1.35, valid range: 1.0-2.5).
+    /// Terminal line height multiplier (default: 1.2, valid range: 1.0-2.5).
     pub line_height: Option<f32>,
+    /// Terminal cell width multiplier (default: 0.6, valid range: 0.3-2.0).
+    pub cell_width: Option<f32>,
     /// Terminal font family (default: JetBrainsMono NFM when installed, else bundled Lilex).
     pub font_family: Option<String>,
     /// Ordered fallback font families, consulted in order for glyphs the
@@ -42,8 +69,10 @@ pub struct PaneFlowConfig {
     /// `terminal.font_fallbacks`. Hot-reloaded via the 500 ms font cache, so a
     /// config edit takes effect on the next new terminal without a restart.
     pub font_fallbacks: Option<Vec<String>>,
-    /// Terminal font size in pixels (default: 13.0, valid range: 8.0-32.0).
+    /// Terminal font size in points (default: 13.0, valid range: 8.0-32.0).
     pub font_size: Option<f32>,
+    /// Terminal font weight (default: "normal").
+    pub font_weight: Option<String>,
     /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
     /// Set to false for future macOS where Option produces Unicode characters.
     pub option_as_meta: Option<bool>,
@@ -221,9 +250,7 @@ pub struct PaneFlowConfig {
     /// resolves to `None` under both the outer and inner Option layers.
     /// No event is ever sent unless `enabled == Some(true)`.
     pub telemetry: Option<TelemetryConfig>,
-    /// Terminal-scoped settings block. Currently exposes `ligatures`
-    /// (US-008); future renderer toggles will land here without schema
-    /// churn at the top level.
+    /// Terminal-scoped settings block for renderer and PTY behavior.
     pub terminal: Option<TerminalConfig>,
     /// Agents-view-scoped settings block (US-103 + future Phase B-E
     /// stories of `tasks/prd-agent-ui-refactor-2026-Q3.md`). Lives in
@@ -444,40 +471,14 @@ pub struct ToolPermissionsEntry {
     pub always_deny: Vec<String>,
 }
 
-/// US-005: how the terminal surfaces a BEL (`\a`) byte. Default `Visual`
-/// preserves the historical flash-only behavior.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TerminalBellMode {
-    /// 200 ms background flash only (historical default).
-    #[default]
-    Visual,
-    /// Ring the OS system bell only (no flash).
-    Audible,
-    /// Both the visual flash and the OS system bell.
-    Both,
-    /// No bell feedback at all.
-    Off,
-}
-
-impl TerminalBellMode {
-    /// Whether this mode rings the OS system bell.
-    pub fn is_audible(self) -> bool {
-        matches!(self, Self::Audible | Self::Both)
-    }
-
-    /// Whether this mode shows the 200 ms visual flash.
-    pub fn is_visual(self) -> bool {
-        matches!(self, Self::Visual | Self::Both)
-    }
-}
-
 /// US-007: configurable default cursor shape, applied as the fallback before
 /// any app-driven DECSCUSR escape. Mapped to the renderer's cursor shapes in
 /// the app layer (this crate stays free of the terminal backend).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CursorShapeConfig {
+    /// Vintage console cursor: a thicker bottom block.
+    Vintage,
     /// Solid block `█` (historical default).
     #[default]
     Block,
@@ -485,6 +486,8 @@ pub enum CursorShapeConfig {
     Beam,
     /// Underline `_`.
     Underline,
+    /// Double underline `‿`.
+    DoubleUnderline,
     /// Hollow box `▯`.
     Hollow,
 }
@@ -506,33 +509,11 @@ pub enum CursorBlinkConfig {
 // Manual `Deserialize` for the terminal enums. A derived `Deserialize` hard-
 // errors on an unrecognised variant; that error propagates up to
 // `parse_and_validate` (loader.rs), which discards the ENTIRE user config and
-// returns defaults. A single typo (`"bell": "loud"`) would silently wipe the
-// theme, shell, shortcuts, and agent settings. Instead fall back to the variant
-// default with a logged warning, mirroring `ThinkingDisplayMode`. `Serialize`
-// stays derived (snake_case), so round-tripping a valid value is unchanged.
-impl<'de> Deserialize<'de> for TerminalBellMode {
-    fn deserialize<D>(d: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let raw = String::deserialize(d)?;
-        Ok(match raw.as_str() {
-            "visual" => Self::Visual,
-            "audible" => Self::Audible,
-            "both" => Self::Both,
-            "off" => Self::Off,
-            other => {
-                tracing::warn!(
-                    target: "paneflow_config::terminal",
-                    value = other,
-                    "terminal.bell value not recognized, defaulting to visual",
-                );
-                Self::Visual
-            }
-        })
-    }
-}
-
+// returns defaults. A typo (`"cursor_shape": "squiggle"`) would silently wipe
+// the theme, shell, shortcuts, and agent settings. Instead fall back to the
+// variant default with a logged warning, mirroring `ThinkingDisplayMode`.
+// `Serialize` stays derived (snake_case), so round-tripping a valid value is
+// unchanged.
 impl<'de> Deserialize<'de> for CursorShapeConfig {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
     where
@@ -540,10 +521,15 @@ impl<'de> Deserialize<'de> for CursorShapeConfig {
     {
         let raw = String::deserialize(d)?;
         Ok(match raw.as_str() {
+            "vintage" => Self::Vintage,
             "block" => Self::Block,
-            "beam" => Self::Beam,
-            "underline" => Self::Underline,
-            "hollow" => Self::Hollow,
+            "filled_box" | "filledBox" => Self::Block,
+            "beam" | "bar" => Self::Beam,
+            "underline" | "underscore" => Self::Underline,
+            "double_underline" | "double_underscore" | "doubleUnderline" | "doubleUnderscore" => {
+                Self::DoubleUnderline
+            }
+            "hollow" | "empty_box" | "emptyBox" => Self::Hollow,
             other => {
                 tracing::warn!(
                     target: "paneflow_config::terminal",
@@ -580,8 +566,9 @@ impl<'de> Deserialize<'de> for CursorBlinkConfig {
 
 /// Memory budget profile for a terminal surface.
 ///
-/// Normal terminals keep the historical scrollback default. Agent, Review and
-/// Cached is reserved for fresh cold surfaces; live cached PTYs are not
+/// Normal and Agent terminals keep the standard interactive scrollback default so
+/// long-lived CLI transcripts retain commands, diffs and tool output. Review
+/// and Cached remain reserved for fresh cold surfaces; live cached PTYs are not
 /// rebuilt just to shrink history because dropping them would kill processes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TerminalSurfaceProfile {
@@ -615,18 +602,25 @@ pub struct TerminalConfig {
     /// `Some(true)`. `None` and `Some(false)` both keep the historical
     /// behavior of disabling ligatures via GPUI's `FontFeatures`.
     pub ligatures: Option<bool>,
-    /// Maximum scrollback history in lines (Zed parity:
-    /// `max_scroll_history_lines`). `None` resolves to
+    /// Draw built-in block-element glyphs as filled quads instead of using the
+    /// font glyph. `None` resolves to enabled, matching Paneflow's historical
+    /// renderer behavior.
+    pub integrated_glyphs: Option<bool>,
+    /// Render emoji with the platform color-emoji path. `None` resolves to
+    /// enabled, matching Windows Terminal and GPUI's default behavior.
+    pub color_emoji: Option<bool>,
+    /// Override the terminal cursor color with a `#RRGGBB` value. `None` keeps
+    /// the active color scheme cursor color.
+    pub cursor_color: Option<String>,
+    /// Maximum scrollback history in lines (`max_scroll_history_lines`).
+    /// `None` resolves to
     /// [`TerminalConfig::DEFAULT_SCROLLBACK_LINES`]; values are clamped
-    /// to `[100, 100_000]` to keep a runaway log from eating RAM.
+    /// to `[100, 100_000]`. Alacritty exposes a line-count limit rather
+    /// than Ghostty's byte-count `scrollback-limit`, so the default stays
+    /// conservative while advanced users can opt into a larger line budget.
     /// Read once at PTY spawn time; changing this value takes effect on
     /// the next new terminal.
     pub scrollback_lines: Option<usize>,
-    /// US-005: how a BEL (`\a`) is surfaced - `visual` flash, `audible` system
-    /// bell, `both`, or `off`. `None` resolves to `Visual` (historical
-    /// default). Read once at terminal construction; takes effect on the next
-    /// new terminal.
-    pub bell: Option<TerminalBellMode>,
     /// US-007: default cursor shape before any app-driven DECSCUSR escape.
     /// `None` resolves to `Block`. Read once at terminal construction.
     pub cursor_shape: Option<CursorShapeConfig>,
@@ -653,17 +647,18 @@ pub struct TerminalConfig {
 }
 
 impl TerminalConfig {
-    /// Default scrollback length matching Zed's `DEFAULT_SCROLL_HISTORY_LINES`.
+    /// Default scrollback length for interactive CLI sessions.
     pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
     /// Agent terminal profile target. Applied as a cap over the user setting.
-    pub const AGENT_SCROLLBACK_LINES: usize = 4_000;
+    pub const AGENT_SCROLLBACK_LINES: usize = 10_000;
     /// Review terminal profile target. Applied as a cap over the user setting.
     pub const REVIEW_SCROLLBACK_LINES: usize = 2_000;
     /// Cold cached terminal profile target for fresh cached surfaces.
     pub const CACHED_SCROLLBACK_LINES: usize = 1_000;
     /// Lower bound: below 100 lines the buffer is too small to be useful.
     pub const MIN_SCROLLBACK_LINES: usize = 100;
-    /// Upper bound: 100K lines × ~80 cols × cell ≈ 1 GiB ceiling.
+    /// Upper bound: high enough for long-lived agent terminals while keeping
+    /// runaway output within a bounded memory budget.
     pub const MAX_SCROLLBACK_LINES: usize = 100_000;
 
     /// Default scroll multiplier: no amplification.
@@ -672,6 +667,18 @@ impl TerminalConfig {
     pub const MIN_SCROLL_MULTIPLIER: f32 = 0.1;
     /// Upper bound: beyond 10× a single tick jumps multiple screens.
     pub const MAX_SCROLL_MULTIPLIER: f32 = 10.0;
+
+    pub fn resolved_integrated_glyphs(&self) -> bool {
+        self.integrated_glyphs.unwrap_or(true)
+    }
+
+    pub fn resolved_color_emoji(&self) -> bool {
+        self.color_emoji.unwrap_or(true)
+    }
+
+    pub fn normalized_cursor_color(&self) -> Option<String> {
+        self.cursor_color.as_deref().and_then(normalize_hex_color)
+    }
 
     /// Resolve `scroll_multiplier` to a usable value: default `1.0`, clamped to
     /// `[MIN_SCROLL_MULTIPLIER, MAX_SCROLL_MULTIPLIER]`. Emits a `warn!` when the
@@ -1393,7 +1400,7 @@ pub struct SurfaceDefinition {
     /// unknown or malformed values are dropped silently.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// EP-006 US-019: per-pane font-size override in pixels. `None` =
+    /// EP-006 US-019: per-pane font-size override in points. `None` =
     /// follow the global config. Validated at restore ingress (NaN/inf
     /// dropped, finite values clamped to [8.0, 32.0]) - never fed raw to
     /// the cell geometry.
@@ -1448,10 +1455,12 @@ mod tests {
             window_backdrop: Some("auto".to_string()),
             windows_terminal_material: Some(true),
             windows_chrome_material: Some(true),
-            line_height: Some(1.35),
+            line_height: Some(1.2),
+            cell_width: Some(0.6),
             font_family: Some("Lilex".to_string()),
             font_fallbacks: Some(vec!["FiraCode Nerd Font Mono".to_string()]),
             font_size: Some(13.0),
+            font_weight: Some("normal".to_string()),
             option_as_meta: Some(true),
             shell_integration: Some(true),
             agent_stall_detection: Some(true),
@@ -1485,8 +1494,10 @@ mod tests {
             }),
             terminal: Some(TerminalConfig {
                 ligatures: Some(false),
+                integrated_glyphs: Some(true),
+                color_emoji: Some(true),
+                cursor_color: Some(APPLE_SYSTEM_BLUE_HEX.to_string()),
                 scrollback_lines: Some(10_000),
-                bell: Some(TerminalBellMode::Visual),
                 cursor_shape: Some(CursorShapeConfig::Block),
                 cursor_blink: Some(CursorBlinkConfig::TerminalControlled),
                 env: Some(HashMap::new()),
@@ -1547,7 +1558,7 @@ mod tests {
         );
         assert_eq!(
             cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Agent),
-            4_000
+            10_000
         );
         assert_eq!(
             cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Review),
@@ -1568,7 +1579,7 @@ mod tests {
         );
         assert_eq!(
             cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Agent),
-            4_000
+            10_000
         );
         assert_eq!(
             cfg.resolved_scrollback_lines_for_profile(TerminalSurfaceProfile::Review),
@@ -1789,33 +1800,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_bell_mode_semantics_and_serde() {
-        // US-005: feedback predicates per mode.
-        assert!(TerminalBellMode::Audible.is_audible() && !TerminalBellMode::Audible.is_visual());
-        assert!(TerminalBellMode::Both.is_audible() && TerminalBellMode::Both.is_visual());
-        assert!(TerminalBellMode::Visual.is_visual() && !TerminalBellMode::Visual.is_audible());
-        assert!(!TerminalBellMode::Off.is_audible() && !TerminalBellMode::Off.is_visual());
-
-        // Default preserves the historical flash-only behavior.
-        assert_eq!(TerminalBellMode::default(), TerminalBellMode::Visual);
-
-        // snake_case config values round-trip.
-        let cfg: TerminalConfig = serde_json::from_str(r#"{"bell": "audible"}"#).unwrap();
-        assert_eq!(cfg.bell, Some(TerminalBellMode::Audible));
-        let cfg: TerminalConfig = serde_json::from_str(r#"{"bell": "both"}"#).unwrap();
-        assert_eq!(cfg.bell, Some(TerminalBellMode::Both));
-        let cfg: TerminalConfig = serde_json::from_str(r#"{"bell": "off"}"#).unwrap();
-        assert_eq!(cfg.bell, Some(TerminalBellMode::Off));
-
-        // Missing field → None → resolves to Visual (historical default).
-        // (A typo'd value errors at parse time and is absorbed by the loader's
-        // whole-config default fallback in `loader::load_config`, never a panic.)
-        let cfg: TerminalConfig = serde_json::from_str(r#"{}"#).unwrap();
-        assert!(cfg.bell.is_none());
-        assert_eq!(cfg.bell.unwrap_or_default(), TerminalBellMode::Visual);
-    }
-
-    #[test]
     fn cursor_shape_and_blink_config_serde() {
         // US-007 / US-008: snake_case config values + historical defaults.
         assert_eq!(CursorShapeConfig::default(), CursorShapeConfig::Block);
@@ -1832,6 +1816,17 @@ mod tests {
         let cfg: TerminalConfig = serde_json::from_str(r#"{"cursor_shape": "hollow"}"#).unwrap();
         assert_eq!(cfg.cursor_shape, Some(CursorShapeConfig::Hollow));
 
+        let cfg: TerminalConfig = serde_json::from_str(r#"{"cursor_shape": "vintage"}"#).unwrap();
+        assert_eq!(cfg.cursor_shape, Some(CursorShapeConfig::Vintage));
+
+        let cfg: TerminalConfig =
+            serde_json::from_str(r#"{"cursor_shape": "double_underline"}"#).unwrap();
+        assert_eq!(cfg.cursor_shape, Some(CursorShapeConfig::DoubleUnderline));
+
+        let cfg: TerminalConfig =
+            serde_json::from_str(r#"{"cursor_shape": "filled_box"}"#).unwrap();
+        assert_eq!(cfg.cursor_shape, Some(CursorShapeConfig::Block));
+
         // Missing → None → resolves to historical defaults.
         let cfg: TerminalConfig = serde_json::from_str(r#"{}"#).unwrap();
         assert!(cfg.cursor_shape.is_none() && cfg.cursor_blink.is_none());
@@ -1843,5 +1838,22 @@ mod tests {
             cfg.cursor_blink.unwrap_or_default(),
             CursorBlinkConfig::TerminalControlled
         );
+    }
+
+    #[test]
+    fn cursor_color_hex_normalizes_and_defaults_to_theme_when_absent() {
+        let cfg: TerminalConfig = serde_json::from_str(r##"{"cursor_color": "#0a84ff"}"##).unwrap();
+        assert_eq!(cfg.normalized_cursor_color().as_deref(), Some("#0A84FF"));
+
+        let cfg: TerminalConfig = serde_json::from_str(r#"{"cursor_color": "abc"}"#).unwrap();
+        assert_eq!(cfg.normalized_cursor_color().as_deref(), Some("#AABBCC"));
+
+        let cfg: TerminalConfig =
+            serde_json::from_str(r#"{"cursor_color": "not-a-color"}"#).unwrap();
+        assert!(cfg.normalized_cursor_color().is_none());
+
+        let cfg: TerminalConfig = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(cfg.cursor_color.is_none());
+        assert!(cfg.normalized_cursor_color().is_none());
     }
 }

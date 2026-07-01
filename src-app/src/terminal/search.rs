@@ -36,7 +36,7 @@ impl TerminalView {
 
     // --- Per-pane font zoom (EP-006 US-019) ---
 
-    /// ±1 px per-pane font zoom, clamped to [8.0, 32.0]; at a bound the
+    /// ±1 pt per-pane font zoom, clamped to [8.0, 32.0]; at a bound the
     /// step is a silent no-op (PRD AC - no toast). Writing the override is
     /// the whole job: the next frame re-measures the cell with it,
     /// recomputes cols/rows from the pane bounds, and `resize_if_needed`

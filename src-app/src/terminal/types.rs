@@ -96,14 +96,16 @@ impl From<Point> for AlacPoint {
 // Neutral cursor shape
 // ---------------------------------------------------------------------------
 
-/// Cursor rendering shape, mirror of `vte::ansi::CursorShape` - the five shapes
-/// Paneflow paints. The `From` conversion is exhaustive with no wildcard arm, so
-/// a future upstream variant is caught at compile time (a human maps it), never
-/// silently mishandled or panicked at runtime.
+/// Cursor rendering shape. Native variants mirror `vte::ansi::CursorShape`;
+/// Paneflow adds Windows Terminal-style `Vintage` and `DoubleUnderline` for
+/// user-configured defaults. The `From` conversion is exhaustive with no
+/// wildcard arm, so a future upstream variant is caught at compile time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorShape {
+    Vintage,
     Block,
     Underline,
+    DoubleUnderline,
     Beam,
     HollowBlock,
     Hidden,

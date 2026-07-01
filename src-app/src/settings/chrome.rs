@@ -105,7 +105,7 @@ const NAV_GROUPS: &[NavGroup] = &[
                 section: SettingsSection::Terminal,
                 label: "Terminal",
                 icon: "icons/terminal.svg",
-                keywords: &["cursor", "bell", "font", "font family", "font size"],
+                keywords: &["cursor", "font", "font family", "font size"],
             },
             NavItem {
                 section: SettingsSection::Workspaces,

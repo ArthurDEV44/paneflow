@@ -7,8 +7,8 @@ use gpui::{
 
 use crate::PaneFlowApp;
 use crate::settings::components::{
-    SETTINGS_CONTROL_CORNER_RADIUS, hairline, secondary_button, section_header_with_action,
-    setting_card, setting_text,
+    SETTINGS_CONTROL_CORNER_RADIUS, secondary_button, section_header_with_action, setting_card,
+    setting_text,
 };
 
 impl PaneFlowApp {
@@ -107,40 +107,7 @@ impl PaneFlowApp {
 
         #[cfg(target_os = "windows")]
         let content = {
-            let terminal_material = self.cached_config.windows_terminal_material_enabled();
             let chrome_material = self.cached_config.cockpit_chrome_material_enabled();
-            let terminal_material_row = div()
-                .id("row-windows-terminal-material")
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap(px(16.))
-                .px(px(12.))
-                .py(px(10.))
-                .child(setting_text(
-                    ui,
-                    "Terminal material",
-                    "Let Mica or blur show through the terminal and tab bar.",
-                ))
-                .child(
-                    div()
-                        .id("windows-terminal-material-toggle")
-                        .flex_shrink_0()
-                        .cursor(CursorStyle::PointingHand)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                            this.persist_setting(
-                                false,
-                                "windows_terminal_material",
-                                serde_json::Value::Bool(!terminal_material),
-                                cx,
-                            );
-                        }))
-                        .child(crate::settings::components::toggle_pill(
-                            terminal_material,
-                            ui,
-                        )),
-                );
             let chrome_material_row = div()
                 .id("row-windows-chrome-material")
                 .flex()
@@ -174,10 +141,7 @@ impl PaneFlowApp {
                         )),
                 );
 
-            let windows_card = setting_card(ui)
-                .child(terminal_material_row)
-                .child(hairline(ui))
-                .child(chrome_material_row);
+            let windows_card = setting_card(ui).child(chrome_material_row);
 
             content
                 .child(div().h(px(18.)).flex_none())

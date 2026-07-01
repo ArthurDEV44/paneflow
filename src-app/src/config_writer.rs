@@ -442,17 +442,17 @@ mod tests {
 
     #[test]
     fn preserves_other_terminal_keys() {
-        let mut j = json!({"terminal": {"bell": "audible"}});
-        apply_terminal_field(&mut j, "cursor_shape", json!("beam"));
-        assert_eq!(j["terminal"]["bell"], json!("audible"));
+        let mut j = json!({"terminal": {"cursor_shape": "beam"}});
+        apply_terminal_field(&mut j, "ligatures", json!(true));
         assert_eq!(j["terminal"]["cursor_shape"], json!("beam"));
+        assert_eq!(j["terminal"]["ligatures"], json!(true));
     }
 
     #[test]
     fn null_removes_key_but_keeps_block() {
-        let mut j = json!({"terminal": {"bell": "audible", "ligatures": true}});
-        apply_terminal_field(&mut j, "bell", Value::Null);
-        assert!(j["terminal"].get("bell").is_none());
+        let mut j = json!({"terminal": {"cursor_shape": "beam", "ligatures": true}});
+        apply_terminal_field(&mut j, "cursor_shape", Value::Null);
+        assert!(j["terminal"].get("cursor_shape").is_none());
         assert_eq!(j["terminal"]["ligatures"], json!(true));
         assert!(j["terminal"].is_object());
     }
@@ -460,8 +460,8 @@ mod tests {
     #[test]
     fn replaces_non_object_terminal_value() {
         let mut j = json!({"terminal": "garbage"});
-        apply_terminal_field(&mut j, "bell", json!("off"));
-        assert_eq!(j["terminal"]["bell"], json!("off"));
+        apply_terminal_field(&mut j, "cursor_shape", json!("block"));
+        assert_eq!(j["terminal"]["cursor_shape"], json!("block"));
     }
 
     #[test]

@@ -15,7 +15,7 @@ pub fn paneflow_light() -> TerminalTheme {
         bright_foreground: h(0x25262b),
         dim_foreground: h(0x777984),
         ansi_background: h(0xffffff),
-        cursor: h(0x4c6fff),
+        cursor: h(0x007aff),
         selection: ha(0x4c6fff, 0.20),
         // Placeholder - replaced with the APCA-validated value by
         // `apply_surface_overrides()` / `recompute_selection_foreground()`.
@@ -60,7 +60,7 @@ pub fn one_dark() -> TerminalTheme {
         bright_foreground: h(0xffffff),
         dim_foreground: h(0x9ca7b5),
         ansi_background: h(0x282c34),
-        cursor: h(0x57d5c4),
+        cursor: h(0x007aff),
         selection: ha(0x5aa6ff, 0.22),
         // Placeholder - replaced with the APCA-validated value by
         // `apply_surface_overrides()` / `recompute_selection_foreground()`.

@@ -43,8 +43,7 @@ hand and hot-reload the change the moment you save.
 
   ## Terminal [#terminal]
 
-  Tune how the terminal itself behaves: default cursor shape and blink,
-  how a BEL is surfaced (visual flash, OS sound, both, or off), scrollback
+  Tune how the terminal itself behaves: default cursor shape and blink, scrollback
   history per terminal (default 10,000 lines, configurable from 100 to
   100,000 via [`terminal.scrollback_lines`](/docs/configuration/schema#how-do-i-set-terminalscrollback_lines)),
   font size and line height (both hot-reload),

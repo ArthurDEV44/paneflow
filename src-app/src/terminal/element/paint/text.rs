@@ -1,6 +1,6 @@
 //! Batched-text paint pass - one `shape_line` per `BatchedTextRun`.
 
-use gpui::{App, Pixels, Point, TextAlign, TextRun, Window};
+use gpui::{App, Bounds, Pixels, Point, ShapedLine, TextAlign, TextRun, Window, point, px, size};
 
 use super::super::LayoutState;
 use super::super::geometry::CellGeometry;
@@ -66,15 +66,86 @@ pub fn paint_text_runs(
             &[text_run],
             Some(cell_width),
         );
-        let _ = shaped.paint(
-            Point { x, y },
-            line_height,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
+        let origin = Point { x, y };
+        let _ = if layout.color_emoji_enabled {
+            shaped.paint(origin, line_height, TextAlign::Left, None, window, cx)
+        } else {
+            paint_monochrome_shaped_line(&shaped, origin, line_height, run, window, cx)
+        };
     }
+}
+
+fn paint_monochrome_shaped_line(
+    shaped: &ShapedLine,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    run: &super::super::BatchedTextRun,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui::Result<()> {
+    let layout = &**shaped;
+    let line_bounds = Bounds::new(origin, size(layout.width, line_height));
+    window.paint_layer(line_bounds, |window| {
+        let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
+        let baseline_offset = point(px(0.), padding_top + layout.ascent);
+        let text_system = cx.text_system().clone();
+        let mut glyph_origin = point(origin.x, origin.y);
+        let mut previous_glyph_position = Point::default();
+        let mut first_glyph_x = origin.x;
+
+        for (run_ix, shaped_run) in layout.runs.iter().enumerate() {
+            let max_glyph_size = text_system
+                .bounding_box(shaped_run.font_id, layout.font_size)
+                .size;
+
+            for (glyph_ix, glyph) in shaped_run.glyphs.iter().enumerate() {
+                glyph_origin.x += glyph.position.x - previous_glyph_position.x;
+                if glyph_ix == 0 && run_ix == 0 {
+                    first_glyph_x = glyph_origin.x;
+                }
+                previous_glyph_position = glyph.position;
+
+                let max_glyph_bounds = Bounds {
+                    origin: glyph_origin,
+                    size: max_glyph_size,
+                };
+                let content_mask = window.content_mask();
+                if max_glyph_bounds.intersects(&content_mask.bounds) {
+                    let vertical_offset = point(px(0.0), glyph.position.y);
+                    window.paint_glyph(
+                        glyph_origin + baseline_offset + vertical_offset,
+                        shaped_run.font_id,
+                        glyph.id,
+                        layout.font_size,
+                        run.color,
+                    )?;
+                }
+            }
+        }
+
+        if let Some(underline) = run.underline.as_ref() {
+            window.paint_underline(
+                point(
+                    first_glyph_x,
+                    origin.y + baseline_offset.y + (layout.descent * 0.618),
+                ),
+                layout.width,
+                underline,
+            );
+        }
+        if let Some(strikethrough) = run.strikethrough.as_ref() {
+            window.paint_strikethrough(
+                point(
+                    first_glyph_x,
+                    origin.y + (((layout.ascent * 0.5) + baseline_offset.y) * 0.5),
+                ),
+                layout.width,
+                strikethrough,
+            );
+        }
+
+        Ok(())
+    })
 }
 
 // Gated on `debug_assertions` because the `pixel_probe` module - and its

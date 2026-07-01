@@ -14,8 +14,8 @@ use gpui::{
 use crate::terminal::PtyNotifier;
 use crate::terminal::types::{
     Cell, CellFlags, Color, Content, CopyModeCursorState, CursorShape, Modes, NamedColor,
-    Point as GridPoint, SearchHighlight, SelectionRange, SharedTerm, content_from_term_visible,
-    modes_of, resize_if_needed,
+    Point as GridPoint, RenderableCursor, SearchHighlight, SelectionRange, SharedTerm,
+    content_from_term_visible, modes_of, resize_if_needed,
 };
 
 pub(super) mod color;
@@ -27,7 +27,9 @@ mod paint;
 pub(super) mod pixel_probe;
 
 use color::{convert_color, rgb_to_hsla};
-pub(crate) use font::DEFAULT_FONT_SIZE;
+pub(crate) use font::{
+    DEFAULT_CELL_WIDTH, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, normalize_font_weight_key,
+};
 pub use font::{
     MAX_FONT_SIZE, MIN_FONT_SIZE, global_font_size, measure_cell, resolve_font_family,
     sanitize_font_override,
@@ -383,6 +385,48 @@ fn selection_marker_cursor(
     })
 }
 
+fn cursor_from_content(
+    cursor: RenderableCursor,
+    cursor_visible: bool,
+    focused: bool,
+    cursor_color: Hsla,
+    default_cursor_shape: CursorShape,
+) -> Option<CursorInfo> {
+    if matches!(cursor.shape, CursorShape::Hidden) || !cursor_visible || !focused {
+        return None;
+    }
+
+    let shape = match (default_cursor_shape, cursor.shape) {
+        (CursorShape::Vintage, CursorShape::Block) => CursorShape::Vintage,
+        (CursorShape::DoubleUnderline, CursorShape::Underline) => CursorShape::DoubleUnderline,
+        _ => cursor.shape,
+    };
+
+    let text = if matches!(shape, CursorShape::Block) && cursor.text != ' ' && cursor.text != '\0' {
+        Some(cursor.text)
+    } else {
+        None
+    };
+
+    Some(CursorInfo {
+        line: cursor.point.line.0,
+        col: cursor.point.column.0,
+        shape,
+        color: cursor_color,
+        wide: cursor.wide,
+        text,
+        bold: cursor.bold,
+        italic: cursor.italic,
+    })
+}
+
+fn focused_copy_mode_cursor(
+    copy_mode_cursor: Option<&CopyModeCursorState>,
+    focused: bool,
+) -> Option<&CopyModeCursorState> {
+    focused.then_some(copy_mode_cursor).flatten()
+}
+
 /// Window-free inputs to [`layout_from_snapshot`]. Everything the layout pass
 /// needs that would otherwise be read from `&mut Window` / `&App` / the `Term`
 /// lock / `&self`, captured as plain values. `build_layout` fills this from a
@@ -415,6 +459,8 @@ pub(crate) struct LayoutInputs<'a> {
     pub exited: Option<i32>,
     pub exit_signal: Option<String>,
     pub terminal_material_active: bool,
+    pub integrated_glyphs_enabled: bool,
+    pub color_emoji_enabled: bool,
 }
 
 pub struct LayoutState {
@@ -445,6 +491,8 @@ pub struct LayoutState {
     link_text_color: Hsla,
     /// Cursor position bounds for IME popup positioning (pixel coordinates).
     ime_cursor_bounds: Option<Bounds<Pixels>>,
+    /// Whether emoji glyphs should use GPUI's platform color-emoji path.
+    color_emoji_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -480,8 +528,6 @@ pub struct TerminalElement {
     search_highlights: Vec<SearchHighlight>,
     /// Copy mode cursor position (grid coordinates), if copy mode is active
     copy_mode_cursor: Option<CopyModeCursorState>,
-    /// Whether a bell flash is currently active (200ms visual pulse).
-    bell_flash_active: bool,
     /// Ctrl+hovered hyperlink range for underline rendering (line, start_col, end_col).
     hovered_link_range: Option<(i32, usize, usize)>,
     /// Full URI of the Ctrl+hovered link (for tooltip display).
@@ -492,6 +538,10 @@ pub struct TerminalElement {
     focus_handle: gpui::FocusHandle,
     /// Terminal view entity for IME callbacks.
     terminal_view: gpui::Entity<crate::terminal::TerminalView>,
+    /// User-configured fallback cursor shape before applications override it.
+    default_cursor_shape: CursorShape,
+    /// User-configured cursor color override; falls back to theme cursor.
+    cursor_color_override: Option<Hsla>,
     /// Gate for clearing pre-resize shell startup content on first render.
     needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
     /// US-015: shared sink for the painted scrollbar geometry. `paint()` writes
@@ -506,6 +556,10 @@ pub struct TerminalElement {
     /// When active, default terminal backgrounds are painted transparent so
     /// the parent surface/window material can show through.
     terminal_material_active: bool,
+    /// When enabled, block-element glyphs are rendered as built-in quads.
+    integrated_glyphs_enabled: bool,
+    /// When enabled, emoji glyphs are rendered through GPUI's color path.
+    color_emoji_enabled: bool,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
@@ -523,7 +577,6 @@ impl TerminalElement {
         element_origin: Arc<Mutex<Point<Pixels>>>,
         search_highlights: Vec<SearchHighlight>,
         copy_mode_cursor: Option<CopyModeCursorState>,
-        bell_flash_active: bool,
         hovered_link_range: Option<(i32, usize, usize)>,
         hovered_link_uri: Option<String>,
         ime_marked_text: String,
@@ -532,7 +585,11 @@ impl TerminalElement {
         needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
         scrollbar_metrics: Arc<Mutex<Option<ScrollbarMetrics>>>,
         search_rail_lines: Vec<usize>,
+        default_cursor_shape: CursorShape,
+        cursor_color_override: Option<Hsla>,
         terminal_material_active: bool,
+        integrated_glyphs_enabled: bool,
+        color_emoji_enabled: bool,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -545,16 +602,19 @@ impl TerminalElement {
             element_origin,
             search_highlights,
             copy_mode_cursor,
-            bell_flash_active,
             hovered_link_range,
             hovered_link_uri,
             ime_marked_text,
             focus_handle,
             terminal_view,
+            default_cursor_shape,
             needs_initial_clear,
             scrollbar_metrics,
             search_rail_lines,
             terminal_material_active,
+            cursor_color_override,
+            integrated_glyphs_enabled,
+            color_emoji_enabled,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -613,7 +673,7 @@ impl TerminalElement {
         // the snapshot reflects the resized grid), minimizing FairMutex hold
         // time. The renderer never touches alacritty types - the lock-and-read
         // is confined to the `types` seam (`content_from_term`, EP-003).
-        let cursor_color = theme.cursor;
+        let cursor_color = self.cursor_color_override.unwrap_or(theme.cursor);
 
         let content: Content = {
             let mut term = self.term.lock();
@@ -644,36 +704,15 @@ impl TerminalElement {
         let history_size = content.history_size;
         let selection_range = content.selection;
 
-        // Apply the element's focus/visibility overrides + theme cursor color to
-        // the raw grid cursor carried by the snapshot. Mirrors the prior
-        // under-lock cursor logic exactly (zero golden-frame delta).
-        let cursor_snapshot: Option<CursorInfo> =
-            if matches!(content.cursor.shape, CursorShape::Hidden) || !self.cursor_visible {
-                None
-            } else {
-                let rc = content.cursor;
-                let shape = if !self.focused {
-                    CursorShape::HollowBlock
-                } else {
-                    rc.shape
-                };
-                let text =
-                    if matches!(shape, CursorShape::Block) && rc.text != ' ' && rc.text != '\0' {
-                        Some(rc.text)
-                    } else {
-                        None
-                    };
-                Some(CursorInfo {
-                    line: rc.point.line.0,
-                    col: rc.point.column.0,
-                    shape,
-                    color: cursor_color,
-                    wide: rc.wide,
-                    text,
-                    bold: rc.bold,
-                    italic: rc.italic,
-                })
-            };
+        let cursor_snapshot = cursor_from_content(
+            content.cursor,
+            self.cursor_visible,
+            self.focused,
+            cursor_color,
+            self.default_cursor_shape,
+        );
+        let copy_mode_cursor =
+            focused_copy_mode_cursor(self.copy_mode_cursor.as_ref(), self.focused);
 
         let cells = content.cells;
 
@@ -681,7 +720,7 @@ impl TerminalElement {
             cells,
             cursor: cursor_snapshot,
             selection_range,
-            copy_mode_cursor: self.copy_mode_cursor.as_ref(),
+            copy_mode_cursor,
             search_highlights: &self.search_highlights,
             display_offset,
             history_size,
@@ -695,6 +734,8 @@ impl TerminalElement {
             exited: self.exited,
             exit_signal: self.exit_signal.clone(),
             terminal_material_active: self.terminal_material_active,
+            integrated_glyphs_enabled: self.integrated_glyphs_enabled,
+            color_emoji_enabled: self.color_emoji_enabled,
         })
     }
 }
@@ -727,6 +768,8 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         exited,
         exit_signal,
         terminal_material_active,
+        integrated_glyphs_enabled,
+        color_emoji_enabled,
     } = inputs;
 
     let background_color = if terminal_material_active {
@@ -943,7 +986,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         // per cell - both share the cell's outer boundary array so adjacent
         // cells stay seamless regardless of how many sub-rects they each
         // produce.
-        if let Some(coverages) = block_char_coverages(c) {
+        if integrated_glyphs_enabled && let Some(coverages) = block_char_coverages(c) {
             batch.flush();
             for &coverage in coverages {
                 block_quads.push(BlockQuad {
@@ -1181,6 +1224,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         desired_rows,
         link_text_color: theme.link_text,
         ime_cursor_bounds,
+        color_emoji_enabled,
     }
 }
 
@@ -1431,8 +1475,8 @@ impl Element for TerminalElement {
 
         // Clip to element bounds
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            // 1. Terminal background + bell-flash overlay
-            paint::background::paint_base_fill(&layout, bounds, self.bell_flash_active, window);
+            // 1. Terminal background fill
+            paint::background::paint_base_fill(&layout, bounds, window);
 
             // 2. Per-cell background rects with Ghostty-style edge extension.
             paint::background::paint_cell_backgrounds(
@@ -1969,7 +2013,7 @@ mod golden_frame_tests {
     //! fixture asserts against a committed golden under `golden/` (AC-2);
     //! regenerate with `PANEFLOW_BLESS_GOLDEN=1` (AC-3).
     use super::*;
-    use crate::terminal::types::Rgb;
+    use crate::terminal::types::{RenderableCursor, Rgb};
 
     const COLS: usize = 12;
     const ROWS: usize = 4;
@@ -2043,12 +2087,32 @@ mod golden_frame_tests {
         }
     }
 
+    fn renderable_cursor_at(col: usize, shape: CursorShape, text: char) -> RenderableCursor {
+        RenderableCursor {
+            point: GridPoint::new(0, col),
+            shape,
+            wide: false,
+            text,
+            bold: false,
+            italic: false,
+        }
+    }
+
     /// Build a `LayoutState` over the fixed test grid. Each call uses a fixed
     /// theme, font, and dimensions so the output is fully deterministic.
     fn run(
         cells: Vec<Cell>,
         cursor: Option<CursorInfo>,
         selection: Option<SelectionRange>,
+    ) -> LayoutState {
+        run_with_integrated_glyphs(cells, cursor, selection, true)
+    }
+
+    fn run_with_integrated_glyphs(
+        cells: Vec<Cell>,
+        cursor: Option<CursorInfo>,
+        selection: Option<SelectionRange>,
+        integrated_glyphs_enabled: bool,
     ) -> LayoutState {
         let theme = crate::theme::one_dark();
         layout_from_snapshot(LayoutInputs {
@@ -2069,6 +2133,8 @@ mod golden_frame_tests {
             exited: None,
             exit_signal: None,
             terminal_material_active: false,
+            integrated_glyphs_enabled,
+            color_emoji_enabled: true,
         })
     }
 
@@ -2311,6 +2377,26 @@ mod golden_frame_tests {
     }
 
     #[test]
+    fn block_chars_use_font_glyphs_when_integrated_glyphs_are_disabled() {
+        let blocks: Vec<Cell> = "█▀▄▌▙"
+            .chars()
+            .enumerate()
+            .map(|(i, c)| cell(0, i, c, default_fg(), default_bg(), CellFlags::empty()))
+            .collect();
+        let state = run_with_integrated_glyphs(blocks, None, None, false);
+
+        assert!(
+            state.block_quads.is_empty(),
+            "integrated glyphs off must not emit block quads"
+        );
+        assert_eq!(
+            state.batched_runs.len(),
+            1,
+            "block chars should fall back to one normal glyph run"
+        );
+    }
+
+    #[test]
     fn shell_cursor_is_hidden_when_scrolled_away_from_live_edge() {
         let theme = crate::theme::one_dark();
         let state = layout_from_snapshot(LayoutInputs {
@@ -2331,6 +2417,8 @@ mod golden_frame_tests {
             exited: None,
             exit_signal: None,
             terminal_material_active: false,
+            integrated_glyphs_enabled: true,
+            color_emoji_enabled: true,
         });
 
         assert!(
@@ -2340,6 +2428,62 @@ mod golden_frame_tests {
         assert!(
             state.ime_cursor_bounds.is_none(),
             "IME bounds should disappear with the hidden live cursor"
+        );
+    }
+
+    #[test]
+    fn unfocused_terminal_hides_live_cursor() {
+        let cursor = renderable_cursor_at(0, CursorShape::Block, 'a');
+
+        assert!(
+            cursor_from_content(cursor, true, true, white(), CursorShape::Block).is_some(),
+            "focused terminals should keep the live cursor"
+        );
+        assert!(
+            cursor_from_content(cursor, true, false, white(), CursorShape::Block).is_none(),
+            "unfocused terminals must not paint a hollow cursor outline"
+        );
+    }
+
+    #[test]
+    fn configured_custom_cursor_shapes_override_native_fallbacks() {
+        let block_cursor = renderable_cursor_at(0, CursorShape::Block, 'a');
+        let vintage =
+            cursor_from_content(block_cursor, true, true, white(), CursorShape::Vintage).unwrap();
+        assert_eq!(vintage.shape, CursorShape::Vintage);
+        assert!(
+            vintage.text.is_none(),
+            "vintage cursor should not use block inverse text"
+        );
+
+        let underline_cursor = renderable_cursor_at(0, CursorShape::Underline, 'a');
+        let double = cursor_from_content(
+            underline_cursor,
+            true,
+            true,
+            white(),
+            CursorShape::DoubleUnderline,
+        )
+        .unwrap();
+        assert_eq!(double.shape, CursorShape::DoubleUnderline);
+    }
+
+    #[test]
+    fn unfocused_terminal_hides_copy_mode_cursor() {
+        let copy_cursor = CopyModeCursorState {
+            grid_line: 0,
+            col: 1,
+            anchor_grid_line: Some(0),
+            anchor_col: 0,
+        };
+
+        assert!(
+            focused_copy_mode_cursor(Some(&copy_cursor), true).is_some(),
+            "focused terminals should keep copy-mode cursor markers"
+        );
+        assert!(
+            focused_copy_mode_cursor(Some(&copy_cursor), false).is_none(),
+            "unfocused terminals should not paint copy-mode cursor markers"
         );
     }
 
@@ -2427,6 +2571,8 @@ mod golden_frame_tests {
             exited: None,
             exit_signal: None,
             terminal_material_active: false,
+            integrated_glyphs_enabled: true,
+            color_emoji_enabled: true,
         });
         assert_eq!(state.batched_runs.len(), 1, "row 2 is culled");
         assert_eq!(state.batched_runs[0].text, "a");
@@ -2464,6 +2610,8 @@ mod golden_frame_tests {
             exited: None,
             exit_signal: None,
             terminal_material_active: true,
+            integrated_glyphs_enabled: true,
+            color_emoji_enabled: true,
         });
 
         assert_eq!(state.background_color.a, 0.0);
@@ -2546,6 +2694,8 @@ mod golden_frame_tests {
             exited: None,
             exit_signal: None,
             terminal_material_active: false,
+            integrated_glyphs_enabled: true,
+            color_emoji_enabled: true,
         });
 
         assert!(

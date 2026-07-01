@@ -32,8 +32,8 @@ use super::types::SharedTerm;
 use crate::limits::{MAX_CHARS, MAX_OSC52_BYTES};
 use paneflow_config::schema::{TerminalConfig, TerminalSurfaceProfile};
 
-/// Default scrollback history length, in lines. Matches Zed's
-/// `DEFAULT_SCROLL_HISTORY_LINES`. `TermConfig::default()` is `0`, which
+/// Default scrollback history length, in lines. Paneflow keeps this standard
+/// for predictable terminal memory use. `TermConfig::default()` is `0`, which
 /// disables scrollback entirely. Overridable via
 /// `terminal.scrollback_lines` in `paneflow.json` - see
 /// [`paneflow_config::TerminalConfig::resolved_scrollback_lines`].
@@ -53,18 +53,20 @@ fn resolved_scrollback_lines(profile: TerminalSurfaceProfile) -> usize {
         .resolved_scrollback_lines_for_profile(profile)
 }
 
-/// US-007: map the pure config cursor shape to the renderer's (vte) shape.
-/// Separated from the config read so it is unit-testable. `Hollow` maps to the
-/// renderer's `HollowBlock`.
+/// US-007: map the pure config cursor shape to the backend's nearest native
+/// shape. Paneflow paints `Vintage` and `DoubleUnderline` itself on top of
+/// these fallback shapes.
 fn map_cursor_shape(
     c: paneflow_config::schema::CursorShapeConfig,
 ) -> alacritty_terminal::vte::ansi::CursorShape {
     use alacritty_terminal::vte::ansi::CursorShape;
     use paneflow_config::schema::CursorShapeConfig as C;
     match c {
+        C::Vintage => CursorShape::Block,
         C::Block => CursorShape::Block,
         C::Beam => CursorShape::Beam,
         C::Underline => CursorShape::Underline,
+        C::DoubleUnderline => CursorShape::Underline,
         C::Hollow => CursorShape::HollowBlock,
     }
 }
@@ -85,6 +87,14 @@ fn resolved_cursor_style() -> alacritty_terminal::vte::ansi::CursorStyle {
         shape,
         ..CursorStyle::default()
     }
+}
+
+fn resolved_cursor_color_override() -> Option<gpui::Hsla> {
+    paneflow_config::loader::load_config()
+        .terminal
+        .and_then(|t| t.normalized_cursor_color())
+        .and_then(|hex| u32::from_str_radix(&hex[1..], 16).ok())
+        .map(|rgb| gpui::Hsla::from(gpui::rgb(rgb)))
 }
 
 // ---------------------------------------------------------------------------
@@ -285,11 +295,13 @@ pub struct TerminalState {
     /// own output (untrusted text - used only to cross-check against the
     /// scan's LISTEN attribution, never to open anything). Bounded.
     pub announced_ports: Vec<u16>,
-    /// EP-006 US-019: per-pane font-size override in pixels. `None` follows
+    /// EP-006 US-019: per-pane font-size override in points. `None` follows
     /// the global config (and live global changes); `Some` is clamped to
     /// [8.0, 32.0] at every write site (zoom actions, session ingress) and
     /// wins over the global. Persisted to `session.json`.
     pub font_size_override: Option<f32>,
+    /// Cursor color override used for OSC 12 color-query replies.
+    pub(super) cursor_color_override: Option<gpui::Hsla>,
     /// OSC 52 clipboard access mode (default: copy-only for security).
     pub osc52_mode: Osc52Mode,
     /// Deferred clipboard operations from sync() - drained in the poll loop
@@ -298,8 +310,6 @@ pub struct TerminalState {
     /// Deferred text area size request responses from sync().
     pub(super) pending_size_ops:
         Vec<std::sync::Arc<dyn Fn(AlacWindowSize) -> String + Sync + Send + 'static>>,
-    /// Bell event received - triggers visual flash in poll loop.
-    pub bell_active: bool,
     /// Whether the terminal wants the cursor to blink (from CursorBlinkingChange).
     pub cursor_blinking: bool,
     /// Set when PTY output has been processed (Wakeup event received).
@@ -1084,10 +1094,10 @@ impl TerminalState {
             port_conflicts: Vec::new(),
             announced_ports: Vec::new(),
             font_size_override: None,
+            cursor_color_override: resolved_cursor_color_override(),
             osc52_mode: Osc52Mode::Disabled,
             pending_clipboard_ops: Vec::new(),
             pending_size_ops: Vec::new(),
-            bell_active: false,
             cursor_blinking: false,
             title: String::from("Terminal"),
             dirty: true,
@@ -1288,7 +1298,7 @@ impl TerminalState {
                 } else if index == NamedColor::Background as usize {
                     Some(theme.ansi_background)
                 } else if index == NamedColor::Cursor as usize {
-                    Some(theme.cursor)
+                    Some(self.cursor_color_override.unwrap_or(theme.cursor))
                 } else if index < 256 {
                     Some(palette_color_at(index as u8, &theme))
                 } else {
@@ -1300,9 +1310,7 @@ impl TerminalState {
                     self.notifier.notify(response.into_bytes());
                 }
             }
-            AlacEvent::Bell => {
-                self.bell_active = true;
-            }
+            AlacEvent::Bell => {}
             AlacEvent::CursorBlinkingChange => {
                 let term = self.term.lock_unfair();
                 self.cursor_blinking = term.cursor_style().blinking;
@@ -1537,7 +1545,7 @@ impl TerminalState {
 
         // US-012: window to the most-recent MAX_LINES *before* the loop so the
         // lock is never held while materializing the full history (scrollback
-        // can be 10k lines - see DEFAULT_SCROLLBACK_LINES). Walk oldest→newest
+        // can be very large - see DEFAULT_SCROLLBACK_LINES). Walk oldest→newest
         // from `bottom - MAX_LINES`, clamped to the topmost line. The drain
         // below stays as a defensive trim (trailing-empty removal can leave at
         // most MAX_LINES + 1 rows).
@@ -2702,9 +2710,11 @@ mod tests {
         // `Hollow` maps to the renderer's `HollowBlock`.
         use alacritty_terminal::vte::ansi::CursorShape;
         use paneflow_config::schema::CursorShapeConfig as C;
+        assert_eq!(map_cursor_shape(C::Vintage), CursorShape::Block);
         assert_eq!(map_cursor_shape(C::Block), CursorShape::Block);
         assert_eq!(map_cursor_shape(C::Beam), CursorShape::Beam);
         assert_eq!(map_cursor_shape(C::Underline), CursorShape::Underline);
+        assert_eq!(map_cursor_shape(C::DoubleUnderline), CursorShape::Underline);
         assert_eq!(map_cursor_shape(C::Hollow), CursorShape::HollowBlock);
     }
 

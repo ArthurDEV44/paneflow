@@ -37,17 +37,30 @@
     },
     "font_size": {
       "type": ["number", "null"],
-      "description": "Font size in pixels. Default 13.0.",
+      "description": "Font size in points. Default 13.0.",
       "minimum": 8.0,
       "maximum": 32.0,
       "default": 13.0
     },
+    "font_weight": {
+      "type": ["string", "null"],
+      "description": "Terminal font weight. Default normal.",
+      "enum": ["thin", "extra_light", "light", "semi_light", "normal", "medium", "semi_bold", "bold", "extra_bold", "black", "extra_black", null],
+      "default": "normal"
+    },
     "line_height": {
       "type": ["number", "null"],
-      "description": "Line height multiplier. Default 1.35.",
+      "description": "Line height multiplier. Default 1.2.",
       "minimum": 1.0,
       "maximum": 2.5,
-      "default": 1.35
+      "default": 1.2
+    },
+    "cell_width": {
+      "type": ["number", "null"],
+      "description": "Cell width multiplier. Default 0.6.",
+      "minimum": 0.3,
+      "maximum": 2.0,
+      "default": 0.6
     },
     "window_decorations": {
       "type": ["string", "null"],
@@ -128,23 +141,33 @@
           "description": "Render programming-font ligatures (FiraCode '=>', '!=', JetBrains Mono, Cascadia Code). Hot-reloaded.",
           "default": false
         },
+        "integrated_glyphs": {
+          "type": ["boolean", "null"],
+          "description": "Draw built-in block-element glyphs as filled quads instead of using the font glyph. Hot-reloaded.",
+          "default": true
+        },
+        "color_emoji": {
+          "type": ["boolean", "null"],
+          "description": "Render emoji with the platform color-emoji path. Hot-reloaded.",
+          "default": true
+        },
+        "cursor_color": {
+          "type": ["string", "null"],
+          "description": "Cursor color override as #RRGGBB. Null uses the active color scheme cursor color.",
+          "pattern": "^#?[0-9A-Fa-f]{6}$|^#?[0-9A-Fa-f]{3}$",
+          "default": null
+        },
         "scrollback_lines": {
           "type": ["integer", "null"],
-          "description": "Maximum scrollback history in lines for normal terminals. Applied to newly-created terminals. Agent and Review surfaces cap this value at 4000 and 2000 lines respectively. Live cached/hidden terminals are not rebuilt or killed to shrink history; exited cached terminals may be evicted by the cache policy.",
+          "description": "Maximum scrollback history in lines for normal and agent terminals. Applied to newly-created terminals. Review and cached surfaces cap this value at 2000 and 1000 lines respectively. Live cached/hidden terminals are not rebuilt or killed to shrink history; exited cached terminals may be evicted by the cache policy.",
           "minimum": 100,
           "maximum": 100000,
           "default": 10000
         },
-        "bell": {
-          "type": ["string", "null"],
-          "description": "How BEL is surfaced.",
-          "enum": ["visual", "audible", "both", "off", null],
-          "default": "visual"
-        },
         "cursor_shape": {
           "type": ["string", "null"],
           "description": "Default cursor shape before an application overrides it.",
-          "enum": ["block", "beam", "underline", "hollow", null],
+          "enum": ["vintage", "block", "beam", "underline", "double_underline", "hollow", null],
           "default": "block"
         },
         "cursor_blink": {

@@ -1,5 +1,5 @@
-//! Background paint pass - terminal fill, bell flash, per-cell background
-//! rects with edge extension, and pixel-perfect block quads.
+//! Background paint pass - terminal fill, per-cell background rects with edge
+//! extension, and pixel-perfect block quads.
 //!
 //! ## Pixel alignment (US-004)
 //!
@@ -19,20 +19,10 @@ use gpui::{Bounds, Pixels, Point, Window, fill, px};
 
 use super::super::LayoutState;
 
-/// Paint the terminal background fill + optional bell-flash overlay.
-pub fn paint_base_fill(
-    layout: &LayoutState,
-    bounds: Bounds<Pixels>,
-    bell_flash_active: bool,
-    window: &mut Window,
-) {
+/// Paint the terminal background fill.
+pub fn paint_base_fill(layout: &LayoutState, bounds: Bounds<Pixels>, window: &mut Window) {
     if layout.background_color.a > 0.0 {
         window.paint_quad(fill(bounds, layout.background_color));
-    }
-
-    // Bell flash: semi-transparent white overlay
-    if bell_flash_active {
-        window.paint_quad(fill(bounds, gpui::hsla(0., 0., 1., 0.12)));
     }
 }
 
