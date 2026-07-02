@@ -1,7 +1,7 @@
 # Paneflow
 
 <p align="center">
-  <a href="https://github.com/ArthurDEV44/paneflow"><img alt="Paneflow" src="assets/badges/paneflow.svg"></a>
+  <a href="https://github.com/ArthurDEV44/paneflow"><img alt="Paneflow" src="assets/badges/paneflow.svg?v=2"></a>
   <a href="https://github.com/ArthurDEV44/paneflow/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ArthurDEV44/paneflow?sort=semver"></a>
   <a href="https://github.com/ArthurDEV44/paneflow/actions/workflows/run_tests.yml"><img alt="Tests" src="https://github.com/ArthurDEV44/paneflow/actions/workflows/run_tests.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ArthurDEV44/paneflow"></a>
